@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "FUNKY",
+    "slug": "funky",
+    "scheme": "funky",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0C"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.jerseylovebrand.funky",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "FUNKY uses your location to show you what's happening within 25 miles of you tonight. Your exact location is never shown to other people."
+      }
+    },
+    "android": {
+      "package": "com.jerseylovebrand.funky",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0A0C"
+      },
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-location"
+    ]
+  }
+}
