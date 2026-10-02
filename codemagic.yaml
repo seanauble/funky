@@ -18,7 +18,7 @@ workflows:
     # Settings -> Integrations -> App Store Connect. That's the same key
     # your earlier (failed) build was already using automatically.
     integrations:
-      app_store_connect: YOUR_APP_STORE_CONNECT_INTEGRATION_NAME
+      app_store_connect: AIINFOREMOVER
     triggering:
       events:
         - push
