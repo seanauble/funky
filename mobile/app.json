@@ -15,13 +15,13 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.jerseylovebrand.funky",
+      "bundleIdentifier": "com.funkyapp.funky",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "FUNKY uses your location to show you what's happening within 25 miles of you tonight. Your exact location is never shown to other people."
       }
     },
     "android": {
-      "package": "com.jerseylovebrand.funky",
+      "package": "com.funkyapp.funky",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0A0A0C"
