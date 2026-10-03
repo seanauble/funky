@@ -27,13 +27,6 @@ class RankedPlace {
   String get address => place.address;
 }
 
-class ChatRoom {
-  final String id;
-  final String name;
-  final int heat;
-  const ChatRoom(this.id, this.name, this.heat);
-}
-
 List<T> _dedupeById<T>(List<T> items, String Function(T) idOf) {
   final seen = <String>{};
   final out = <T>[];
@@ -80,6 +73,18 @@ class AppStore extends ChangeNotifier {
     }
     if (people.containsKey('p2')) {
       people = {...people, 'p2': people['p2']!.copyWith(friendRequestsSent: const ['me'])};
+    }
+
+    // Demo seed so the sample polls don't start sitting at a dead 0% —
+    // give the demo people a few opinions already cast tonight.
+    if (people.containsKey('p1')) {
+      people = {...people, 'p1': people['p1']!.copyWith(votes: const {'rowan-out': 0})};
+    }
+    if (people.containsKey('p2')) {
+      people = {...people, 'p2': people['p2']!.copyWith(votes: const {'rowan-out': 0, 'ac-best': 1})};
+    }
+    if (people.containsKey('p3')) {
+      people = {...people, 'p3': people['p3']!.copyWith(votes: const {'ac-best': 0})};
     }
   }
 
@@ -214,11 +219,6 @@ class AppStore extends ChangeNotifier {
   List<Poll> get visiblePolls {
     final here = location ?? defaultLocation;
     return polls.where((p) => near(here, LatLng(p.lat, p.lng))).toList();
-  }
-
-  List<ChatRoom> get roomsForChat {
-    final ranked = rankedPlaces;
-    return [const ChatRoom('main', 'Area chat', 0), ...ranked.map((p) => ChatRoom(p.id, p.name, p.heat))];
   }
 
   List<ChatMessage> messagesFor(String room) {
@@ -357,6 +357,20 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
+  /// Real per-option vote tallies for a poll — this is what PollBars uses to
+  /// draw the fill/percentage. It used to always be fed a zero-filled list
+  /// (poll bars never moved no matter what you tapped), which is why voting
+  /// looked completely broken.
+  List<int> pollCounts(Poll poll) {
+    final allPeople = {...people, 'me': me};
+    final counts = List<int>.filled(poll.options.length, 0);
+    for (final p in allPeople.values) {
+      final v = p.votes[poll.id];
+      if (v != null && v >= 0 && v < counts.length) counts[v]++;
+    }
+    return counts;
+  }
+
   Place addPlace(String name, PlaceKind kind, String address) {
     final here = location ?? defaultLocation;
     final place = Place(
@@ -417,7 +431,10 @@ class AppStore extends ChangeNotifier {
       place: place,
       anon: anon,
       session: sessionKey(),
-      views: const [],
+      // Seed a few of tonight's demo people as having already seen it, so a
+      // freshly-posted Story doesn't just sit at a dead "0 views" — same
+      // reasoning as the poll-vote and friend-request seeds above.
+      views: (people.keys.toList()..shuffle()).take(2).toList(),
       likes: const [],
     );
     stories = [...stories, story];
@@ -432,6 +449,30 @@ class AppStore extends ChangeNotifier {
       }
       return s;
     }).toList();
+    notifyListeners();
+    _persist();
+  }
+
+  /// Marks a Story as seen by 'me' — called once per Story shown in the
+  /// Story viewer. No-op (and no rebuild) if already recorded.
+  void recordStoryView(String storyId) {
+    final i = stories.indexWhere((s) => s.id == storyId);
+    if (i == -1 || stories[i].views.contains('me')) return;
+    final updated = stories[i].copyWith(views: [...stories[i].views, 'me']);
+    stories = [...stories]..[i] = updated;
+    notifyListeners();
+    _persist();
+  }
+
+  /// Marks a Story as screenshotted by 'me' — fed by the native iOS/Android
+  /// screenshot notification while the Story viewer is open (see
+  /// lib/services/screenshot_detector.dart). The poster only ever sees a
+  /// count, never who took it.
+  void recordScreenshot(String storyId) {
+    final i = stories.indexWhere((s) => s.id == storyId);
+    if (i == -1 || stories[i].screenshotBy.contains('me')) return;
+    final updated = stories[i].copyWith(screenshotBy: [...stories[i].screenshotBy, 'me']);
+    stories = [...stories]..[i] = updated;
     notifyListeners();
     _persist();
   }

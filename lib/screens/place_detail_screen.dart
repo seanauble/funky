@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../widgets/ui_widgets.dart';
-import 'chat_screen.dart';
 
 class PlaceDetailScreen extends StatefulWidget {
   final String placeId;
@@ -153,13 +152,6 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ],
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Center(
-            child: TextButton(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(initialRoom: place.id))),
-              child: Text("Open this place's chat →", style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700)),
             ),
           ),
         ],

@@ -39,10 +39,16 @@ class _RootShellState extends State<RootShell> {
           : AppBar(
               backgroundColor: tokens.bg,
               elevation: 0,
+              // iOS centers AppBar titles by default, which is why the
+              // wordmark looked centered on mobile even with its own
+              // centerLeft alignment — force it to the left on every
+              // platform, and bump it up a bit so it reads clearly.
+              centerTitle: false,
+              titleSpacing: 16,
               title: _index == 0
                   ? Image.asset(
                       'assets/branding/funky_wordmark.png',
-                      height: 30,
+                      height: 38,
                       fit: BoxFit.contain,
                       alignment: Alignment.centerLeft,
                     )

@@ -78,7 +78,7 @@ List<ChatMessage> sampleMessages() {
   return [
     ChatMessage(id: 'm1', t: now - 1000 * 60 * 42, room: 'main', uid: 'p1', text: "who's actually going out tonight", anon: false),
     ChatMessage(id: 'm2', t: now - 1000 * 60 * 35, room: 'main', uid: 'p2', text: 'sig chi is giving pregame energy rn', anon: false),
-    ChatMessage(id: 'm3', t: now - 1000 * 60 * 12, room: 'sigchi', uid: 'p1', text: 'line is already out the door 💀', anon: false),
+    ChatMessage(id: 'm3', t: now - 1000 * 60 * 12, room: 'main', uid: 'p1', text: 'line is already out the door 💀', anon: false),
   ];
 }
 

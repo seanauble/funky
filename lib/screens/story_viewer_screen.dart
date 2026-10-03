@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
 
 /// Full-screen Story playback for one person — tap the right half to
@@ -17,6 +18,25 @@ class StoryViewerScreen extends StatefulWidget {
 
 class _StoryViewerScreenState extends State<StoryViewerScreen> {
   int _i = 0;
+  String? _lastRecordedView;
+  String? _currentStoryId;
+
+  @override
+  void initState() {
+    super.initState();
+    // Screenshot events arrive from native code any time while this screen
+    // is open — always attributed to whichever story is on screen right now.
+    ScreenshotDetector.start(() {
+      final id = _currentStoryId;
+      if (id != null && mounted) context.read<AppStore>().recordScreenshot(id);
+    });
+  }
+
+  @override
+  void dispose() {
+    ScreenshotDetector.stop();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -35,6 +55,15 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
 
     if (_i >= stories.length) _i = stories.length - 1;
     final story = stories[_i];
+    _currentStoryId = story.id;
+    // Record the view once per story, after this frame — never during
+    // build, since that would call notifyListeners mid-build.
+    if (_lastRecordedView != story.id) {
+      _lastRecordedView = story.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.read<AppStore>().recordStoryView(story.id);
+      });
+    }
     final liked = story.likes.contains('me');
 
     void advance() {

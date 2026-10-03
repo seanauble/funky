@@ -5,29 +5,19 @@ import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'person_profile_screen.dart';
 
+/// One shared live chat for everyone within 25 miles — no per-place rooms,
+/// no room picker. Just LIVE CHAT with a blinking dot so it feels alive.
 class ChatScreen extends StatefulWidget {
-  /// The room to open directly into — a place's id for that place's chat,
-  /// or omitted/'main' for Area chat. Lets "Open this place's chat" on the
-  /// place detail screen land in that place's room instead of always
-  /// falling back to the one shared area chat.
-  final String? initialRoom;
-  const ChatScreen({super.key, this.initialRoom});
+  const ChatScreen({super.key});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  int _segment = 0; // 0 = area, 1 = dms
-  late String _room;
+  int _segment = 0; // 0 = live chat, 1 = dms
   final _draftController = TextEditingController();
   bool _anon = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _room = widget.initialRoom ?? 'main';
-  }
 
   @override
   void dispose() {
@@ -51,7 +41,7 @@ class _ChatScreenState extends State<ChatScreen> {
               decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
               child: Row(
                 children: [
-                  _SegButton(label: 'Area chat', active: _segment == 0, onTap: () => setState(() => _segment = 0)),
+                  _SegButton(label: 'Live Chat', active: _segment == 0, onTap: () => setState(() => _segment = 0)),
                   _SegButton(label: 'Messages', active: _segment == 1, onTap: () => setState(() => _segment = 1)),
                 ],
               ),
@@ -67,7 +57,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     )
                   : store.location == null
                       ? const LocationGate()
-                      : _AreaChat(room: _room, onRoomChange: (r) => setState(() => _room = r)),
+                      : const _LiveChat(),
             ),
             if (_segment == 0 && store.location != null)
               Container(
@@ -109,7 +99,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         onTap: () {
                           final text = _draftController.text.trim();
                           if (text.isEmpty) return;
-                          store.sendMessage(_room, text, _anon);
+                          store.sendMessage('main', text, _anon);
                           _draftController.clear();
                         },
                         child: Container(
@@ -131,38 +121,32 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-class _AreaChat extends StatelessWidget {
-  final String room;
-  final ValueChanged<String> onRoomChange;
-  const _AreaChat({required this.room, required this.onRoomChange});
+class _LiveChat extends StatelessWidget {
+  const _LiveChat();
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final msgs = store.messagesFor(room);
+    final msgs = store.messagesFor('main');
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        SizedBox(
-          height: 40,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: store.roomsForChat
-                .map((r) => Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FunkyChip(label: r.heat >= 2 ? '${r.name} 🔥' : r.name, active: r.id == room, onPressed: () => onRoomChange(r.id)),
-                    ))
-                .toList(),
-          ),
+        Row(
+          children: [
+            const _BlinkingDot(),
+            const SizedBox(width: 8),
+            Text(
+              'LIVE CHAT',
+              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w900, fontSize: 19, letterSpacing: 0.4),
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        Text(
-          msgs.isNotEmpty ? 'Only people within 25 miles can talk here' : 'Nobody has said anything here tonight. Start it off.',
-          style: TextStyle(color: tokens.mute),
-        ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 3),
+        Text('📍 Everyone within 25 miles of you, right now', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+        const SizedBox(height: 16),
+        if (msgs.isEmpty) Text('Nobody has said anything here tonight. Start it off.', style: TextStyle(color: tokens.mute)),
         ...msgs.map((m) {
           final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
           Widget nameLine;
@@ -189,6 +173,43 @@ class _AreaChat extends StatelessWidget {
           );
         }),
       ],
+    );
+  }
+}
+
+/// A small pulsing red dot — the "this is live" indicator next to LIVE CHAT.
+class _BlinkingDot extends StatefulWidget {
+  const _BlinkingDot();
+
+  @override
+  State<_BlinkingDot> createState() => _BlinkingDotState();
+}
+
+class _BlinkingDotState extends State<_BlinkingDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 1.0, end: 0.25).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut)),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+      ),
     );
   }
 }

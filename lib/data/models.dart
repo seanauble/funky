@@ -183,6 +183,9 @@ class Story {
   final String session;
   final List<String> views;
   final List<String> likes;
+  // Who screenshotted this Story — same idea as views/likes (ids, not shown
+  // to the poster by name). The poster only ever sees a count.
+  final List<String> screenshotBy;
 
   const Story({
     required this.id,
@@ -194,9 +197,10 @@ class Story {
     required this.session,
     required this.views,
     required this.likes,
+    this.screenshotBy = const [],
   });
 
-  Story copyWith({List<String>? likes}) => Story(
+  Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy}) => Story(
         id: id,
         t: t,
         uid: uid,
@@ -204,8 +208,9 @@ class Story {
         place: place,
         anon: anon,
         session: session,
-        views: views,
+        views: views ?? this.views,
         likes: likes ?? this.likes,
+        screenshotBy: screenshotBy ?? this.screenshotBy,
       );
 
   Map<String, dynamic> toJson() => {
@@ -218,6 +223,7 @@ class Story {
         'session': session,
         'views': views,
         'likes': likes,
+        'screenshotBy': screenshotBy,
       };
 
   factory Story.fromJson(Map<String, dynamic> json) => Story(
@@ -230,6 +236,7 @@ class Story {
         session: json['session'] as String,
         views: (json['views'] as List).map((e) => e as String).toList(),
         likes: (json['likes'] as List).map((e) => e as String).toList(),
+        screenshotBy: ((json['screenshotBy'] as List?) ?? const []).map((e) => e as String).toList(),
       );
 }
 

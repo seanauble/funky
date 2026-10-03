@@ -176,7 +176,7 @@ class HomeScreen extends StatelessWidget {
             ),
           ],
           SectionHeader(
-            title: 'Area chat',
+            title: 'Live Chat',
             action: 'Open chat',
             onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatScreen())),
           ),
@@ -210,7 +210,7 @@ class HomeScreen extends StatelessWidget {
             const EmptyNote(text: 'No other polls tonight. Ask the first one.')
           else
             ...store.visiblePolls.map((poll) {
-              final counts = List<int>.filled(poll.options.length, 0);
+              final counts = store.pollCounts(poll);
               final mine = store.me.votes[poll.id];
               return FunkyCard(
                 margin: const EdgeInsets.only(bottom: 10),

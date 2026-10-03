@@ -44,6 +44,23 @@ class MemoriesScreen extends StatelessWidget {
                       Text(s.text!, style: TextStyle(color: tokens.ink))
                     else
                       Text('Photo story', style: TextStyle(color: tokens.mute)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(Icons.remove_red_eye_outlined, size: 14, color: tokens.mute),
+                        const SizedBox(width: 4),
+                        Text('${s.views.length} view${s.views.length == 1 ? '' : 's'}', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                        if (s.screenshotBy.isNotEmpty) ...[
+                          const SizedBox(width: 14),
+                          Icon(Icons.camera_alt_outlined, size: 14, color: tokens.orange),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${s.screenshotBy.length} screenshotted',
+                            style: TextStyle(color: tokens.orange, fontSize: 12.5, fontWeight: FontWeight.w700),
+                          ),
+                        ],
+                      ],
+                    ),
                   ],
                 ),
               );
