@@ -46,3 +46,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Flutter-regenerated build files
+linux/flutter/generated_plugins.cmake
+windows/flutter/generated_plugins.cmake
