@@ -1,0 +1,55 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../data/app_store.dart';
+import '../widgets/ui_widgets.dart';
+
+/// Every Story you post is also saved privately here (rule 4). Full
+/// "a year ago today" grouping needs more than one real night of history
+/// to be meaningful, so for now this lists what you've posted tonight —
+/// the grouping and anniversary cards are a near-term follow-up once
+/// Stories persist across real nights against a backend.
+class MemoriesScreen extends StatelessWidget {
+  const MemoriesScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final myStories = store.myStories;
+
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: const Text('Memories')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'A private archive of your own Stories. Friends, DMs, and this page survive the 4 PM reset — nobody else can see it.',
+            style: TextStyle(color: tokens.mute),
+          ),
+          const SizedBox(height: 16),
+          if (myStories.isEmpty)
+            const FunkyCard(child: EmptyNote(text: "Nothing saved yet. Post a Story tonight and it'll show up here, even after the reset."))
+          else
+            ...myStories.map((s) {
+              final dt = DateTime.fromMillisecondsSinceEpoch(s.t);
+              return FunkyCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(dt.toString(), style: TextStyle(color: tokens.mute, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    if (s.text != null && s.text!.isNotEmpty)
+                      Text(s.text!, style: TextStyle(color: tokens.ink))
+                    else
+                      Text('Photo story', style: TextStyle(color: tokens.mute)),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+}
