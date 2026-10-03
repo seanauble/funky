@@ -79,6 +79,15 @@ class PersonProfileScreen extends StatelessWidget {
                       const SizedBox(height: 4),
                       if (s.text != null && s.text!.isNotEmpty)
                         Text(s.text!, style: TextStyle(color: tokens.ink))
+                      else if (s.videoPath != null)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.videocam, size: 16, color: tokens.mute),
+                            const SizedBox(width: 4),
+                            Text('Video story', style: TextStyle(color: tokens.mute)),
+                          ],
+                        )
                       else
                         Text('Photo story', style: TextStyle(color: tokens.mute)),
                     ],

@@ -14,6 +14,10 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>FUNKY uses your location to show you what's happening within 25 miles of you tonight. Your exact location is never shown to other people.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>FUNKY uses your camera to take photos and videos for your Stories.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FUNKY uses your microphone to record audio for video Stories.</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

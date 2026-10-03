@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
+import 'account_screen.dart';
 import 'person_profile_screen.dart';
 
 /// One shared live chat for everyone within 25 miles — no per-place rooms,
@@ -99,8 +100,12 @@ class _ChatScreenState extends State<ChatScreen> {
                         onTap: () {
                           final text = _draftController.text.trim();
                           if (text.isEmpty) return;
-                          store.sendMessage('main', text, _anon);
-                          _draftController.clear();
+                          // Reading/browsing the live chat never needs an
+                          // account — only actually sending does.
+                          requireAccountThen(context, store, () {
+                            store.sendMessage('main', text, _anon);
+                            _draftController.clear();
+                          });
                         },
                         child: Container(
                           width: 38,

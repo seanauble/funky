@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
+import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
 
@@ -21,6 +25,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   String? _lastRecordedView;
   String? _currentStoryId;
 
+  VideoPlayerController? _videoController;
+  String? _videoForStoryId;
+
   @override
   void initState() {
     super.initState();
@@ -35,7 +42,36 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   @override
   void dispose() {
     ScreenshotDetector.stop();
+    _videoController?.dispose();
     super.dispose();
+  }
+
+  void _ensureVideoFor(Story story, VoidCallback advance) {
+    if (story.videoPath == null) {
+      _videoController?.dispose();
+      _videoController = null;
+      _videoForStoryId = null;
+      return;
+    }
+    if (_videoForStoryId == story.id) return;
+    _videoForStoryId = story.id;
+    final old = _videoController;
+    _videoController = null;
+    old?.dispose();
+    final controller = VideoPlayerController.file(File(story.videoPath!));
+    controller.addListener(() {
+      final value = controller.value;
+      if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero) {
+        advance();
+      }
+    });
+    controller.setVolume(1);
+    controller.initialize().then((_) {
+      if (!mounted || _videoForStoryId != story.id) return;
+      controller.play();
+      setState(() {});
+    });
+    _videoController = controller;
   }
 
   @override
@@ -78,24 +114,51 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       if (_i > 0) setState(() => _i--);
     }
 
+    _ensureVideoFor(story, advance);
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Stack(
           children: [
             // Content
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28),
-                child: story.text != null && story.text!.isNotEmpty
-                    ? Text(
-                        story.text!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
+            if (story.videoPath != null)
+              Center(
+                child: _videoController != null && _videoController!.value.isInitialized
+                    ? AspectRatio(
+                        aspectRatio: _videoController!.value.aspectRatio,
+                        child: VideoPlayer(_videoController!),
                       )
-                    : const Text('📸', style: TextStyle(fontSize: 48)),
+                    : const CircularProgressIndicator(color: Colors.white),
+              )
+            else if (story.imagePath != null)
+              Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
+            else
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 28),
+                  child: story.text != null && story.text!.isNotEmpty
+                      ? Text(
+                          story.text!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
+                        )
+                      : const Text('📸', style: TextStyle(fontSize: 48)),
+                ),
               ),
-            ),
+            // A photo/video Story can still carry a caption — show it near
+            // the bottom so it doesn't compete with the media itself.
+            if ((story.imagePath != null || story.videoPath != null) && story.text != null && story.text!.isNotEmpty)
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 72,
+                child: Text(
+                  story.text!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, shadows: [Shadow(color: Colors.black, blurRadius: 6)]),
+                ),
+              ),
             // Tap zones
             Row(
               children: [

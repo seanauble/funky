@@ -186,6 +186,18 @@ class Story {
   // Who screenshotted this Story — same idea as views/likes (ids, not shown
   // to the poster by name). The poster only ever sees a count.
   final List<String> screenshotBy;
+  // Local file path to the captured photo, once camera Stories are posted
+  // with one. Null for a text-only Story. This is a path on THIS device —
+  // there's no backend yet, so a photo Story only ever plays back on the
+  // device that posted it (same limitation every "other people's" count in
+  // this mock store has).
+  final String? imagePath;
+  // Local file path to a captured video (max 15s), mutually exclusive with
+  // imagePath in practice (a Story is either a photo or a video, never
+  // both) but kept as a separate nullable field rather than a tagged union
+  // to match the rest of this mock model. Same single-device limitation as
+  // imagePath above.
+  final String? videoPath;
 
   const Story({
     required this.id,
@@ -198,6 +210,8 @@ class Story {
     required this.views,
     required this.likes,
     this.screenshotBy = const [],
+    this.imagePath,
+    this.videoPath,
   });
 
   Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy}) => Story(
@@ -211,6 +225,8 @@ class Story {
         views: views ?? this.views,
         likes: likes ?? this.likes,
         screenshotBy: screenshotBy ?? this.screenshotBy,
+        imagePath: imagePath,
+        videoPath: videoPath,
       );
 
   Map<String, dynamic> toJson() => {
@@ -224,6 +240,8 @@ class Story {
         'views': views,
         'likes': likes,
         'screenshotBy': screenshotBy,
+        'imagePath': imagePath,
+        'videoPath': videoPath,
       };
 
   factory Story.fromJson(Map<String, dynamic> json) => Story(
@@ -237,6 +255,8 @@ class Story {
         views: (json['views'] as List).map((e) => e as String).toList(),
         likes: (json['likes'] as List).map((e) => e as String).toList(),
         screenshotBy: ((json['screenshotBy'] as List?) ?? const []).map((e) => e as String).toList(),
+        imagePath: json['imagePath'] as String?,
+        videoPath: json['videoPath'] as String?,
       );
 }
 

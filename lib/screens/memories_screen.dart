@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
@@ -40,9 +42,36 @@ class MemoriesScreen extends StatelessWidget {
                   children: [
                     Text(dt.toString(), style: TextStyle(color: tokens.mute, fontSize: 12)),
                     const SizedBox(height: 4),
+                    if (s.videoPath != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Stack(
+                          alignment: Alignment.bottomLeft,
+                          children: [
+                            Container(height: 140, width: double.infinity, color: Colors.black),
+                            Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.videocam, color: Colors.white, size: 16),
+                                  const SizedBox(width: 4),
+                                  const Text('Video Story', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else if (s.imagePath != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.file(File(s.imagePath!), height: 140, width: double.infinity, fit: BoxFit.cover),
+                      ),
+                    if (s.videoPath != null || s.imagePath != null) const SizedBox(height: 8),
                     if (s.text != null && s.text!.isNotEmpty)
                       Text(s.text!, style: TextStyle(color: tokens.ink))
-                    else
+                    else if (s.videoPath == null && s.imagePath == null)
                       Text('Photo story', style: TextStyle(color: tokens.mute)),
                     const SizedBox(height: 8),
                     Row(

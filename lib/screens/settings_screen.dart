@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../data/app_store.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/ui_widgets.dart';
 import 'about_screen.dart';
+import 'account_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
 
@@ -16,6 +18,7 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final themeProvider = context.watch<ThemeProvider>();
+    final store = context.watch<AppStore>();
 
     return Scaffold(
       backgroundColor: tokens.bg,
@@ -23,6 +26,14 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
         children: [
+          const SectionHeader(title: 'Account'),
+          FunkyCard(
+            padding: EdgeInsets.zero,
+            child: _SettingsRow(
+              label: store.signedIn ? 'Manage account (${store.accountEmail})' : 'Create an account to post & message',
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen())),
+            ),
+          ),
           const SectionHeader(title: 'Appearance'),
           Container(
             padding: const EdgeInsets.all(3),

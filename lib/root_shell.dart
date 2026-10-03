@@ -4,6 +4,7 @@ import 'screens/create_sheet.dart';
 import 'screens/home_screen.dart';
 import 'screens/places_screen.dart';
 import 'screens/profile_screen.dart';
+import 'widgets/top_bar_actions.dart';
 import 'widgets/ui_widgets.dart';
 
 /// The five-tab bar from rule 12 — Home, Chat, a centre "+" that opens the
@@ -34,26 +35,28 @@ class _RootShellState extends State<RootShell> {
 
     return Scaffold(
       backgroundColor: tokens.bg,
-      appBar: _index == 1 || _index == 3 || _index == 4
-          ? null
-          : AppBar(
-              backgroundColor: tokens.bg,
-              elevation: 0,
-              // iOS centers AppBar titles by default, which is why the
-              // wordmark looked centered on mobile even with its own
-              // centerLeft alignment — force it to the left on every
-              // platform, and bump it up a bit so it reads clearly.
-              centerTitle: false,
-              titleSpacing: 16,
-              title: _index == 0
-                  ? Image.asset(
-                      'assets/branding/funky_wordmark.png',
-                      height: 38,
-                      fit: BoxFit.contain,
-                      alignment: Alignment.centerLeft,
-                    )
-                  : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-            ),
+      // Shown on every tab now (Home, Chat, Places, Profile) so the
+      // notification bell and settings gear are always reachable, not just
+      // from Profile.
+      appBar: AppBar(
+        backgroundColor: tokens.bg,
+        elevation: 0,
+        // iOS centers AppBar titles by default, which is why the wordmark
+        // looked centered on mobile even with its own centerLeft alignment
+        // — force it to the left on every platform, and bump it up a bit
+        // so it reads clearly.
+        centerTitle: false,
+        titleSpacing: 16,
+        title: _index == 0
+            ? Image.asset(
+                'assets/branding/funky_wordmark.png',
+                height: 38,
+                fit: BoxFit.contain,
+                alignment: Alignment.centerLeft,
+              )
+            : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+        actions: const [NotificationBell(), SettingsGearButton()],
+      ),
       body: SafeArea(bottom: false, child: IndexedStack(index: _index, children: _screens)),
       bottomNavigationBar: _TabBar(
         index: _index,

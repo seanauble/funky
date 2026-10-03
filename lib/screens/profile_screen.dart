@@ -4,7 +4,6 @@ import '../data/app_store.dart';
 import '../widgets/ui_widgets.dart';
 import 'friend_requests_screen.dart';
 import 'memories_screen.dart';
-import 'settings_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -38,48 +37,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final store = context.watch<AppStore>();
 
     final friends = store.me.friends.length;
-    final pendingRequests = store.pendingFriendRequestCount;
 
+    // No AppBar of its own anymore — the root shell's shared AppBar now
+    // carries the title, notification bell, and settings gear on every
+    // tab, not just this one.
     return Scaffold(
       backgroundColor: tokens.bg,
-      appBar: AppBar(
-        backgroundColor: tokens.bg,
-        elevation: 0,
-        title: Text('Profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-        actions: [
-          IconButton(
-            tooltip: 'Friend requests',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen())),
-            icon: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Icon(Icons.notifications_none, color: tokens.ink),
-                if (pendingRequests > 0)
-                  Positioned(
-                    right: -2,
-                    top: -2,
-                    child: Container(
-                      padding: const EdgeInsets.all(3),
-                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
-                      decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 1.5)),
-                      alignment: Alignment.center,
-                      child: Text(
-                        '$pendingRequests',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
-            icon: Icon(Icons.settings_outlined, color: tokens.ink),
-          ),
-        ],
-      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
         children: [

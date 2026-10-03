@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,6 +9,32 @@ import 'models.dart';
 import 'session.dart';
 
 const _storageKey = 'funky.store.v1';
+
+final _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+/// A lightweight local hash — NOT real cryptographic security. This whole
+/// app is a mock store with no backend to actually authenticate against, so
+/// there's nothing a strong hash would meaningfully protect; this just
+/// keeps the password from sitting around in plain text in local storage.
+/// Swap this (and the account fields below) for real server-side auth
+/// before this app ever talks to a backend.
+String _hashPassword(String password, String salt) {
+  final bytes = utf8.encode('$salt:$password');
+  int h1 = 0x811c9dc5;
+  for (final b in bytes) {
+    h1 = ((h1 ^ b) * 0x01000193) & 0xFFFFFFFF;
+  }
+  int h2 = 0x1000193 ^ bytes.length;
+  for (final b in bytes.reversed) {
+    h2 = ((h2 ^ b) * 0x811c9dc5) & 0xFFFFFFFF;
+  }
+  return '${h1.toRadixString(16)}${h2.toRadixString(16)}';
+}
+
+String _newSalt() {
+  final rand = Random.secure();
+  return List<int>.generate(16, (_) => rand.nextInt(256)).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
 
 enum LocationStatus { unknown, requesting, granted, denied }
 
@@ -56,6 +83,18 @@ class AppStore extends ChangeNotifier {
   LatLng? location;
   LocationStatus locationStatus = LocationStatus.unknown;
 
+  // Account — browsing FUNKY is always anonymous and free; you only need
+  // one of these to post a Story/poll/place or send a message (see
+  // requireAccountThen in lib/screens/account_screen.dart, which is what
+  // actually enforces that gate from the UI). Survives the 4 PM reset and
+  // app restarts, same as friends.
+  String? accountEmail;
+  String? _passwordHash;
+  String? _passwordSalt;
+  bool signedIn = false;
+
+  bool get hasAccount => accountEmail != null && _passwordHash != null;
+
   AppStore() {
     final session = sessionKey();
     people = {for (final p in samplePeople(session)) p.id: p};
@@ -101,6 +140,13 @@ class AppStore extends ChangeNotifier {
         final parsedPolls = (parsed['polls'] as List).map((e) => Poll.fromJson(e as Map<String, dynamic>)).toList();
         final parsedMessages = (parsed['messages'] as List).map((e) => ChatMessage.fromJson(e as Map<String, dynamic>)).toList();
         final parsedStories = (parsed['stories'] as List).map((e) => Story.fromJson(e as Map<String, dynamic>)).toList();
+
+        // Account info is never tied to tonight's session — it survives
+        // same as friends/DMs, read unconditionally either way below.
+        accountEmail = parsed['accountEmail'] as String?;
+        _passwordHash = parsed['passwordHash'] as String?;
+        _passwordSalt = parsed['passwordSalt'] as String?;
+        signedIn = parsed['signedIn'] as bool? ?? false;
 
         if (storedSession == currentSession) {
           me = parsedMe;
@@ -152,6 +198,10 @@ class AppStore extends ChangeNotifier {
         'polls': polls.where((p) => p.by == 'me').map((p) => p.toJson()).toList(),
         'messages': messages.where((m) => m.uid == 'me').map((m) => m.toJson()).toList(),
         'stories': stories.where((s) => s.uid == 'me').map((s) => s.toJson()).toList(),
+        'accountEmail': accountEmail,
+        'passwordHash': _passwordHash,
+        'passwordSalt': _passwordSalt,
+        'signedIn': signedIn,
       };
       await prefs.setString(_storageKey, jsonEncode(payload));
     } catch (_) {
@@ -422,12 +472,14 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
-  void addStory({String? text, required String place, required bool anon}) {
+  void addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) {
     final story = Story(
       id: 'story_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
       uid: 'me',
       text: text,
+      imagePath: imagePath,
+      videoPath: videoPath,
       place: place,
       anon: anon,
       session: sessionKey(),
@@ -489,5 +541,75 @@ class AppStore extends ChangeNotifier {
   void dismissResetBanner() {
     justReset = false;
     notifyListeners();
+  }
+
+  // --- Account -------------------------------------------------------
+  // See the class-level doc on `accountEmail` above for what this does
+  // and doesn't guarantee. All four methods return null on success, or a
+  // user-facing error string on failure.
+
+  String? validateEmail(String email) {
+    if (!_emailPattern.hasMatch(email.trim())) return 'Enter a real email address.';
+    return null;
+  }
+
+  String? validatePassword(String password) {
+    if (password.length < 8) return 'Use at least 8 characters.';
+    return null;
+  }
+
+  String? signUp(String email, String password) {
+    final emailError = validateEmail(email);
+    if (emailError != null) return emailError;
+    final pwError = validatePassword(password);
+    if (pwError != null) return pwError;
+    final salt = _newSalt();
+    accountEmail = email.trim().toLowerCase();
+    _passwordSalt = salt;
+    _passwordHash = _hashPassword(password, salt);
+    signedIn = true;
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  String? signIn(String email, String password) {
+    if (!hasAccount) return 'No account on this device yet — create one first.';
+    final matches = email.trim().toLowerCase() == accountEmail && _hashPassword(password, _passwordSalt!) == _passwordHash;
+    if (!matches) return 'Email or password is wrong.';
+    signedIn = true;
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  void signOut() {
+    signedIn = false;
+    notifyListeners();
+    _persist();
+  }
+
+  String? changeEmail(String newEmail, String currentPassword) {
+    if (!signedIn || !hasAccount) return 'Log in first.';
+    if (_hashPassword(currentPassword, _passwordSalt!) != _passwordHash) return 'Current password is wrong.';
+    final error = validateEmail(newEmail);
+    if (error != null) return error;
+    accountEmail = newEmail.trim().toLowerCase();
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  String? changePassword(String currentPassword, String newPassword) {
+    if (!signedIn || !hasAccount) return 'Log in first.';
+    if (_hashPassword(currentPassword, _passwordSalt!) != _passwordHash) return 'Current password is wrong.';
+    final error = validatePassword(newPassword);
+    if (error != null) return error;
+    final salt = _newSalt();
+    _passwordSalt = salt;
+    _passwordHash = _hashPassword(newPassword, salt);
+    notifyListeners();
+    _persist();
+    return null;
   }
 }

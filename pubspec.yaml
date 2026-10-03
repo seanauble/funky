@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+3
+version: 1.0.0+6
 
 environment:
   sdk: ^3.13.3
@@ -45,6 +45,16 @@ dependencies:
   flutter_map: ^8.1.1
   # Lat/lng type used by flutter_map (kept separate from our own LatLng model).
   latlong2: ^0.9.1
+  # True in-app camera (live preview + our own capture button) for Stories —
+  # not the OS's own camera/gallery picker sheet. Official Flutter-team
+  # package (publisher flutter.dev), not a small community plugin, so this
+  # isn't the kind of dependency that broke the iOS build before.
+  camera: ^0.12.1
+  # Plays back captured Story videos in the Story viewer. Also flutter.dev.
+  video_player: ^2.14.0
+  # Where captured Story photos/videos get copied so they survive after the
+  # camera plugin's own temp file is cleaned up. Also an official package.
+  path_provider: ^2.1.4
 
 dev_dependencies:
   flutter_test:
