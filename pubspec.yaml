@@ -41,6 +41,10 @@ dependencies:
   shared_preferences: ^2.3.2
   # Real device location for "your area is the 25 miles around you" (rule 1).
   geolocator: ^13.0.1
+  # OpenStreetMap tiles + marker pins for the Places map.
+  flutter_map: ^8.1.1
+  # Lat/lng type used by flutter_map (kept separate from our own LatLng model).
+  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:

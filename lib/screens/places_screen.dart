@@ -1,8 +1,7 @@
-import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_heatmap_plus/flutter_map_heatmap_plus.dart' as heatmap;
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
@@ -14,26 +13,10 @@ import 'place_detail_screen.dart';
 
 const _heatLabel = ['Quiet so far', 'Some activity', 'Active', 'Very active'];
 
-class PlacesScreen extends StatefulWidget {
+class PlacesScreen extends StatelessWidget {
   const PlacesScreen({super.key});
 
-  @override
-  State<PlacesScreen> createState() => _PlacesScreenState();
-}
-
-class _PlacesScreenState extends State<PlacesScreen> {
-  // flutter_map_heatmap_plus redraws the glow layer off this stream rather
-  // than on every FlutterMap rebuild, so one broadcast controller lives for
-  // as long as this screen does.
-  final _heatReset = StreamController<void>.broadcast();
-
-  @override
-  void dispose() {
-    _heatReset.close();
-    super.dispose();
-  }
-
-  void _openPlace(String placeId) {
+  void _openPlace(BuildContext context, String placeId) {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
   }
 
@@ -47,10 +30,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
     final here = store.location!;
     final ranked = store.rankedPlaces;
     final topPlaceId = ranked.isNotEmpty ? ranked.first.id : null;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _heatReset.add(null);
-    });
+    final maxScore = ranked.isEmpty ? 1 : ranked.map((p) => p.score).reduce((a, b) => a > b ? a : b).clamp(1, 999999);
 
     return Scaffold(
       backgroundColor: tokens.bg,
@@ -72,18 +52,39 @@ class _PlacesScreenState extends State<PlacesScreen> {
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.funkyapp.funky',
                     ),
+                    // Hand-rolled soft heat-glow: a blurred, radially-gradiented
+                    // circle under each place, sized/opacity-scaled by that
+                    // place's activity score. No third-party heatmap plugin —
+                    // just flutter_map + core Flutter blur/gradient APIs, so
+                    // there's no dependency risk to the iOS/Android build.
                     if (ranked.isNotEmpty)
-                      heatmap.HeatMapLayer(
-                        heatMapDataSource: heatmap.InMemoryHeatMapDataSource(
-                          data: ranked
-                              .map((p) => heatmap.WeightedLatLng(
-                                    ll.LatLng(p.place.lat, p.place.lng),
-                                    (p.score + 1).toDouble(),
-                                  ))
-                              .toList(),
-                        ),
-                        heatMapOptions: heatmap.HeatMapOptions(minOpacity: 0.35),
-                        reset: _heatReset.stream,
+                      MarkerLayer(
+                        markers: ranked.map((p) {
+                          final intensity = (p.score / maxScore).clamp(0.08, 1.0);
+                          final size = 60.0 + intensity * 90.0;
+                          final glowColor = p.id == topPlaceId ? tokens.brand : tokens.orange;
+                          return Marker(
+                            point: ll.LatLng(p.place.lat, p.place.lng),
+                            width: size,
+                            height: size,
+                            child: IgnorePointer(
+                              child: ImageFiltered(
+                                imageFilter: ui.ImageFilter.blur(sigmaX: size / 6, sigmaY: size / 6),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    gradient: RadialGradient(
+                                      colors: [
+                                        glowColor.withValues(alpha: 0.55 * intensity),
+                                        glowColor.withValues(alpha: 0.0),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
                       ),
                     MarkerLayer(
                       markers: [
@@ -107,7 +108,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
                             width: size,
                             height: size,
                             child: GestureDetector(
-                              onTap: () => _openPlace(p.id),
+                              onTap: () => _openPlace(context, p.id),
                               child: Container(
                                 decoration: BoxDecoration(
                                   color: isTop ? tokens.brand : tokens.orange,
@@ -174,7 +175,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
                     if (p.cover != null && p.cover!.cover > 0) bits.add('\$${p.cover!.cover} cover');
 
                     return InkWell(
-                      onTap: () => _openPlace(p.id),
+                      onTap: () => _openPlace(context, p.id),
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         decoration: BoxDecoration(border: Border(bottom: BorderSide(color: tokens.line))),
