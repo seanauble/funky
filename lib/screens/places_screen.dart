@@ -168,11 +168,21 @@ class PlacesScreen extends StatelessWidget {
                   const EmptyNote(text: 'Nothing is listed within 25 miles yet. Be the first to add one.')
                 else
                   ...store.rankedPlaces.map((p) {
-                    final bits = <String>[placeKindLabel(p.kind), '🔥 ${p.going} going'];
+                    final bits = <String>[placeKindLabel(p.kind)];
+                    if (p.going > 0) {
+                      bits.add('🔥 ${p.going} going');
+                    } else if (p.heat == 0) {
+                      bits.add('Be the first to check in');
+                    }
                     if (p.heat > 0) bits.add(_heatLabel[p.heat]);
-                    if (p.cover?.shut == true) bits.add('Shut down');
-                    if (p.cover?.cops == true) bits.add('🚨 Police');
-                    if (p.cover != null && p.cover!.cover > 0) bits.add('\$${p.cover!.cover} cover');
+                    final shut = p.reports[ReportKind.shutdown];
+                    final cops = p.reports[ReportKind.police];
+                    final cover = p.reports[ReportKind.cover];
+                    final line = p.reports[ReportKind.line];
+                    if (shut != null) bits.add(shut.verified ? '✓ Shut down' : '⚠️ Shut down (unverified)');
+                    if (cops != null) bits.add(cops.verified ? '✓ 🚨 Police' : '🚨 Police (unverified)');
+                    if (cover != null) bits.add('${cover.detail ?? 'Cover'} cover${cover.verified ? '' : ' (unverified)'}');
+                    if (line != null) bits.add('Line ${line.detail ?? ''}${line.verified ? '' : ' (unverified)'}');
 
                     return InkWell(
                       onTap: () => _openPlace(context, p.id),
@@ -195,9 +205,22 @@ class PlacesScreen extends StatelessWidget {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                                  Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                                      ),
+                                      if (store.isPlaceVerified(p.id)) ...[
+                                        const SizedBox(width: 4),
+                                        Icon(Icons.verified, size: 14, color: tokens.gold),
+                                      ],
+                                    ],
+                                  ),
                                   const SizedBox(height: 2),
-                                  Text(bits.join(' · '), style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                                  Text(
+                                    store.isPlaceVerified(p.id) ? bits.join(' · ') : '${bits.join(' · ')} · unverified venue',
+                                    style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                                  ),
                                 ],
                               ),
                             ),
@@ -207,7 +230,7 @@ class PlacesScreen extends StatelessWidget {
                       ),
                     );
                   }),
-                const FootNote(text: 'Places are tonight-only, like everything else — wiped at 4 PM.'),
+                const FootNote(text: 'Places are tonight-only, like everything else — wiped at 2 PM.'),
               ],
             ),
           ),

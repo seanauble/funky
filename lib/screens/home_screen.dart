@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/models.dart';
 import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
@@ -8,6 +9,7 @@ import '../widgets/poll_bars.dart';
 import '../widgets/ui_widgets.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
+import 'place_detail_screen.dart';
 import 'chat_screen.dart';
 import 'story_viewer_screen.dart';
 
@@ -21,9 +23,12 @@ class HomeScreen extends StatelessWidget {
 
     if (store.location == null) return const LocationGate();
 
-    // "What's the move tonight?" builds itself from the busiest places near
-    // you, plus "Staying in" — it is not a stored poll (HANDOFF.md).
-    final moveOptions = store.rankedPlaces.take(4).toList();
+    // "What's the move tonight?" builds itself from the busiest VERIFIED
+    // places near you, plus "Staying in" — it is not a stored poll
+    // (HANDOFF.md). An unconfirmed venue shouldn't be able to show up as a
+    // vote option on Home before anyone's actually vouched it's real.
+    final verifiedPlaces = store.verifiedRankedPlaces;
+    final moveOptions = verifiedPlaces.take(4).toList();
     final moveLabels = [...moveOptions.map((p) => p.name), 'Staying in'];
     final allPeople = {...store.people, 'me': store.me};
     final stayingInCount = allPeople.values.where((p) => p.move == 'in').length;
@@ -34,11 +39,16 @@ class HomeScreen extends StatelessWidget {
       if (moveSelectedIndex == -1) moveSelectedIndex = null;
     }
 
-    final covered = store.rankedPlaces.where((p) => p.cover != null && p.cover!.cover > 0).toList();
-    // Who's actually posted a Story tonight (not "who's standing at a place
-    // that happens to have stories" — that mismatch was why rings used to
-    // show up for the wrong people and did nothing when tapped).
-    final storytellerIds = <String>{for (final s in store.stories) s.uid}..remove('me');
+    final covered = verifiedPlaces.where((p) => p.reports[ReportKind.cover] != null).toList();
+    // Who's actually posted a Story tonight at a VERIFIED venue (or a
+    // general, not-venue-specific Story) — not "who's standing at a place
+    // that happens to have stories" (that mismatch was why rings used to
+    // show up for the wrong people and did nothing when tapped), and not
+    // someone whose only Story tonight is at an unconfirmed venue.
+    final storytellerIds = <String>{
+      for (final s in store.stories)
+        if (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!)) s.uid,
+    }..remove('me');
     final areaMessages = store.messagesFor('main');
     final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
 
@@ -98,12 +108,17 @@ class HomeScreen extends StatelessWidget {
             action: 'See all',
             onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PlacesScreen())),
           ),
-          if (store.rankedPlaces.isEmpty)
+          if (verifiedPlaces.isEmpty)
             FunkyCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Nothing is listed within 25 miles yet. Put the first spot on the map.', style: TextStyle(color: tokens.ink)),
+                  Text(
+                    store.rankedPlaces.isEmpty
+                        ? 'Nothing is listed within 25 miles yet. Put the first spot on the map.'
+                        : "Nothing verified near you yet — venues need 15 confirmations before they show up here. Check the Places tab to confirm one.",
+                    style: TextStyle(color: tokens.ink),
+                  ),
                   const SizedBox(height: 10),
                   FunkyChip(label: 'Add a place or event', active: true, onPressed: () => showCreateSheet(context, initial: CreateKind.place)),
                 ],
@@ -114,30 +129,33 @@ class HomeScreen extends StatelessWidget {
               height: 138,
               child: ListView(
                 scrollDirection: Axis.horizontal,
-                children: store.rankedPlaces.take(8).map((p) {
-                  return Container(
-                    width: 140,
-                    margin: const EdgeInsets.only(right: 10),
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: tokens.surface,
-                      border: Border.all(color: tokens.line),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          height: 60,
-                          decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-                          alignment: Alignment.center,
-                          child: Text(p.name.substring(0, 1), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: tokens.mute)),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 2),
-                        Text('🔥 ${p.going} going', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12)),
-                      ],
+                children: verifiedPlaces.take(8).map((p) {
+                  return GestureDetector(
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
+                    child: Container(
+                      width: 140,
+                      margin: const EdgeInsets.only(right: 10),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: tokens.surface,
+                        border: Border.all(color: tokens.line),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            height: 60,
+                            decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
+                            alignment: Alignment.center,
+                            child: Text(p.name.substring(0, 1), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: tokens.mute)),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 2),
+                          Text('🔥 ${p.going} going', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12)),
+                        ],
+                      ),
                     ),
                   );
                 }).toList(),
@@ -153,22 +171,28 @@ class HomeScreen extends StatelessWidget {
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: covered.map((p) {
-                  return Container(
-                    margin: const EdgeInsets.only(right: 10),
-                    constraints: const BoxConstraints(minWidth: 110),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: tokens.surface,
-                      border: Border.all(color: tokens.line),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('\$${p.cover!.cover}', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 18)),
-                        Text(p.name, style: TextStyle(color: tokens.ink, fontSize: 12)),
-                      ],
+                  return GestureDetector(
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 10),
+                      constraints: const BoxConstraints(minWidth: 110),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: tokens.surface,
+                        border: Border.all(color: tokens.line),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            p.reports[ReportKind.cover]?.detail ?? '?',
+                            style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 18),
+                          ),
+                          Text(p.name, style: TextStyle(color: tokens.ink, fontSize: 12)),
+                        ],
+                      ),
                     ),
                   );
                 }).toList(),
@@ -224,7 +248,7 @@ class HomeScreen extends StatelessWidget {
                 ),
               );
             }),
-          FootNote(text: 'Chat, Stories, places and polls are wiped at 4 PM. Next fresh start in ${session.untilReset()}.'),
+          FootNote(text: 'Chat, Stories, places and polls are wiped at 2 PM. Next fresh start in ${session.untilReset()}.'),
         ],
       ),
     );

@@ -8,19 +8,21 @@ import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
 
-/// Full-screen Story playback for one person — tap the right half to
-/// advance, the left half to go back, down-arrow/back button to close.
-/// Opened by tapping a story ring on Home (this screen didn't exist before,
-/// which is why tapping a story ring used to do nothing).
-class StoryViewerScreen extends StatefulWidget {
-  final String personId;
-  const StoryViewerScreen({super.key, required this.personId});
+/// Full-screen Story playback for everything posted AT one venue tonight —
+/// the "tap the venue's banner to see its Stories" flow, as opposed to
+/// StoryViewerScreen which plays through one PERSON's Stories. Several
+/// different people's Stories can be mixed together here, so (unlike the
+/// per-person viewer) the header re-looks-up the author for every story.
+class PlaceStoryViewerScreen extends StatefulWidget {
+  final String placeId;
+  final String placeName;
+  const PlaceStoryViewerScreen({super.key, required this.placeId, required this.placeName});
 
   @override
-  State<StoryViewerScreen> createState() => _StoryViewerScreenState();
+  State<PlaceStoryViewerScreen> createState() => _PlaceStoryViewerScreenState();
 }
 
-class _StoryViewerScreenState extends State<StoryViewerScreen> {
+class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
   int _i = 0;
   String? _lastRecordedView;
   String? _currentStoryId;
@@ -31,8 +33,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   @override
   void initState() {
     super.initState();
-    // Screenshot events arrive from native code any time while this screen
-    // is open — always attributed to whichever story is on screen right now.
     ScreenshotDetector.start(() {
       final id = _currentStoryId;
       if (id != null && mounted) context.read<AppStore>().recordScreenshot(id);
@@ -77,12 +77,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   @override
   Widget build(BuildContext context) {
     final store = context.watch<AppStore>();
-    final person = store.personById(widget.personId);
     // Oldest first, like watching through the night in order.
-    final stories = store.storiesByUser(widget.personId).reversed.toList(growable: false);
+    final stories = store.storiesFor(widget.placeId).toList()..sort((a, b) => a.t.compareTo(b.t));
 
-    if (person == null || stories.isEmpty) {
-      // Nothing left to show (they deleted it, or the 2 PM reset hit) — bail out.
+    if (stories.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) Navigator.of(context).pop();
       });
@@ -92,8 +90,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     if (_i >= stories.length) _i = stories.length - 1;
     final story = stories[_i];
     _currentStoryId = story.id;
-    // Record the view once per story, after this frame — never during
-    // build, since that would call notifyListeners mid-build.
+    final author = store.personById(story.uid);
     if (_lastRecordedView != story.id) {
       _lastRecordedView = story.id;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -121,7 +118,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Content
             if (story.videoPath != null)
               Center(
                 child: _videoController != null && _videoController!.value.isInitialized
@@ -146,8 +142,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                       : const Text('📸', style: TextStyle(fontSize: 48)),
                 ),
               ),
-            // A photo/video Story can still carry a caption — show it near
-            // the bottom so it doesn't compete with the media itself.
             if ((story.imagePath != null || story.videoPath != null) && story.text != null && story.text!.isNotEmpty)
               Positioned(
                 left: 16,
@@ -159,14 +153,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, shadows: [Shadow(color: Colors.black, blurRadius: 6)]),
                 ),
               ),
-            // Tap zones
             Row(
               children: [
                 Expanded(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: back)),
                 Expanded(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: advance)),
               ],
             ),
-            // Progress bars
             Positioned(
               top: 8,
               left: 10,
@@ -186,19 +178,27 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 }),
               ),
             ),
-            // Header
             Positioned(
               top: 20,
               left: 14,
               right: 14,
               child: Row(
                 children: [
-                  FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32),
+                  FunkyAvatar(seed: story.uid, label: author?.handle.isNotEmpty == true ? author!.handle : '?', size: 32),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: Text(
-                      story.anon ? 'anonymous' : '@${person.handle}',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          story.anon ? 'anonymous' : '@${author?.handle ?? '?'}',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                        ),
+                        Text(
+                          widget.placeName,
+                          style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ],
                     ),
                   ),
                   IconButton(
@@ -208,7 +208,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 ],
               ),
             ),
-            // Like button
             Positioned(
               bottom: 24,
               right: 18,

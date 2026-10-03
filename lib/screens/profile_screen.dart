@@ -4,6 +4,7 @@ import '../data/app_store.dart';
 import '../widgets/ui_widgets.dart';
 import 'friend_requests_screen.dart';
 import 'memories_screen.dart';
+import 'points_info_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -37,6 +38,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final store = context.watch<AppStore>();
 
     final friends = store.me.friends.length;
+    final title = store.myLevelTitle;
+    final badges = store.myBadges;
 
     // No AppBar of its own anymore — the root shell's shared AppBar now
     // carries the title, notification bell, and settings gear on every
@@ -49,12 +52,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Column(
             children: [
               FunkyAvatar(seed: store.me.id, label: store.me.handle.isNotEmpty ? store.me.handle : '?', size: 88),
-              TextField(
-                controller: _handleController,
-                onChanged: store.setHandle,
-                textAlign: TextAlign.center,
-                decoration: InputDecoration(hintText: 'Pick a screen name', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
-                style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: TextField(
+                      controller: _handleController,
+                      onChanged: store.setHandle,
+                      textAlign: TextAlign.center,
+                      decoration: InputDecoration(hintText: 'Pick a screen name', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
+                      style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
+                ],
               ),
               TextField(
                 controller: _bioController,
@@ -63,12 +74,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 decoration: InputDecoration(hintText: 'Add a bio', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
                 style: TextStyle(color: tokens.mute, fontSize: 14),
               ),
+              if (title != null) ...[
+                const SizedBox(height: 4),
+                Text('${title.emoji} ${title.title}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13)),
+              ],
+              if (badges.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: badges
+                      .map((b) => Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(999)),
+                            child: Text('${b.emoji} ${b.label}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12)),
+                          ))
+                      .toList(),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 10),
           Row(
             children: [
-              _Stat(label: 'Funky Points', value: store.me.points),
+              _Stat(
+                label: 'Funky Points · Lv ${store.level}',
+                value: store.me.points,
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen())),
+              ),
               _Stat(
                 label: 'Friends',
                 value: friends,

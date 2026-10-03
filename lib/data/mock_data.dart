@@ -61,7 +61,6 @@ Person _mkDemo(String id, String handle, String bio, String move, String session
     session: session,
     move: move,
     votes: const {},
-    reports: const {},
     seen: const [],
     likes: const [],
   );
@@ -104,7 +103,6 @@ Person freshMe() => Person(
       session: sessionKey(),
       move: null,
       votes: const {},
-      reports: const {},
       seen: const [],
       likes: const [],
     );

@@ -31,24 +31,87 @@ String placeKindLabel(PlaceKind kind) {
   }
 }
 
-class Report {
-  final int cover;
-  final bool cops;
-  final bool shut;
-  const Report({this.cover = 0, this.cops = false, this.shut = false});
+/// 8 unique confirmations flips a report from UNVERIFIED to VERIFIED — the
+/// person who posted it counts as the first confirmation.
+const int verificationThreshold = 8;
 
-  Report copyWith({int? cover, bool? cops, bool? shut}) => Report(
-        cover: cover ?? this.cover,
-        cops: cops ?? this.cops,
-        shut: shut ?? this.shut,
+enum ReportKind { cover, police, shutdown, line, capacity }
+
+String reportKindLabel(ReportKind kind) {
+  switch (kind) {
+    case ReportKind.cover:
+      return 'Cover charge';
+    case ReportKind.police:
+      return 'Police';
+    case ReportKind.shutdown:
+      return 'Shut down';
+    case ReportKind.line:
+      return 'Line / wait';
+    case ReportKind.capacity:
+      return 'At capacity';
+  }
+}
+
+/// A single crowd-sourced report about a place tonight — a cover charge, a
+/// police sighting, a shutdown, a line, or a capacity warning. Replaces the
+/// old one-Report-per-place model: this one tracks WHO has confirmed it (so
+/// the UI can show a real "confirmed by N people" count and flip to
+/// VERIFIED once 8 unique people back it up) instead of just overwriting
+/// one person's say-so. A new report for the same place+kind supersedes the
+/// old one and starts its own confirmation count from scratch — see
+/// AppStore.reportsFor, which only ever surfaces the newest one per kind.
+class PlaceReport {
+  final String id;
+  final String placeId;
+  final ReportKind kind;
+  // "$15" for cover, "20 min" for a line — null for police/shutdown/capacity,
+  // which are just "this is happening right now" taps with no extra detail.
+  final String? detail;
+  final int t;
+  final String reporterId;
+  final List<String> confirmedBy;
+
+  const PlaceReport({
+    required this.id,
+    required this.placeId,
+    required this.kind,
+    this.detail,
+    required this.t,
+    required this.reporterId,
+    required this.confirmedBy,
+  });
+
+  int get confirmations => confirmedBy.length;
+  bool get verified => confirmations >= verificationThreshold;
+
+  PlaceReport copyWith({List<String>? confirmedBy}) => PlaceReport(
+        id: id,
+        placeId: placeId,
+        kind: kind,
+        detail: detail,
+        t: t,
+        reporterId: reporterId,
+        confirmedBy: confirmedBy ?? this.confirmedBy,
       );
 
-  Map<String, dynamic> toJson() => {'cover': cover, 'cops': cops, 'shut': shut};
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'placeId': placeId,
+        'kind': kind.name,
+        'detail': detail,
+        't': t,
+        'reporterId': reporterId,
+        'confirmedBy': confirmedBy,
+      };
 
-  factory Report.fromJson(Map<String, dynamic> json) => Report(
-        cover: json['cover'] as int? ?? 0,
-        cops: json['cops'] as bool? ?? false,
-        shut: json['shut'] as bool? ?? false,
+  factory PlaceReport.fromJson(Map<String, dynamic> json) => PlaceReport(
+        id: json['id'] as String,
+        placeId: json['placeId'] as String,
+        kind: ReportKind.values.firstWhere((k) => k.name == json['kind'], orElse: () => ReportKind.cover),
+        detail: json['detail'] as String?,
+        t: json['t'] as int,
+        reporterId: json['reporterId'] as String,
+        confirmedBy: (json['confirmedBy'] as List).map((e) => e as String).toList(),
       );
 }
 
@@ -268,7 +331,7 @@ class Person {
   final int points;
   // Mutual friends — both people have to accept before either shows up here.
   // Friends can see each other's old Story posts on their profile; nobody
-  // else can. Survives the 4 PM reset, same as DMs (rule 3).
+  // else can. Survives the 2 PM reset, same as DMs (rule 3).
   final List<String> friends;
   final List<String> friendRequestsSent; // ids I've asked, awaiting their accept
   final List<String> friendRequestsReceived; // ids who've asked me, awaiting my accept
@@ -276,13 +339,27 @@ class Person {
   final bool anon;
   final bool demo;
 
-  // Tonight only — cleared by the 4 PM reset per rule 2.
+  // Tonight only — cleared by the 2 PM reset per rule 2.
   final String session;
   final String? move; // a place id, "in" (staying in), or null (hasn't picked)
   final Map<String, int> votes; // pollId -> option index
-  final Map<String, Report> reports; // placeId -> report
   final List<String> seen;
   final List<String> likes;
+
+  // --- FUNKY Points history — cumulative, survives the 2 PM reset same as
+  // friends/DMs (none of this is "tonight only"). See AppStore's points
+  // comment for exactly what earns what; these three fields are just the
+  // history those rules read and write.
+  //
+  // Every session key (YYYY-MM-DD) the person did at least one
+  // points-earning thing — powers the Night Owl badge and the activity
+  // streak bonus (see AppStore._recordNightActivity).
+  final List<String> activeNights;
+  // Current consecutive-night streak, recomputed alongside activeNights.
+  final int streak;
+  // Every distinct place id the person has ever marked themselves "going"
+  // to — powers the Explorer badge.
+  final List<String> placesVisited;
 
   const Person({
     required this.id,
@@ -299,9 +376,11 @@ class Person {
     required this.session,
     this.move,
     required this.votes,
-    required this.reports,
     required this.seen,
     required this.likes,
+    this.activeNights = const [],
+    this.streak = 0,
+    this.placesVisited = const [],
   });
 
   Person copyWith({
@@ -309,19 +388,22 @@ class Person {
     String? bio,
     String? move,
     Map<String, int>? votes,
-    Map<String, Report>? reports,
     String? session,
     List<String>? friends,
     List<String>? friendRequestsSent,
     List<String>? friendRequestsReceived,
     bool? anon,
+    int? points,
+    List<String>? activeNights,
+    int? streak,
+    List<String>? placesVisited,
   }) =>
       Person(
         id: id,
         handle: handle ?? this.handle,
         bio: bio ?? this.bio,
         since: since,
-        points: points,
+        points: points ?? this.points,
         friends: friends ?? this.friends,
         friendRequestsSent: friendRequestsSent ?? this.friendRequestsSent,
         friendRequestsReceived: friendRequestsReceived ?? this.friendRequestsReceived,
@@ -331,9 +413,11 @@ class Person {
         session: session ?? this.session,
         move: move ?? this.move,
         votes: votes ?? this.votes,
-        reports: reports ?? this.reports,
         seen: seen,
         likes: likes,
+        activeNights: activeNights ?? this.activeNights,
+        streak: streak ?? this.streak,
+        placesVisited: placesVisited ?? this.placesVisited,
       );
 
   Map<String, dynamic> toJson() => {
@@ -351,9 +435,11 @@ class Person {
         'session': session,
         'move': move,
         'votes': votes,
-        'reports': reports.map((k, v) => MapEntry(k, v.toJson())),
         'seen': seen,
         'likes': likes,
+        'activeNights': activeNights,
+        'streak': streak,
+        'placesVisited': placesVisited,
       };
 
   factory Person.fromJson(Map<String, dynamic> json) => Person(
@@ -371,8 +457,60 @@ class Person {
         session: json['session'] as String,
         move: json['move'] as String?,
         votes: (json['votes'] as Map).map((k, v) => MapEntry(k as String, v as int)),
-        reports: (json['reports'] as Map).map((k, v) => MapEntry(k as String, Report.fromJson(v as Map<String, dynamic>))),
         seen: (json['seen'] as List).map((e) => e as String).toList(),
         likes: (json['likes'] as List).map((e) => e as String).toList(),
+        activeNights: ((json['activeNights'] as List?) ?? const []).map((e) => e as String).toList(),
+        streak: json['streak'] as int? ?? 0,
+        placesVisited: ((json['placesVisited'] as List?) ?? const []).map((e) => e as String).toList(),
       );
 }
+
+/// One of the badges a user can earn by actually contributing (see
+/// AppStore.myBadges for the exact thresholds) — separate from the points
+/// level/title system. A user can earn many; which ones they show beside
+/// their name is a future profile-customization step, not decided here.
+class FunkyBadge {
+  final String emoji;
+  final String label;
+  const FunkyBadge(this.emoji, this.label);
+}
+
+/// One tier of the points-level title ladder (500 Reliable Source, 1000
+/// Verified Stud, … 10000 KING FUNKY) — purely cosmetic, separate from the
+/// 8-confirmation report-verification system and the 15-confirmation venue
+/// system.
+class LevelTitle {
+  final int threshold;
+  final String title;
+  final String emoji;
+  const LevelTitle(this.threshold, this.title, this.emoji);
+}
+
+const levelTitles = [
+  LevelTitle(10000, 'KING FUNKY', '👊'),
+  LevelTitle(9000, 'FUNKY Hall of Fame', '💎👑'),
+  LevelTitle(8000, 'Nightlife Legend', '🏆👑'),
+  LevelTitle(7000, 'FUNKY Royalty', '👑🔥'),
+  LevelTitle(6000, 'After Hours Legend', '🌙👑'),
+  LevelTitle(5000, 'FUNKY Elite', '🔥👑'),
+  LevelTitle(4000, 'Nightlife Veteran', '🎖️'),
+  LevelTitle(3000, 'Certified Menace', '😈'),
+  LevelTitle(2500, 'Party Animal', '🐴'),
+  LevelTitle(2000, 'Pro Drinker', '🍺'),
+  LevelTitle(1500, 'Night Owl', '🦉'),
+  LevelTitle(1000, 'Verified Stud', '😎'),
+  LevelTitle(500, 'Reliable Source', '✓'),
+];
+
+/// The highest title a point total qualifies for, or null below 500.
+LevelTitle? levelTitleFor(int points) {
+  for (final t in levelTitles) {
+    if (points >= t.threshold) return t;
+  }
+  return null;
+}
+
+/// A simple, ever-increasing level number from points — shown next to the
+/// title so progress still feels continuous between title tiers (every 250
+/// points is another level; 2,840 points is "Level 12").
+int levelFor(int points) => (points ~/ 250) + 1;

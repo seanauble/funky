@@ -44,9 +44,18 @@ class RankedPlace {
   final int going;
   final int heat; // 0-3
   final int score; // raw activity score the heat bucket and map glow are built from
-  final Report? cover;
+  // Newest report per kind for this place (cover/police/shutdown/line/
+  // capacity) — see AppStore.reportsFor. Empty map means nothing reported.
+  final Map<ReportKind, PlaceReport> reports;
 
-  RankedPlace({required this.place, required this.distance, required this.going, required this.heat, required this.score, this.cover});
+  RankedPlace({
+    required this.place,
+    required this.distance,
+    required this.going,
+    required this.heat,
+    required this.score,
+    this.reports = const {},
+  });
 
   String get id => place.id;
   String get name => place.name;
@@ -67,7 +76,7 @@ List<T> _dedupeById<T>(List<T> items, String Function(T) idOf) {
 }
 
 /// Ports the prototype's mock store (store.tsx in the Expo build) to a
-/// Flutter ChangeNotifier: same 4 PM reset logic (rule 2/3), same ranking
+/// Flutter ChangeNotifier: same 2 PM reset logic (rule 2/3), same ranking
 /// math, same actions — just Dart instead of TypeScript.
 class AppStore extends ChangeNotifier {
   bool loaded = false;
@@ -79,6 +88,120 @@ class AppStore extends ChangeNotifier {
   late List<Poll> polls;
   late List<ChatMessage> messages;
   late List<Story> stories;
+  // Every crowd-sourced report ever submitted tonight (cover/police/
+  // shutdown/line/capacity). Nothing is ever mutated in place — a new
+  // submission for the same place+kind just gets appended and supersedes
+  // the old one; see reportsFor, which is the only thing that reads this
+  // list directly.
+  List<PlaceReport> placeReports = [];
+
+  // Confirming a report from far away would make it trivially easy to sit
+  // at home and fake community support, so a real confirm (not a demo-seed
+  // one) requires being within this many miles of wherever location says
+  // you are right now.
+  static const double _confirmRadiusMiles = 2;
+
+  // Separate from report verification: this is "is this venue even real",
+  // confirmed by placeId -> the ids of everyone who's vouched for it. 15
+  // unique confirmations (vs. 8 for a report) is what lets a venue show up
+  // on the Home tab's trending carousel, story rings, and "what's the
+  // move" quick-picks — see AppStore.rankedPlaces callers in home_screen.
+  // The Places tab itself still lists everything, verified or not, so a
+  // brand-new venue can actually be found and confirmed in the first place.
+  Map<String, List<String>> placeConfirmations = {};
+  static const int venueVerificationThreshold = 15;
+
+  bool isPlaceVerified(String placeId) => (placeConfirmations[placeId]?.length ?? 0) >= venueVerificationThreshold;
+
+  int venueConfirmationCount(String placeId) => placeConfirmations[placeId]?.length ?? 0;
+
+  bool hasConfirmedPlace(String placeId) => placeConfirmations[placeId]?.contains('me') ?? false;
+
+  /// Vouches that [placeId] is a real, currently-active venue. Same
+  /// one-confirm-per-account rule as report confirmations.
+  String? confirmPlace(String placeId) {
+    final current = placeConfirmations[placeId] ?? const [];
+    if (current.contains('me')) return null;
+    placeConfirmations = {...placeConfirmations, placeId: [...current, 'me']};
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  // --- FUNKY Points ----------------------------------------------------
+  // The big idea: the biggest rewards come from contributing information
+  // that other people actually confirm, not from doing infinitely-repeatable
+  // things (chatting, liking, opening the app). Every call site below is
+  // the one place that action's reward is decided, so the whole table
+  // lives in one spot:
+  //   first night using FUNKY           +25  (load(), brand-new install)
+  //   mark yourself "going"             +3   (setMove, first pick of the night)
+  //   post a Story at a venue           +5   (addStory, when it's tied to a place)
+  //   submit a cover/line/capacity report +3 (submitReport)
+  //   submit a police/shutdown report   +5   (submitReport — higher-stakes info)
+  //   confirm someone else's report     +2   (confirmReport)
+  //   your report becomes Verified (8+) +15  (confirmReport, cover/line/capacity)
+  //   your shutdown/police becomes Verified +20 (confirmReport)
+  //   add a missing venue               +10  (addPlace)
+  //   3/7/30-night activity streak      +10/+30/+100 (_recordNightActivity)
+  // Inviting a friend who joins isn't wired up yet — there's no real invite
+  // link/backend for FUNKY to know an invite actually converted.
+  void _award(int n) {
+    me = me.copyWith(points: me.points + n);
+  }
+
+  /// Call from any action that should count as "being out tonight" —
+  /// tracks which nights (by session key) you've done at least one
+  /// qualifying thing, which drives both the Night Owl badge and the
+  /// streak bonus. Safe to call more than once per night (a no-op after
+  /// the first time).
+  void _recordNightActivity() {
+    final today = sessionKey();
+    if (me.activeNights.contains(today)) return;
+    int newStreak = 1;
+    if (me.activeNights.isNotEmpty) {
+      try {
+        final lastDay = DateTime.parse(me.activeNights.last);
+        final todayDate = DateTime.parse(today);
+        if (todayDate.difference(lastDay).inDays == 1) newStreak = me.streak + 1;
+      } catch (_) {
+        // Malformed stored date — just restart the streak rather than crash.
+      }
+    }
+    me = me.copyWith(activeNights: [...me.activeNights, today], streak: newStreak);
+    if (newStreak == 3) _award(10);
+    if (newStreak == 7) _award(30);
+    if (newStreak == 30) _award(100);
+  }
+
+  /// A simple, ever-increasing level number from points (every 250 points
+  /// is another level) — shown alongside the title so progress feels
+  /// continuous between title tiers.
+  int get level => levelFor(me.points);
+
+  /// The highest points-title tier you've reached (500 Reliable Source …
+  /// 10000 KING FUNKY), or null below 500. Purely cosmetic — separate from
+  /// report/venue verification.
+  LevelTitle? get myLevelTitle => levelTitleFor(me.points);
+
+  /// Earned by actually contributing and getting confirmed — see each
+  /// threshold for exactly what it takes. A user can earn all of these;
+  /// picking 1-3 to display is a future profile-customization step.
+  List<FunkyBadge> get myBadges {
+    final badges = <FunkyBadge>[];
+    if (me.activeNights.length >= 10) badges.add(const FunkyBadge('🔥', 'Night Owl'));
+    if (myStories.length >= 50) badges.add(const FunkyBadge('📸', 'Storyteller'));
+    final verifiedReports = placeReports.where((r) => r.reporterId == 'me' && r.verified).length;
+    if (verifiedReports >= 25) badges.add(const FunkyBadge('✓', 'Reliable Source'));
+    if (me.placesVisited.length >= 20) badges.add(const FunkyBadge('🗺️', 'Explorer'));
+    return badges;
+  }
+
+  /// The blue-check "this person's reports are worth trusting more"
+  /// signal — still doesn't skip the normal 8-confirmation report
+  /// verification, it just colors how much weight people give an
+  /// unverified report from this account.
+  bool get isVerifiedUser => me.points >= 1000 && myStories.length >= 10;
 
   LatLng? location;
   LocationStatus locationStatus = LocationStatus.unknown;
@@ -86,7 +209,7 @@ class AppStore extends ChangeNotifier {
   // Account — browsing FUNKY is always anonymous and free; you only need
   // one of these to post a Story/poll/place or send a message (see
   // requireAccountThen in lib/screens/account_screen.dart, which is what
-  // actually enforces that gate from the UI). Survives the 4 PM reset and
+  // actually enforces that gate from the UI). Survives the 2 PM reset and
   // app restarts, same as friends.
   String? accountEmail;
   String? _passwordHash;
@@ -125,6 +248,39 @@ class AppStore extends ChangeNotifier {
     if (people.containsKey('p3')) {
       people = {...people, 'p3': people['p3']!.copyWith(votes: const {'ac-best': 0})};
     }
+
+    // Demo seed so the reports UI isn't empty on a fresh install — one
+    // report that's already over the verification line and one that's
+    // still building confirmations, so both states are visible immediately.
+    placeReports = [
+      PlaceReport(
+        id: 'report_demo1',
+        placeId: 'sigchi',
+        kind: ReportKind.cover,
+        detail: '\$10',
+        t: DateTime.now().millisecondsSinceEpoch,
+        reporterId: 'p1',
+        confirmedBy: const ['p1', 'p2', 'p3', 'demo4', 'demo5', 'demo6', 'demo7', 'demo8'],
+      ),
+      PlaceReport(
+        id: 'report_demo2',
+        placeId: 'point',
+        kind: ReportKind.line,
+        detail: '20 min',
+        t: DateTime.now().millisecondsSinceEpoch,
+        reporterId: 'p3',
+        confirmedBy: const ['p3', 'p1'],
+      ),
+    ];
+
+    // Demo seed so the sample venues clear the 15-confirmation bar on a
+    // fresh install — otherwise Home's "verified venues only" surfaces
+    // (trending carousel, story rings, what's-the-move picks) would be
+    // empty until real people confirmed them, which is a bad first run.
+    placeConfirmations = {
+      for (final p in places)
+        p.id: List.generate(venueVerificationThreshold, (i) => 'demo_confirm_${p.id}_$i'),
+    };
   }
 
   Future<void> load() async {
@@ -140,6 +296,18 @@ class AppStore extends ChangeNotifier {
         final parsedPolls = (parsed['polls'] as List).map((e) => Poll.fromJson(e as Map<String, dynamic>)).toList();
         final parsedMessages = (parsed['messages'] as List).map((e) => ChatMessage.fromJson(e as Map<String, dynamic>)).toList();
         final parsedStories = (parsed['stories'] as List).map((e) => Story.fromJson(e as Map<String, dynamic>)).toList();
+        final parsedReports =
+            ((parsed['placeReports'] as List?) ?? const []).map((e) => PlaceReport.fromJson(e as Map<String, dynamic>)).toList();
+        // Which venues 'me' has personally vouched for — never tied to
+        // tonight's session, re-applied on top of the fresh demo seed below
+        // either way (a real confirm should never be lost on reload).
+        final myVenueConfirmations = ((parsed['myVenueConfirmations'] as List?) ?? const []).map((e) => e as String).toSet();
+        for (final placeId in myVenueConfirmations) {
+          final current = placeConfirmations[placeId] ?? const [];
+          if (!current.contains('me')) {
+            placeConfirmations = {...placeConfirmations, placeId: [...current, 'me']};
+          }
+        }
 
         // Account info is never tied to tonight's session — it survives
         // same as friends/DMs, read unconditionally either way below.
@@ -154,6 +322,7 @@ class AppStore extends ChangeNotifier {
           polls = _dedupeById([...polls, ...parsedPolls], (p) => p.id);
           messages = _dedupeById([...messages, ...parsedMessages], (m) => m.id);
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
+          placeReports = _dedupeById([...placeReports, ...parsedReports], (r) => r.id);
         } else {
           // Stale night — carry over only what survives the reset (rule 3).
           // Friends (and pending requests) stay, same as DMs — only the
@@ -172,12 +341,21 @@ class AppStore extends ChangeNotifier {
             session: currentSession,
             move: null,
             votes: const {},
-            reports: const {},
             seen: const [],
             likes: const [],
+            // Cumulative points history — never tied to tonight's session,
+            // same as points itself just above.
+            activeNights: parsedMe.activeNights,
+            streak: parsedMe.streak,
+            placesVisited: parsedMe.placesVisited,
           );
           justReset = true;
         }
+      } else {
+        // Nothing saved yet — this is a brand-new install, worth the
+        // "First night using FUNKY" bonus (see the points comment on
+        // _award below).
+        _award(25);
       }
     } catch (_) {
       // Corrupt or missing storage — just start fresh, same as a new install.
@@ -198,6 +376,8 @@ class AppStore extends ChangeNotifier {
         'polls': polls.where((p) => p.by == 'me').map((p) => p.toJson()).toList(),
         'messages': messages.where((m) => m.uid == 'me').map((m) => m.toJson()).toList(),
         'stories': stories.where((s) => s.uid == 'me').map((s) => s.toJson()).toList(),
+        'placeReports': placeReports.where((r) => r.reporterId == 'me').map((r) => r.toJson()).toList(),
+        'myVenueConfirmations': placeConfirmations.entries.where((e) => e.value.contains('me')).map((e) => e.key).toList(),
         'accountEmail': accountEmail,
         'passwordHash': _passwordHash,
         'passwordSalt': _passwordSalt,
@@ -246,17 +426,50 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<RankedPlace> get rankedPlaces {
-    final here = location ?? defaultLocation;
+  List<RankedPlace> get rankedPlaces => rankedPlacesFrom(location ?? defaultLocation);
+
+  /// [rankedPlaces] filtered to venues that have cleared the 15-confirmation
+  /// bar (see placeConfirmations) — what Home's trending carousel, story
+  /// rings, and "what's the move" quick-picks show, so an unverified venue
+  /// can't dominate the app's main surfaces. The Places tab deliberately
+  /// uses the unfiltered [rankedPlaces] instead, since that's where a new
+  /// venue has to be found and confirmed in the first place.
+  List<RankedPlace> get verifiedRankedPlaces => rankedPlaces.where((p) => isPlaceVerified(p.id)).toList();
+
+  /// The newest report per [ReportKind] for a place — a fresh submission
+  /// always supersedes the previous one for that same kind (and starts its
+  /// own confirmation count from scratch), so this is the only place that
+  /// should ever read [placeReports] directly.
+  Map<ReportKind, PlaceReport> reportsFor(String placeId) {
+    final mine = placeReports.where((r) => r.placeId == placeId).toList()..sort((a, b) => a.t.compareTo(b.t));
+    final out = <ReportKind, PlaceReport>{};
+    for (final r in mine) {
+      out[r.kind] = r; // later (newer) entries overwrite earlier ones
+    }
+    return out;
+  }
+
+  /// Same ranking as [rankedPlaces] (activity first, then "going", then
+  /// distance), but relative to an arbitrary [center] instead of your real
+  /// location — what the Places map's "Search this area" uses to re-rank
+  /// and re-filter around wherever you've panned to, without touching what
+  /// "near you" means anywhere else in the app.
+  List<RankedPlace> rankedPlacesFrom(LatLng center) {
     final allPeople = {...people, 'me': me};
-    final result = places.where((p) => near(here, LatLng(p.lat, p.lng))).map((p) {
+    final result = places.where((p) => near(center, LatLng(p.lat, p.lng))).map((p) {
       final going = allPeople.values.where((person) => person.move == p.id).length;
       final roomMsgCount = messages.where((m) => m.room == p.id).length;
       final storyCount = stories.where((s) => s.place == p.id).length;
       final score = going * 3 + roomMsgCount + storyCount * 2;
       final heat = score >= 12 ? 3 : (score >= 5 ? 2 : (score >= 1 ? 1 : 0));
-      final cover = me.reports[p.id];
-      return RankedPlace(place: p, distance: milesBetween(here, LatLng(p.lat, p.lng)), going: going, heat: heat, score: score, cover: cover);
+      return RankedPlace(
+        place: p,
+        distance: milesBetween(center, LatLng(p.lat, p.lng)),
+        going: going,
+        heat: heat,
+        score: score,
+        reports: reportsFor(p.id),
+      );
     }).toList();
     result.sort((a, b) {
       if (a.heat != b.heat) return b.heat.compareTo(a.heat);
@@ -395,7 +608,14 @@ class AppStore extends ChangeNotifier {
   }
 
   void setMove(String placeIdOrIn) {
-    me = me.copyWith(move: placeIdOrIn);
+    final isFirstPickTonight = me.move == null;
+    var visited = me.placesVisited;
+    if (placeIdOrIn != 'in' && !visited.contains(placeIdOrIn)) {
+      visited = [...visited, placeIdOrIn];
+    }
+    me = me.copyWith(move: placeIdOrIn, placesVisited: visited);
+    if (isFirstPickTonight) _award(3); // "vote where you're going"
+    _recordNightActivity();
     notifyListeners();
     _persist();
   }
@@ -435,6 +655,8 @@ class AppStore extends ChangeNotifier {
       session: sessionKey(),
     );
     places = [...places, place];
+    _award(10); // "add a missing venue"
+    _recordNightActivity();
     notifyListeners();
     _persist();
     return place;
@@ -490,6 +712,8 @@ class AppStore extends ChangeNotifier {
       likes: const [],
     );
     stories = [...stories, story];
+    if (place != 'main') _award(5); // "post a Story at a venue"
+    _recordNightActivity();
     notifyListeners();
     _persist();
   }
@@ -529,13 +753,71 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
-  void reportPlace(String placeId, {int? cover, bool? cops, bool? shut}) {
-    final current = me.reports[placeId] ?? const Report();
-    final updated = current.copyWith(cover: cover, cops: cops, shut: shut);
-    final reports = {...me.reports, placeId: updated};
-    me = me.copyWith(reports: reports);
+  /// Submits a brand-new report for a place — cover charge, police,
+  /// shutdown, line, or capacity. This always starts a fresh
+  /// [PlaceReport] (it supersedes whatever was there before for that
+  /// kind — see reportsFor) rather than editing one in place, because a
+  /// verified report shouldn't be able to drift stale: new info has to
+  /// re-earn its own 8 confirmations. The reporter counts as the first
+  /// confirmation, per the spec.
+  PlaceReport submitReport(String placeId, ReportKind kind, {String? detail}) {
+    final report = PlaceReport(
+      id: 'report_${DateTime.now().millisecondsSinceEpoch}',
+      placeId: placeId,
+      kind: kind,
+      detail: detail,
+      t: DateTime.now().millisecondsSinceEpoch,
+      reporterId: 'me',
+      confirmedBy: const ['me'],
+    );
+    placeReports = [...placeReports, report];
+    // Police/shutdown reports are higher-stakes than a cover charge or a
+    // line length, so submitting one is worth a bit more.
+    _award(kind == ReportKind.police || kind == ReportKind.shutdown ? 5 : 3);
+    _recordNightActivity();
     notifyListeners();
     _persist();
+    return report;
+  }
+
+  /// Confirms an existing report as 'me'. Returns null on success, or a
+  /// user-facing error string if the confirm didn't go through (already
+  /// confirmed, or too far from the place to confirm it — see
+  /// _confirmRadiusMiles). A user can only confirm a given report once.
+  String? confirmReport(String reportId) {
+    final i = placeReports.indexWhere((r) => r.id == reportId);
+    if (i == -1) return "Couldn't find that report.";
+    final report = placeReports[i];
+    if (report.confirmedBy.contains('me')) return null; // already confirmed — no-op
+
+    Place? place;
+    for (final p in places) {
+      if (p.id == report.placeId) {
+        place = p;
+        break;
+      }
+    }
+    if (location != null && place != null) {
+      final distance = milesBetween(location!, LatLng(place.lat, place.lng));
+      if (distance > _confirmRadiusMiles) {
+        return "You're too far from this spot to confirm it — get closer and try again.";
+      }
+    }
+
+    final updated = report.copyWith(confirmedBy: [...report.confirmedBy, 'me']);
+    placeReports = [...placeReports]..[i] = updated;
+
+    if (report.reporterId != 'me') _award(2); // "confirm someone else's report"
+    // The verification bonus goes to whoever posted it, and only when this
+    // confirm is what actually pushed it over the line (never re-awarded
+    // for every confirm after the 8th).
+    if (!report.verified && updated.verified && report.reporterId == 'me') {
+      _award(report.kind == ReportKind.police || report.kind == ReportKind.shutdown ? 20 : 15);
+    }
+    _recordNightActivity();
+    notifyListeners();
+    _persist();
+    return null;
   }
 
   void dismissResetBanner() {

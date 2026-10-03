@@ -32,7 +32,7 @@ class PrivacyPolicyScreen extends StatelessWidget {
         InfoSection(
           'What gets deleted',
           'Most activity — chat, Stories, poll votes, place reports, who\'s "going" where — is wiped every day '
-              'at 4 PM, by design. Your screen name, bio, points, and friends list are not wiped.',
+              'at 2 PM, by design. Your screen name, bio, points, and friends list are not wiped.',
         ),
         InfoSection(
           'Your choices',

@@ -53,7 +53,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       padding: const EdgeInsets.all(16),
                       children: const [
                         EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
-                        FootNote(text: 'Private messages and friends stay. Everything else is wiped at 4 PM.'),
+                        FootNote(text: 'Private messages and friends stay. Everything else is wiped at 2 PM.'),
                       ],
                     )
                   : store.location == null

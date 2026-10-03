@@ -5,7 +5,7 @@ import '../widgets/ui_widgets.dart';
 // deliberately not pulling in package_info_plus just to read it back, since
 // every extra dependency is one more thing that can break the iOS build.
 const _appVersion = '1.0.0';
-const _appBuild = '6';
+const _appBuild = '7';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
@@ -19,7 +19,7 @@ class AboutScreen extends StatelessWidget {
         InfoSection(
           'What it is',
           'FUNKY shows you what\'s happening within 25 miles of you right now — places, polls, live chat, and '
-              'Stories — and clears most of it every day at 4 PM so it always feels like tonight, not a feed '
+              'Stories — and clears most of it every day at 2 PM so it always feels like tonight, not a feed '
               'of old posts.',
         ),
         InfoSection(

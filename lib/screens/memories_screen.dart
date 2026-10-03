@@ -26,7 +26,7 @@ class MemoriesScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           Text(
-            'A private archive of your own Stories. Friends, DMs, and this page survive the 4 PM reset — nobody else can see it.',
+            'A private archive of your own Stories. Friends, DMs, and this page survive the 2 PM reset — nobody else can see it.',
             style: TextStyle(color: tokens.mute),
           ),
           const SizedBox(height: 16),
