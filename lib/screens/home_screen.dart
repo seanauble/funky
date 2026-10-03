@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/session.dart' as session;
+import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/poll_bars.dart';
 import '../widgets/ui_widgets.dart';
@@ -99,7 +100,7 @@ class HomeScreen extends StatelessWidget {
             )
           else
             SizedBox(
-              height: 128,
+              height: 138,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: store.rankedPlaces.take(8).map((p) {

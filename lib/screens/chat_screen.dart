@@ -5,7 +5,12 @@ import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  /// The room to open directly into — a place's id for that place's chat,
+  /// or omitted/'main' for Area chat. Lets "Open this place's chat" on the
+  /// place detail screen land in that place's room instead of always
+  /// falling back to the one shared area chat.
+  final String? initialRoom;
+  const ChatScreen({super.key, this.initialRoom});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -13,9 +18,15 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   int _segment = 0; // 0 = area, 1 = dms
-  String _room = 'main';
+  late String _room;
   final _draftController = TextEditingController();
   bool _anon = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _room = widget.initialRoom ?? 'main';
+  }
 
   @override
   void dispose() {

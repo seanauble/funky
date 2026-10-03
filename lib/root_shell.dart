@@ -39,7 +39,14 @@ class _RootShellState extends State<RootShell> {
           : AppBar(
               backgroundColor: tokens.bg,
               elevation: 0,
-              title: Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+              title: _index == 0
+                  ? Image.asset(
+                      'assets/branding/funky_wordmark.png',
+                      height: 30,
+                      fit: BoxFit.contain,
+                      alignment: Alignment.centerLeft,
+                    )
+                  : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
             ),
       body: SafeArea(bottom: false, child: IndexedStack(index: _index, children: _screens)),
       bottomNavigationBar: _TabBar(

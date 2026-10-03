@@ -16,9 +16,10 @@ class RankedPlace {
   final double distance;
   final int going;
   final int heat; // 0-3
+  final int score; // raw activity score the heat bucket and map glow are built from
   final Report? cover;
 
-  RankedPlace({required this.place, required this.distance, required this.going, required this.heat, this.cover});
+  RankedPlace({required this.place, required this.distance, required this.going, required this.heat, required this.score, this.cover});
 
   String get id => place.id;
   String get name => place.name;
@@ -185,7 +186,7 @@ class AppStore extends ChangeNotifier {
       final score = going * 3 + roomMsgCount + storyCount * 2;
       final heat = score >= 12 ? 3 : (score >= 5 ? 2 : (score >= 1 ? 1 : 0));
       final cover = me.reports[p.id];
-      return RankedPlace(place: p, distance: milesBetween(here, LatLng(p.lat, p.lng)), going: going, heat: heat, cover: cover);
+      return RankedPlace(place: p, distance: milesBetween(here, LatLng(p.lat, p.lng)), going: going, heat: heat, score: score, cover: cover);
     }).toList();
     result.sort((a, b) {
       if (a.heat != b.heat) return b.heat.compareTo(a.heat);

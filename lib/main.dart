@@ -80,7 +80,19 @@ class _AppRoot extends StatelessWidget {
     final store = context.watch<AppStore>();
     if (!store.loaded) {
       final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-      return Scaffold(backgroundColor: tokens.bg, body: const SizedBox.shrink());
+      return Scaffold(
+        backgroundColor: tokens.bg,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset('assets/branding/funky_mark.png', width: 88, height: 88),
+              const SizedBox(height: 14),
+              Image.asset('assets/branding/funky_wordmark.png', width: 160),
+            ],
+          ),
+        ),
+      );
     }
     return const Stack(
       children: [

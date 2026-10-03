@@ -26,15 +26,15 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    RankedPlace? place;
+    RankedPlace? found;
     for (final p in store.rankedPlaces) {
       if (p.id == widget.placeId) {
-        place = p;
+        found = p;
         break;
       }
     }
 
-    if (place == null) {
+    if (found == null) {
       return Scaffold(
         backgroundColor: tokens.bg,
         appBar: AppBar(backgroundColor: tokens.bg),
@@ -45,6 +45,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       );
     }
 
+    final place = found;
     final going = store.me.move == place.id;
 
     return Scaffold(
@@ -157,7 +158,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           const SizedBox(height: 20),
           Center(
             child: TextButton(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatScreen())),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(initialRoom: place.id))),
               child: Text("Open this place's chat →", style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700)),
             ),
           ),

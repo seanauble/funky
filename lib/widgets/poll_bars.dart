@@ -35,9 +35,12 @@ class PollBars extends StatelessWidget {
               child: Stack(
                 alignment: Alignment.centerLeft,
                 children: [
-                  FractionallySizedBox(
-                    widthFactor: widthPct / 100,
-                    child: Container(height: double.infinity, color: color.withValues(alpha: 0.35)),
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      widthFactor: widthPct / 100,
+                      alignment: Alignment.centerLeft,
+                      child: Container(color: color.withValues(alpha: 0.35)),
+                    ),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
