@@ -9,6 +9,7 @@ import '../widgets/ui_widgets.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
 import 'chat_screen.dart';
+import 'story_viewer_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -34,6 +35,10 @@ class HomeScreen extends StatelessWidget {
     }
 
     final covered = store.rankedPlaces.where((p) => p.cover != null && p.cover!.cover > 0).toList();
+    // Who's actually posted a Story tonight (not "who's standing at a place
+    // that happens to have stories" — that mismatch was why rings used to
+    // show up for the wrong people and did nothing when tapped).
+    final storytellerIds = <String>{for (final s in store.stories) s.uid}..remove('me');
     final areaMessages = store.messagesFor('main');
     final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
 
@@ -53,9 +58,15 @@ class HomeScreen extends StatelessWidget {
                   seed: store.me.id,
                   onTap: () => showCreateSheet(context),
                 ),
-                ...store.people.values.where((p) => store.storiesFor(p.move ?? '').isNotEmpty).map(
-                      (p) => _StoryRing(label: p.handle, seed: p.id),
-                    ),
+                ...storytellerIds.map((uid) {
+                  final person = store.personById(uid);
+                  if (person == null) return const SizedBox.shrink();
+                  return _StoryRing(
+                    label: person.handle,
+                    seed: person.id,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personId: uid))),
+                  );
+                }),
               ],
             ),
           ),
@@ -232,6 +243,7 @@ class _StoryRing extends StatelessWidget {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return GestureDetector(
       onTap: onTap,
+      behavior: HitTestBehavior.opaque,
       child: Container(
         width: 72,
         margin: const EdgeInsets.only(right: 8),
@@ -263,7 +275,7 @@ class _StoryRing extends StatelessWidget {
                         shape: BoxShape.circle,
                         border: Border.all(color: tokens.bg, width: 2.5),
                       ),
-                      child: const Text('+', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14)),
+                      child: const Icon(Icons.camera_alt, color: Colors.white, size: 13),
                     ),
                   ),
               ],

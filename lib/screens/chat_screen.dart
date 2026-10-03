@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
+import 'person_profile_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   /// The room to open directly into — a place's id for that place's chat,
@@ -164,12 +165,23 @@ class _AreaChat extends StatelessWidget {
         const SizedBox(height: 10),
         ...msgs.map((m) {
           final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
+          Widget nameLine;
+          if (m.anon) {
+            nameLine = Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12));
+          } else if (m.uid == 'me') {
+            nameLine = FunkyHandle(handle: handle);
+          } else {
+            nameLine = GestureDetector(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: m.uid))),
+              child: FunkyHandle(handle: handle),
+            );
+          }
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                m.anon ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12)) : FunkyHandle(handle: handle),
+                nameLine,
                 const SizedBox(height: 2),
                 Text(m.text, style: TextStyle(color: tokens.ink)),
               ],

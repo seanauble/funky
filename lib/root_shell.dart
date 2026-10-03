@@ -84,6 +84,7 @@ class _TabBar extends StatelessWidget {
               child: Center(
                 child: GestureDetector(
                   onTap: () => onTap(2),
+                  behavior: HitTestBehavior.opaque,
                   child: Container(
                     width: 50,
                     height: 50,
@@ -92,7 +93,7 @@ class _TabBar extends StatelessWidget {
                       shape: BoxShape.circle,
                       boxShadow: [BoxShadow(color: tokens.brand.withValues(alpha: 0.45), blurRadius: 10, offset: const Offset(0, 4))],
                     ),
-                    child: const Icon(Icons.add, color: Colors.white, size: 26),
+                    child: const Icon(Icons.camera_alt, color: Colors.white, size: 24),
                   ),
                 ),
               ),

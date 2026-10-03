@@ -239,7 +239,12 @@ class Person {
   final String bio;
   final int since;
   final int points;
-  final List<String> following;
+  // Mutual friends — both people have to accept before either shows up here.
+  // Friends can see each other's old Story posts on their profile; nobody
+  // else can. Survives the 4 PM reset, same as DMs (rule 3).
+  final List<String> friends;
+  final List<String> friendRequestsSent; // ids I've asked, awaiting their accept
+  final List<String> friendRequestsReceived; // ids who've asked me, awaiting my accept
   final List<String> muted;
   final bool anon;
   final bool demo;
@@ -258,7 +263,9 @@ class Person {
     required this.bio,
     required this.since,
     required this.points,
-    required this.following,
+    required this.friends,
+    required this.friendRequestsSent,
+    required this.friendRequestsReceived,
     required this.muted,
     required this.anon,
     this.demo = false,
@@ -277,6 +284,10 @@ class Person {
     Map<String, int>? votes,
     Map<String, Report>? reports,
     String? session,
+    List<String>? friends,
+    List<String>? friendRequestsSent,
+    List<String>? friendRequestsReceived,
+    bool? anon,
   }) =>
       Person(
         id: id,
@@ -284,9 +295,11 @@ class Person {
         bio: bio ?? this.bio,
         since: since,
         points: points,
-        following: following,
+        friends: friends ?? this.friends,
+        friendRequestsSent: friendRequestsSent ?? this.friendRequestsSent,
+        friendRequestsReceived: friendRequestsReceived ?? this.friendRequestsReceived,
         muted: muted,
-        anon: anon,
+        anon: anon ?? this.anon,
         demo: demo,
         session: session ?? this.session,
         move: move ?? this.move,
@@ -302,7 +315,9 @@ class Person {
         'bio': bio,
         'since': since,
         'points': points,
-        'following': following,
+        'friends': friends,
+        'friendRequestsSent': friendRequestsSent,
+        'friendRequestsReceived': friendRequestsReceived,
         'muted': muted,
         'anon': anon,
         'demo': demo,
@@ -320,7 +335,9 @@ class Person {
         bio: json['bio'] as String,
         since: json['since'] as int,
         points: json['points'] as int,
-        following: (json['following'] as List).map((e) => e as String).toList(),
+        friends: ((json['friends'] as List?) ?? const []).map((e) => e as String).toList(),
+        friendRequestsSent: ((json['friendRequestsSent'] as List?) ?? const []).map((e) => e as String).toList(),
+        friendRequestsReceived: ((json['friendRequestsReceived'] as List?) ?? const []).map((e) => e as String).toList(),
         muted: (json['muted'] as List).map((e) => e as String).toList(),
         anon: json['anon'] as bool,
         demo: json['demo'] as bool? ?? false,

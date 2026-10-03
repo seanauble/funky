@@ -70,6 +70,17 @@ class AppStore extends ChangeNotifier {
     polls = samplePolls(session);
     messages = sampleMessages();
     stories = sampleStories(session);
+
+    // Demo seed so Friends isn't empty on a fresh install: p1 is already a
+    // friend (their Stories show unlocked), p2 has a pending request waiting
+    // on you (so the notification bell has something to show immediately).
+    me = me.copyWith(friends: const ['p1'], friendRequestsReceived: const ['p2']);
+    if (people.containsKey('p1')) {
+      people = {...people, 'p1': people['p1']!.copyWith(friends: const ['me'])};
+    }
+    if (people.containsKey('p2')) {
+      people = {...people, 'p2': people['p2']!.copyWith(friendRequestsSent: const ['me'])};
+    }
   }
 
   Future<void> load() async {
@@ -94,13 +105,17 @@ class AppStore extends ChangeNotifier {
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
         } else {
           // Stale night — carry over only what survives the reset (rule 3).
+          // Friends (and pending requests) stay, same as DMs — only the
+          // tonight-only stuff (move, votes, reports) gets wiped.
           me = Person(
             id: parsedMe.id,
             handle: parsedMe.handle,
             bio: parsedMe.bio,
             since: parsedMe.since,
             points: parsedMe.points,
-            following: parsedMe.following,
+            friends: parsedMe.friends,
+            friendRequestsSent: parsedMe.friendRequestsSent,
+            friendRequestsReceived: parsedMe.friendRequestsReceived,
             muted: parsedMe.muted,
             anon: parsedMe.anon,
             session: currentSession,
@@ -220,6 +235,97 @@ class AppStore extends ChangeNotifier {
     return mine;
   }
 
+  /// Every Story a given person has posted (newest first) — used on their
+  /// profile. The caller decides whether to actually show these; see
+  /// canSeeStoriesOf below for the friends-only gate.
+  List<Story> storiesByUser(String uid) {
+    final theirs = stories.where((s) => s.uid == uid).toList();
+    theirs.sort((a, b) => b.t.compareTo(a.t));
+    return theirs;
+  }
+
+  /// Looks a person up by id, including 'me' (who isn't in the people map).
+  Person? personById(String id) => id == 'me' ? me : people[id];
+
+  bool isFriendsWith(String personId) => personId == 'me' || me.friends.contains(personId);
+
+  bool hasSentRequestTo(String personId) => me.friendRequestsSent.contains(personId);
+
+  bool hasRequestFrom(String personId) => me.friendRequestsReceived.contains(personId);
+
+  /// Friends-only gate for "old Stories" on someone's profile (your own
+  /// profile is always visible to you).
+  bool canSeeStoriesOf(String personId) => isFriendsWith(personId);
+
+  List<Person> get incomingFriendRequests =>
+      me.friendRequestsReceived.map(personById).whereType<Person>().toList();
+
+  List<Person> get outgoingFriendRequests =>
+      me.friendRequestsSent.map(personById).whereType<Person>().toList();
+
+  int get pendingFriendRequestCount => me.friendRequestsReceived.length;
+
+  void sendFriendRequest(String personId) {
+    if (personId == 'me' || isFriendsWith(personId) || hasSentRequestTo(personId)) return;
+    me = me.copyWith(friendRequestsSent: [...me.friendRequestsSent, personId]);
+    final them = people[personId];
+    if (them != null) {
+      people = {...people, personId: them.copyWith(friendRequestsReceived: [...them.friendRequestsReceived, 'me'])};
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  void cancelFriendRequest(String personId) {
+    me = me.copyWith(friendRequestsSent: me.friendRequestsSent.where((id) => id != personId).toList());
+    final them = people[personId];
+    if (them != null) {
+      people = {...people, personId: them.copyWith(friendRequestsReceived: them.friendRequestsReceived.where((id) => id != 'me').toList())};
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  void acceptFriendRequest(String personId) {
+    if (!me.friendRequestsReceived.contains(personId)) return;
+    me = me.copyWith(
+      friendRequestsReceived: me.friendRequestsReceived.where((id) => id != personId).toList(),
+      friends: [...me.friends, personId],
+    );
+    final them = people[personId];
+    if (them != null) {
+      people = {
+        ...people,
+        personId: them.copyWith(
+          friendRequestsSent: them.friendRequestsSent.where((id) => id != 'me').toList(),
+          friends: [...them.friends, 'me'],
+        ),
+      };
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  void declineFriendRequest(String personId) {
+    me = me.copyWith(friendRequestsReceived: me.friendRequestsReceived.where((id) => id != personId).toList());
+    final them = people[personId];
+    if (them != null) {
+      people = {...people, personId: them.copyWith(friendRequestsSent: them.friendRequestsSent.where((id) => id != 'me').toList())};
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  void removeFriend(String personId) {
+    me = me.copyWith(friends: me.friends.where((id) => id != personId).toList());
+    final them = people[personId];
+    if (them != null) {
+      people = {...people, personId: them.copyWith(friends: them.friends.where((id) => id != 'me').toList())};
+    }
+    notifyListeners();
+    _persist();
+  }
+
   void setHandle(String handle) {
     me = me.copyWith(handle: handle);
     notifyListeners();
@@ -228,6 +334,12 @@ class AppStore extends ChangeNotifier {
 
   void setBio(String bio) {
     me = me.copyWith(bio: bio);
+    notifyListeners();
+    _persist();
+  }
+
+  void setAnon(bool value) {
+    me = me.copyWith(anon: value);
     notifyListeners();
     _persist();
   }

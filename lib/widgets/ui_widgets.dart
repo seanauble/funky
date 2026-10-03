@@ -138,6 +138,48 @@ class FunkyHandle extends StatelessWidget {
   }
 }
 
+/// One heading + paragraph pair on an InfoScreen (Privacy Policy, Terms,
+/// About — anything that's just static text in Settings).
+class InfoSection {
+  final String heading;
+  final String body;
+  const InfoSection(this.heading, this.body);
+}
+
+/// A plain scrollable title + sections page, shared by the static Settings
+/// screens (Privacy Policy, Terms & Conditions, About) so they all look and
+/// scroll the same way.
+class InfoScreen extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final List<InfoSection> sections;
+  const InfoScreen({super.key, required this.title, this.subtitle, required this.sections});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: Text(title)),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          if (subtitle != null) ...[
+            Text(subtitle!, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+            const SizedBox(height: 18),
+          ],
+          for (final s in sections) ...[
+            Text(s.heading, style: TextStyle(color: tokens.ink, fontSize: 15.5, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Text(s.body, style: TextStyle(color: tokens.mute, fontSize: 14, height: 1.45)),
+            const SizedBox(height: 20),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// A ThemeExtension wrapper so every widget can reach FUNKY's own color
 /// tokens (ported straight from the prototype's CSS) through the normal
 /// Theme.of(context) lookup, instead of plumbing them through as params.

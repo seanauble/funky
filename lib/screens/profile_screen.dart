@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
-import '../theme/theme_provider.dart';
 import '../widgets/ui_widgets.dart';
+import 'friend_requests_screen.dart';
 import 'memories_screen.dart';
+import 'settings_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -35,16 +36,52 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final themeProvider = context.watch<ThemeProvider>();
 
-    const friends = 0; // mutual follows — real once DMs/friends are wired to a backend
-    final following = store.me.following.length;
-    const followers = 0;
+    final friends = store.me.friends.length;
+    final pendingRequests = store.pendingFriendRequestCount;
 
-    return Container(
-      color: tokens.bg,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      appBar: AppBar(
+        backgroundColor: tokens.bg,
+        elevation: 0,
+        title: Text('Profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+        actions: [
+          IconButton(
+            tooltip: 'Friend requests',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen())),
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(Icons.notifications_none, color: tokens.ink),
+                if (pendingRequests > 0)
+                  Positioned(
+                    right: -2,
+                    top: -2,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 1.5)),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '$pendingRequests',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+            icon: Icon(Icons.settings_outlined, color: tokens.ink),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
         children: [
           Column(
             children: [
@@ -69,9 +106,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Row(
             children: [
               _Stat(label: 'Funky Points', value: store.me.points),
-              _Stat(label: 'Friends', value: friends),
-              _Stat(label: 'Following', value: following),
-              _Stat(label: 'Followers', value: followers),
+              _Stat(
+                label: 'Friends',
+                value: friends,
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen())),
+              ),
             ],
           ),
           InkWell(
@@ -88,31 +127,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
           ),
-          const SectionHeader(title: 'Appearance'),
-          Container(
-            padding: const EdgeInsets.all(3),
-            margin: const EdgeInsets.only(bottom: 8),
-            decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-            child: Row(
-              children: ThemePreference.values.map((opt) {
-                final active = themeProvider.preference == opt;
-                return Expanded(
-                  child: GestureDetector(
-                    onTap: () => themeProvider.setPreference(opt),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      decoration: BoxDecoration(color: active ? tokens.surface : null, borderRadius: BorderRadius.circular(8)),
-                      alignment: Alignment.center,
-                      child: Text(
-                        opt.name[0].toUpperCase() + opt.name.substring(1),
-                        style: TextStyle(color: active ? tokens.ink : tokens.mute, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
           const SectionHeader(title: 'Privacy'),
           FunkyCard(
             child: Row(
@@ -127,7 +141,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                 ),
-                Switch(value: store.me.anon, onChanged: (_) {}, activeTrackColor: tokens.brand),
+                Switch(value: store.me.anon, onChanged: store.setAnon, activeTrackColor: tokens.brand),
               ],
             ),
           ),
@@ -140,17 +154,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
 class _Stat extends StatelessWidget {
   final String label;
   final int value;
-  const _Stat({required this.label, required this.value});
+  final VoidCallback? onTap;
+  const _Stat({required this.label, required this.value, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Expanded(
-      child: Column(
-        children: [
-          Text('$value', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 20)),
-          Text(label, style: TextStyle(color: tokens.mute, fontSize: 12)),
-        ],
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          children: [
+            Text('$value', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 20)),
+            Text(label, style: TextStyle(color: tokens.mute, fontSize: 12)),
+          ],
+        ),
       ),
     );
   }
