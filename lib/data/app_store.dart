@@ -61,6 +61,7 @@ class RankedPlace {
   String get name => place.name;
   PlaceKind get kind => place.kind;
   String get address => place.address;
+  String? get coverPhotoPath => place.coverPhotoPath;
 }
 
 List<T> _dedupeById<T>(List<T> items, String Function(T) idOf) {
@@ -750,7 +751,44 @@ class AppStore extends ChangeNotifier {
     return counts;
   }
 
-  Place addPlace(String name, PlaceKind kind, String address) {
+  /// One place add per day (same 2 PM rolling reset as everything else) —
+  /// keeps the map from getting spammed with duplicate/fake venues. true
+  /// means the slot is still open tonight.
+  bool get canAddPlaceToday => !places.any((p) => p.by == 'me' && p.session == sessionKey());
+
+  /// Same one-per-day rule as places, for polls.
+  bool get canAddPollToday => !polls.any((p) => p.by == 'me' && p.session == sessionKey());
+
+  // Lowercased, letters/digits-only — so "Sigma Chi", "sigma-chi!", and
+  // "Sigma  Chi" all collapse to the same key before comparing names.
+  String _normalizedPlaceName(String s) => s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+  /// The existing place within the 25-mile radius (same radius
+  /// [rankedPlacesFrom] uses — "nearby" always means the same thing) whose
+  /// name looks like a duplicate of [name], or null if there isn't one.
+  /// Lets the Add Place form warn before you even try to submit, and
+  /// backstops [addPlace] itself in case something slips past that check.
+  Place? similarNearbyPlace(String name) {
+    final target = _normalizedPlaceName(name);
+    if (target.isEmpty) return null;
+    final here = location ?? defaultLocation;
+    for (final p in places) {
+      if (!near(here, LatLng(p.lat, p.lng))) continue;
+      final existing = _normalizedPlaceName(p.name);
+      if (existing.isEmpty) continue;
+      if (existing == target || existing.contains(target) || target.contains(existing)) return p;
+    }
+    return null;
+  }
+
+  /// Returns the new place, or null if you've already added one today (see
+  /// [canAddPlaceToday]) or a nearby place with a similar name already
+  /// exists (see [similarNearbyPlace]). Callers should check both first so
+  /// they can disable the "Add place" button instead of only finding out
+  /// after.
+  Place? addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath}) {
+    if (!canAddPlaceToday) return null;
+    if (similarNearbyPlace(name) != null) return null;
     final here = location ?? defaultLocation;
     final place = Place(
       id: 'place_${DateTime.now().millisecondsSinceEpoch}',
@@ -762,6 +800,7 @@ class AppStore extends ChangeNotifier {
       by: 'me',
       t: DateTime.now().millisecondsSinceEpoch,
       session: sessionKey(),
+      coverPhotoPath: coverPhotoPath,
     );
     places = [...places, place];
     // Same demo-boost the 5 built-in venues got in the constructor — without
@@ -780,7 +819,11 @@ class AppStore extends ChangeNotifier {
     return place;
   }
 
-  Poll addPoll(String q, List<String> options) {
+  /// Returns the new poll, or null if you've already added one today —
+  /// see [canAddPollToday]. Callers should check that first so they can
+  /// disable the "Post poll" button instead of only finding out after.
+  Poll? addPoll(String q, List<String> options) {
+    if (!canAddPollToday) return null;
     final here = location ?? defaultLocation;
     final poll = Poll(
       id: 'poll_${DateTime.now().millisecondsSinceEpoch}',

@@ -98,7 +98,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   // preview of the latest photo/video posted here the
                   // moment someone posts a Story at this place.
                   Positioned.fill(
-                    child: PlaceMediaThumbnail(story: latestVenueStory, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
+                    child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
                   ),
                   if (venueStories.isNotEmpty)
                     Positioned(

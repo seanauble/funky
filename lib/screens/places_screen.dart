@@ -131,13 +131,6 @@ class PlacesScreen extends StatelessWidget {
                         }),
                       ],
                     ),
-                    // Plain, non-interactive text credit — no flutter_map
-                    // logo button, no tappable "i" info icon, just the
-                    // small attribution line OpenStreetMap's tile usage
-                    // policy requires somewhere on the map.
-                    const SimpleAttributionWidget(
-                      source: Text('© OpenStreetMap contributors'),
-                    ),
                   ],
                 ),
                 if (ranked.isEmpty)
@@ -155,13 +148,6 @@ class PlacesScreen extends StatelessWidget {
                     ),
                   ),
               ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Text(
-              '👑 marks tonight\'s busiest spot — the glow shows where votes and Stories are piling up.',
-              style: TextStyle(color: tokens.mute, fontSize: 12),
             ),
           ),
           Expanded(
@@ -213,7 +199,7 @@ class PlacesScreen extends StatelessWidget {
                                 child: SizedBox(
                                   width: 44,
                                   height: 44,
-                                  child: PlaceMediaThumbnail(story: latestStory, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
+                                  child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
                                 ),
                               ),
                             const SizedBox(width: 12),

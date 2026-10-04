@@ -187,22 +187,30 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   Future<void> _startRecording() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
+    // Flip the button red and start the progress ring right away, instead
+    // of waiting on controller.startVideoRecording() below to finish first
+    // — that's a real round trip to the camera hardware and can take a
+    // couple hundred ms, which was making the button feel like it lagged
+    // behind your finger. If the camera call fails we just roll this back.
+    _recordStart = DateTime.now();
+    setState(() {
+      _isRecording = true;
+      _recordProgress = 0;
+    });
+    _recordTicker = Timer.periodic(const Duration(milliseconds: 60), (_) {
+      final start = _recordStart;
+      if (start == null) return;
+      final elapsed = DateTime.now().difference(start).inMilliseconds;
+      final progress = (elapsed / _maxRecordMs).clamp(0.0, 1.0);
+      setState(() => _recordProgress = progress);
+      if (elapsed >= _maxRecordMs) _stopRecording();
+    });
     try {
       await controller.startVideoRecording();
-      _recordStart = DateTime.now();
-      setState(() {
-        _isRecording = true;
-        _recordProgress = 0;
-      });
-      _recordTicker = Timer.periodic(const Duration(milliseconds: 60), (_) {
-        final start = _recordStart;
-        if (start == null) return;
-        final elapsed = DateTime.now().difference(start).inMilliseconds;
-        final progress = (elapsed / _maxRecordMs).clamp(0.0, 1.0);
-        setState(() => _recordProgress = progress);
-        if (elapsed >= _maxRecordMs) _stopRecording();
-      });
     } catch (e) {
+      _recordTicker?.cancel();
+      _recordTicker = null;
+      if (mounted) setState(() => _isRecording = false);
       if (mounted) setState(() => _error = 'Could not start recording: $e');
     }
   }

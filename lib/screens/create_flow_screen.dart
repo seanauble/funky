@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:easy_video_editor/easy_video_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
@@ -13,6 +14,7 @@ import '../theme/colors.dart';
 import '../widgets/kind_picker.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'camera_capture_screen.dart';
 import 'place_detail_screen.dart';
 
 const int _maxRecordMs = 15000;
@@ -73,12 +75,20 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Scaffold(
       backgroundColor: tokens.bg,
-      appBar: AppBar(
-        backgroundColor: tokens.bg,
-        elevation: 0,
-        leading: IconButton(icon: Icon(Icons.close, color: tokens.ink), onPressed: () => Navigator.of(context).pop()),
-        title: Text(_tabLabels[_page][0] + _tabLabels[_page].substring(1).toLowerCase(), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-      ),
+      // The Camera tab (live preview AND its review screen) is already a
+      // full-bleed black view with its own floating close button — a solid
+      // "Camera" title bar on top of it was redundant with that, and ate
+      // into the immersive full-screen feel the full-bleed preview work was
+      // going for. The other three tabs (Text/Poll/Place) are plain forms
+      // that still want a normal header.
+      appBar: _page == 0
+          ? null
+          : AppBar(
+              backgroundColor: tokens.bg,
+              elevation: 0,
+              leading: IconButton(icon: Icon(Icons.close, color: tokens.ink), onPressed: () => Navigator.of(context).pop()),
+              title: Text(_tabLabels[_page][0] + _tabLabels[_page].substring(1).toLowerCase(), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+            ),
       body: Column(
         children: [
           Expanded(
@@ -94,7 +104,21 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
               ],
             ),
           ),
-          if (!_cameraBusy) _BottomLabelBar(page: _page, onSelect: _goTo),
+          // Visibility(maintainSize: ...) instead of an `if` — removing this
+          // bar outright during recording shrank the Column and let the
+          // Expanded(PageView) above it grow into the freed-up space, which
+          // is what was shoving the shutter button down the moment you
+          // started recording. Keeping its footprint reserved (just
+          // invisible and untappable) keeps the camera preview, and the
+          // button inside it, pinned in exactly the same place the whole
+          // time.
+          Visibility(
+            visible: !_cameraBusy,
+            maintainSize: true,
+            maintainAnimation: true,
+            maintainState: true,
+            child: _BottomLabelBar(page: _page, onSelect: _goTo),
+          ),
         ],
       ),
     );
@@ -350,22 +374,35 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   Future<void> _startRecording() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
+    _segmentPaths.clear();
+    _elapsedBeforeCurrentSegmentMs = 0;
+    // Flip the button red and start the progress ring right away, instead
+    // of waiting on controller.startVideoRecording() below to finish first
+    // — that's a real round trip to the camera hardware and can take a
+    // couple hundred ms, which was making the button feel like it lagged
+    // behind your finger. If the camera call fails we just roll this back.
+    _recordStart = DateTime.now();
+    setState(() {
+      _isRecording = true;
+      _recordProgress = 0;
+    });
+    widget.onBusyChanged?.call(true);
+    _recordTicker = Timer.periodic(const Duration(milliseconds: 60), (_) {
+      if (!_isRecording) return; // paused for the brief gap of a mid-flip camera swap
+      final start = _recordStart;
+      if (start == null) return;
+      final elapsed = _elapsedBeforeCurrentSegmentMs + DateTime.now().difference(start).inMilliseconds;
+      final progress = (elapsed / _maxRecordMs).clamp(0.0, 1.0);
+      setState(() => _recordProgress = progress);
+      if (elapsed >= _maxRecordMs) _finishRecording();
+    });
     try {
-      _segmentPaths.clear();
-      _elapsedBeforeCurrentSegmentMs = 0;
-      await _beginSegmentRecording(controller);
-      setState(() => _recordProgress = 0);
-      widget.onBusyChanged?.call(true);
-      _recordTicker = Timer.periodic(const Duration(milliseconds: 60), (_) {
-        if (!_isRecording) return; // paused for the brief gap of a mid-flip camera swap
-        final start = _recordStart;
-        if (start == null) return;
-        final elapsed = _elapsedBeforeCurrentSegmentMs + DateTime.now().difference(start).inMilliseconds;
-        final progress = (elapsed / _maxRecordMs).clamp(0.0, 1.0);
-        setState(() => _recordProgress = progress);
-        if (elapsed >= _maxRecordMs) _finishRecording();
-      });
+      await controller.startVideoRecording();
     } catch (e) {
+      _recordTicker?.cancel();
+      _recordTicker = null;
+      if (mounted) setState(() => _isRecording = false);
+      widget.onBusyChanged?.call(false);
       if (mounted) setState(() => _error = 'Could not start recording: $e');
     }
   }
@@ -621,20 +658,47 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
             ),
           ),
 
+          // No AppBar on this tab anymore (see the comment where it's built
+          // in CreateFlowScreen), so this is the only way out of the camera
+          // now — same transparent circle as the flip button, just closing
+          // the whole create flow instead. Hidden while recording, same as
+          // the flip button, so there's no way to accidentally bail out of
+          // a take mid-recording.
+          Positioned(
+            top: 8,
+            left: 8,
+            child: SafeArea(
+              bottom: false,
+              right: false,
+              child: _RoundIconButton(icon: Icons.close, onTap: _isRecording ? null : _close),
+            ),
+          ),
+
           Positioned(
             top: 8,
             right: 8,
-            child: Row(
-              children: [
-                if (_isRecording)
-                  Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
-                    child: Text('${(_recordProgress * 15).toStringAsFixed(0)}s / 15s', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                  ),
-                _RoundIconButton(icon: Icons.flip_camera_ios, onTap: _isRecording ? null : _flipCamera),
-              ],
+            child: SafeArea(
+              bottom: false,
+              left: false,
+              child: Row(
+                children: [
+                  if (_isRecording)
+                    Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                      child: Text('${(_recordProgress * 15).toStringAsFixed(0)}s / 15s', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    ),
+                  // Same button either way now — before recording it's a
+                  // normal flip, mid-recording it hands off to
+                  // _flipDuringRecording (the same seamless swap that
+                  // double-tapping the preview already triggers). It used
+                  // to just go dead (onTap: null) the moment you started
+                  // recording, which looked broken since nothing told you
+                  // double-tap was the only way to flip once you were live.
+                  _RoundIconButton(icon: Icons.flip_camera_ios, onTap: () => _isRecording ? _flipDuringRecording() : _flipCamera()),
+                ],
+              ),
             ),
           ),
 
@@ -1061,13 +1125,26 @@ class _PollFormPageState extends State<_PollFormPage> {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
     final filledOptions = _optionControllers.where((c) => c.text.trim().isNotEmpty).length;
-    final canPost = _questionController.text.trim().isNotEmpty && filledOptions >= 2;
+    final canAddToday = store.canAddPollToday;
+    final canPost = canAddToday && _questionController.text.trim().isNotEmpty && filledOptions >= 2;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (!canAddToday)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+                child: Text(
+                  "You've already added a poll today — one per day. Check back after the 2 PM reset.",
+                  style: TextStyle(color: tokens.mute, fontSize: 13),
+                ),
+              ),
+            ),
           Text('Question', style: TextStyle(color: tokens.mute, fontSize: 13)),
           const SizedBox(height: 6),
           TextField(
@@ -1117,7 +1194,13 @@ class _PollFormPageState extends State<_PollFormPage> {
               onPressed: canPost
                   ? () => requireAccountThen(context, store, () {
                         final options = _optionControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList();
-                        store.addPoll(_questionController.text.trim(), options);
+                        final poll = store.addPoll(_questionController.text.trim(), options);
+                        if (poll == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("You can only add one poll per day — check back after the 2 PM reset.")),
+                          );
+                          return;
+                        }
                         Navigator.of(context).pop();
                       })
                   : null,
@@ -1145,6 +1228,40 @@ const _placeKinds = [
   (PlaceKind.tailgate, 'Tailgate'),
 ];
 
+enum _PlacePhotoSource { camera, library }
+
+/// The bottom sheet that asks "take a new photo or pick one from your
+/// library" when you tap the cover-photo box on the Add Place form — same
+/// shape as the one profile photos use (see profile_screen.dart), just
+/// duplicated locally since that one's private to its own file.
+class _PlacePhotoSourceSheet extends StatelessWidget {
+  const _PlacePhotoSourceSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          ListTile(
+            leading: Icon(Icons.camera_alt, color: tokens.ink),
+            title: Text('Take Photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.of(context).pop(_PlacePhotoSource.camera),
+          ),
+          ListTile(
+            leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
+            title: Text('Choose from Library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.of(context).pop(_PlacePhotoSource.library),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
 /// Page 3 — add a place.
 class _PlaceFormPage extends StatefulWidget {
   const _PlaceFormPage();
@@ -1157,6 +1274,9 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   final _nameController = TextEditingController();
   final _addressController = TextEditingController();
   PlaceKind _kind = PlaceKind.party;
+  // Optional — shown as the place's thumbnail/banner (see
+  // PlaceMediaThumbnail) until someone actually posts a Story there.
+  File? _coverPhoto;
 
   @override
   void dispose() {
@@ -1165,17 +1285,86 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     super.dispose();
   }
 
+  Future<void> _addCoverPhoto() async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final source = await showModalBottomSheet<_PlacePhotoSource>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (_) => const _PlacePhotoSourceSheet(),
+    );
+    if (source == null || !mounted) return;
+    if (source == _PlacePhotoSource.camera) {
+      await _addCoverPhotoFromCamera();
+    } else {
+      await _addCoverPhotoFromLibrary();
+    }
+  }
+
+  Future<void> _addCoverPhotoFromCamera() async {
+    final media = await Navigator.of(context).push<CapturedMedia>(
+      MaterialPageRoute(fullscreenDialog: true, builder: (_) => const CameraCaptureScreen()),
+    );
+    if (media == null || !mounted) return;
+    if (media.isVideo) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cover photos are photos only — tap the shutter instead of holding it.')),
+      );
+      return;
+    }
+    setState(() => _coverPhoto = media.file);
+  }
+
+  Future<void> _addCoverPhotoFromLibrary() async {
+    try {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
+      if (picked == null || !mounted) return;
+      // Copy into our own app-documents folder, same as every camera
+      // capture already does — the picker's own temp file isn't guaranteed
+      // to stick around.
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory('${docs.path}/stories');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final dest = '${dir.path}/place_cover_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedFile = await File(picked.path).copy(dest);
+      if (!mounted) return;
+      setState(() => _coverPhoto = savedFile);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final canPost = _nameController.text.trim().isNotEmpty;
+    final canAddToday = store.canAddPlaceToday;
+    final trimmedName = _nameController.text.trim();
+    // Same name-normalizing check addPlace itself backstops — surfaced
+    // live as you type so you find out before you even try to submit,
+    // not after.
+    final duplicate = trimmedName.isEmpty ? null : store.similarNearbyPlace(trimmedName);
+    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (!canAddToday)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+                child: Text(
+                  "You've already added a place today — one per day. Check back after the 2 PM reset.",
+                  style: TextStyle(color: tokens.mute, fontSize: 13),
+                ),
+              ),
+            ),
           Text('Name', style: TextStyle(color: tokens.mute, fontSize: 13)),
           const SizedBox(height: 6),
           TextField(
@@ -1192,6 +1381,16 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             ),
             style: TextStyle(color: tokens.ink),
           ),
+          if (duplicate != null) ...[
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: duplicate.id))),
+              child: Text(
+                '"${duplicate.name}" is already listed near you — tap to view it instead of adding a duplicate.',
+                style: TextStyle(color: tokens.danger, fontSize: 12.5, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
           Text('Type', style: TextStyle(color: tokens.mute, fontSize: 13)),
           const SizedBox(height: 6),
@@ -1221,6 +1420,45 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                 : 'Enable location first so this place can be placed on the map.',
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
+          const SizedBox(height: 14),
+          Text('Cover photo (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
+          const SizedBox(height: 4),
+          Text(
+            "Shown until someone posts the first Story here — then that takes over.",
+            style: TextStyle(color: tokens.mute, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: _addCoverPhoto,
+            child: _coverPhoto == null
+                ? Container(
+                    height: 90,
+                    width: double.infinity,
+                    decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+                    alignment: Alignment.center,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_a_photo_outlined, color: tokens.mute),
+                        const SizedBox(height: 4),
+                        Text('Add a cover photo', style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  )
+                : ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Stack(
+                      children: [
+                        Image.file(_coverPhoto!, height: 140, width: double.infinity, fit: BoxFit.cover),
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: _RoundIconButton(icon: Icons.close, onTap: () => setState(() => _coverPhoto = null)),
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
@@ -1231,7 +1469,20 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                           _nameController.text.trim(),
                           _kind,
                           _addressController.text.trim().isEmpty ? 'Address not given' : _addressController.text.trim(),
+                          coverPhotoPath: _coverPhoto?.path,
                         );
+                        if (place == null) {
+                          // canPost already blocks both of these in the
+                          // common case — this only fires if something
+                          // changed out from under you between typing and
+                          // tapping (e.g. someone else added a similarly
+                          // named place in the last few seconds).
+                          final message = store.canAddPlaceToday
+                              ? "There's already a place with a similar name near you."
+                              : "You can only add one place per day — check back after the 2 PM reset.";
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+                          return;
+                        }
                         Navigator.of(context).pop();
                         Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: place.id)));
                       })

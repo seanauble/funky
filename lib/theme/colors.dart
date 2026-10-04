@@ -23,6 +23,10 @@ class ThemeTokens {
   final Color glass;
   final Color shade;
   final Color danger;
+  // Story-ring color for someone you're friends with — always this, never
+  // the normal orange/gray unseen styling, so a friend's ring reads as
+  // "someone you know" at a glance regardless of whether you've watched yet.
+  final Color friend;
 
   const ThemeTokens({
     required this.bg,
@@ -43,6 +47,7 @@ class ThemeTokens {
     required this.glass,
     required this.shade,
     required this.danger,
+    required this.friend,
   });
 }
 
@@ -65,6 +70,7 @@ const lightTokens = ThemeTokens(
   glass: Color(0xCCF5F5F7),
   shade: Color(0x730A0A0E),
   danger: Color(0xFFE0353C),
+  friend: Color(0xFF1F9D55),
 );
 
 const darkTokens = ThemeTokens(
@@ -86,6 +92,7 @@ const darkTokens = ThemeTokens(
   glass: Color(0xC70A0A0C),
   shade: Color(0x99000000),
   danger: Color(0xFFE0353C),
+  friend: Color(0xFF34D17A),
 );
 
 /// The "orange to pink to purple" poll-bar gradient (PCOL in the

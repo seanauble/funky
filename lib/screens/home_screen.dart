@@ -50,17 +50,27 @@ class HomeScreen extends StatelessWidget {
       for (final s in store.stories)
         if (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!)) s.uid,
     }..remove('me');
-    // Unwatched rings first (orange), already-watched ones sink to the
-    // back of the queue (gray) instead of just sitting there forever —
-    // same idea Snapchat/Instagram use.
+    bool isFriend(String uid) => store.me.friends.contains(uid);
+    // Friends always lead the queue (green ring), full stop — ahead of
+    // unwatched strangers, not just tie-broken by them. Within each of
+    // those two groups, unwatched rings still come before already-watched
+    // ones (same idea Snapchat/Instagram use), so a friend you haven't
+    // seen yet still sits ahead of a friend you have.
     final sortedStorytellerIds = storytellerIds.toList()
       ..sort((a, b) {
+        final aFriend = isFriend(a) ? 0 : 1;
+        final bFriend = isFriend(b) ? 0 : 1;
+        if (aFriend != bFriend) return aFriend.compareTo(bFriend);
         final aSeen = hasUnseenFrom(a) ? 0 : 1;
         final bSeen = hasUnseenFrom(b) ? 0 : 1;
         return aSeen.compareTo(bSeen);
       });
     final myStories = store.myStories;
     final hasMyStories = myStories.isNotEmpty;
+    // Same order as the rings below — "Your story" first (when you have
+    // one), then everyone else, unseen first — shared with the viewer so a
+    // left/right swipe there moves through this exact same queue.
+    final storyQueue = [if (hasMyStories) 'me', ...sortedStorytellerIds];
     final areaMessages = store.messagesFor('main');
     final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
 
@@ -90,7 +100,8 @@ class HomeScreen extends StatelessWidget {
                   seed: store.me.id,
                   photoPath: store.me.photoPath,
                   onTap: hasMyStories
-                      ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personId: 'me')))
+                      ? () => Navigator.of(context)
+                          .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0)))
                       : () => showCreateSheet(context),
                   // The little camera badge in the corner is always a
                   // shortcut straight to the camera, even once you have
@@ -105,7 +116,10 @@ class HomeScreen extends StatelessWidget {
                     seed: person.id,
                     photoPath: person.photoPath,
                     unseen: hasUnseenFrom(uid),
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personId: uid))),
+                    isFriend: isFriend(uid),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: storyQueue.indexOf(uid))),
+                    ),
                   );
                 }),
               ],
@@ -185,6 +199,7 @@ class HomeScreen extends StatelessWidget {
                               // once there is one.
                               child: PlaceMediaThumbnail(
                                 story: store.latestMediaStoryFor(p.id),
+                                coverPhotoPath: p.coverPhotoPath,
                                 fallbackLabel: p.name.substring(0, 1),
                                 fontSize: 22,
                               ),
@@ -303,6 +318,11 @@ class _StoryRing extends StatelessWidget {
   // no reason to still flag it at full brightness). Irrelevant for the
   // bare "add" ring.
   final bool unseen;
+  // Whether you and this person are friends — always draws the ring green
+  // (instead of the normal orange-if-unseen/gray-if-seen) and, separately
+  // (see sortedStorytellerIds), always sorts them to the front. Irrelevant
+  // for the bare "add" ring.
+  final bool isFriend;
   final String seed;
   final String? photoPath;
   final VoidCallback? onTap;
@@ -315,6 +335,7 @@ class _StoryRing extends StatelessWidget {
     required this.label,
     this.isAdd = false,
     this.unseen = true,
+    this.isFriend = false,
     required this.seed,
     this.photoPath,
     this.onTap,
@@ -325,6 +346,7 @@ class _StoryRing extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final showBadge = isAdd || onAddBadgeTap != null;
+    final Color ringColor = isAdd ? tokens.line : (isFriend ? tokens.friend : (unseen ? tokens.orange : tokens.line));
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -342,7 +364,7 @@ class _StoryRing extends StatelessWidget {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: isAdd || !unseen ? tokens.line : tokens.orange, width: 2.5),
+                    border: Border.all(color: ringColor, width: 2.5),
                   ),
                   child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath),
                 ),

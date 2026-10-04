@@ -5,7 +5,8 @@ import '../widgets/ui_widgets.dart';
 import 'person_profile_screen.dart';
 
 /// Opened from the bell icon on Profile. Incoming requests need your
-/// accept/decline; outgoing ones are just shown as pending.
+/// accept/decline; outgoing ones are shown as pending with a way to
+/// cancel them if you change your mind.
 class FriendRequestsScreen extends StatelessWidget {
   const FriendRequestsScreen({super.key});
 
@@ -60,10 +61,23 @@ class FriendRequestsScreen extends StatelessWidget {
                   margin: const EdgeInsets.only(bottom: 10),
                   child: Row(
                     children: [
-                      FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
+                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                      ),
                       const SizedBox(width: 12),
-                      Expanded(child: FunkyHandle(handle: p.handle)),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
+                          child: FunkyHandle(handle: p.handle),
+                        ),
+                      ),
                       Text('Pending', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                      IconButton(
+                        onPressed: () => store.cancelFriendRequest(p.id),
+                        icon: Icon(Icons.close, color: tokens.mute),
+                        tooltip: 'Cancel request',
+                      ),
                     ],
                   ),
                 )),

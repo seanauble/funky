@@ -154,14 +154,16 @@ class FunkyAvatar extends StatelessWidget {
 
 /// What a place's thumbnail/banner shows: the newest Story posted there
 /// that actually has a photo or video, looping and muted if it's a video —
-/// falling back to the old flat colored-letter box when nothing's been
-/// posted yet. Used anywhere a place shows a preview image: the Place
-/// Detail banner, Home's trending cards, and the Places list.
+/// falling back to whoever added the place's own cover photo (if they took
+/// one) when nothing's been posted yet, and only then to the flat
+/// colored-letter box. Used anywhere a place shows a preview image: the
+/// Place Detail banner, Home's trending cards, and the Places list.
 class PlaceMediaThumbnail extends StatefulWidget {
   final Story? story;
+  final String? coverPhotoPath;
   final String fallbackLabel;
   final double fontSize;
-  const PlaceMediaThumbnail({super.key, required this.story, required this.fallbackLabel, this.fontSize = 22});
+  const PlaceMediaThumbnail({super.key, required this.story, this.coverPhotoPath, required this.fallbackLabel, this.fontSize = 22});
 
   @override
   State<PlaceMediaThumbnail> createState() => _PlaceMediaThumbnailState();
@@ -232,6 +234,16 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     if (story?.imagePath != null) {
       return Image.file(
         File(story!.imagePath!),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, __, ___) => _fallback(tokens),
+      );
+    }
+    final cover = widget.coverPhotoPath;
+    if (cover != null) {
+      return Image.file(
+        File(cover),
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,

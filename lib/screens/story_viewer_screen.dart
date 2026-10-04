@@ -8,19 +8,24 @@ import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
 
-/// Full-screen Story playback for one person — tap the right half to
-/// advance, the left half to go back, down-arrow/back button to close.
-/// Opened by tapping a story ring on Home (this screen didn't exist before,
-/// which is why tapping a story ring used to do nothing).
+/// Full-screen Story playback — tap the right half to advance, the left
+/// half to go back, down-arrow/back button to close, and swipe left/right
+/// to jump straight to the next/previous PERSON's stories entirely (same
+/// queue and order as the rings on Home — "Your story" first, then
+/// everyone else, unseen first). Opened by tapping a story ring on Home.
 class StoryViewerScreen extends StatefulWidget {
-  final String personId;
-  const StoryViewerScreen({super.key, required this.personId});
+  // The full ordered queue of people this viewer can swipe between — same
+  // list Home built its rings from — and which one to open on first.
+  final List<String> personIds;
+  final int initialIndex;
+  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0});
 
   @override
   State<StoryViewerScreen> createState() => _StoryViewerScreenState();
 }
 
 class _StoryViewerScreenState extends State<StoryViewerScreen> {
+  late int _personIndex = widget.initialIndex.clamp(0, widget.personIds.length - 1);
   int _i = 0;
   String? _lastRecordedView;
   String? _currentStoryId;
@@ -82,14 +87,26 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   @override
   Widget build(BuildContext context) {
     final store = context.watch<AppStore>();
-    final person = store.personById(widget.personId);
+    final personId = widget.personIds[_personIndex];
+    final person = store.personById(personId);
     // Oldest first, like watching through the night in order.
-    final stories = store.storiesByUser(widget.personId).reversed.toList(growable: false);
+    final stories = store.storiesByUser(personId).reversed.toList(growable: false);
 
     if (person == null || stories.isEmpty) {
-      // Nothing left to show (they deleted it, or the 2 PM reset hit) — bail out.
+      // Nothing left to show for THIS person (they deleted it, or the 2 PM
+      // reset hit) — skip straight to the next one in the queue instead of
+      // just bailing out of the whole viewer, same as running out of their
+      // stories normally would.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) Navigator.of(context).pop();
+        if (!mounted) return;
+        if (_personIndex < widget.personIds.length - 1) {
+          setState(() {
+            _personIndex++;
+            _i = 0;
+          });
+        } else {
+          Navigator.of(context).pop();
+        }
       });
       return const Scaffold(backgroundColor: Colors.black, body: SizedBox.shrink());
     }
@@ -107,11 +124,37 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     }
     final liked = story.likes.contains('me');
 
+    // Jumps straight to the next/previous PERSON's stories, skipping
+    // whatever's left of the current one — this is what a left/right swipe
+    // does, as opposed to tapping through one story at a time.
+    void nextPerson() {
+      if (_personIndex < widget.personIds.length - 1) {
+        setState(() {
+          _personIndex++;
+          _i = 0;
+        });
+      } else {
+        Navigator.of(context).pop();
+      }
+    }
+
+    void previousPerson() {
+      if (_personIndex > 0) {
+        setState(() {
+          _personIndex--;
+          _i = 0;
+        });
+      }
+    }
+
     void advance() {
       if (_i < stories.length - 1) {
         setState(() => _i++);
       } else {
-        Navigator.of(context).pop();
+        // Ran out of this person's stories by tapping through them one at a
+        // time — used to just close the whole viewer here; now it flows
+        // straight into the next person, same as a left swipe would.
+        nextPerson();
       }
     }
 
@@ -131,6 +174,18 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               Navigator.of(context).pop();
             } else {
               setState(() => _dragDy = 0);
+            }
+          },
+          // A fast-enough horizontal swipe skips straight to the next/
+          // previous person's stories — same queue and order as the rings
+          // on Home — distinct from tapping the left/right half, which
+          // steps one story at a time within the current person's own set.
+          onHorizontalDragEnd: (details) {
+            final velocity = details.primaryVelocity ?? 0;
+            if (velocity < -300) {
+              nextPerson();
+            } else if (velocity > 300) {
+              previousPerson();
             }
           },
           child: Transform.translate(

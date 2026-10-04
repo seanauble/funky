@@ -125,6 +125,13 @@ class Place {
   final String by;
   final int t;
   final String session;
+  // Optional photo the person who added this place snapped with FUNKY's own
+  // camera (see _PlaceFormPage) — shown as the place's thumbnail/banner
+  // until somebody posts an actual Story there, at which point
+  // PlaceMediaThumbnail prefers that Story's media instead. Null for a
+  // place added without one (the plain colored-letter box is the fallback
+  // under that).
+  final String? coverPhotoPath;
 
   const Place({
     required this.id,
@@ -136,6 +143,7 @@ class Place {
     required this.by,
     required this.t,
     required this.session,
+    this.coverPhotoPath,
   });
 
   Map<String, dynamic> toJson() => {
@@ -148,6 +156,7 @@ class Place {
         'by': by,
         't': t,
         'session': session,
+        'coverPhotoPath': coverPhotoPath,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -160,6 +169,7 @@ class Place {
         by: json['by'] as String,
         t: json['t'] as int,
         session: json['session'] as String,
+        coverPhotoPath: json['coverPhotoPath'] as String?,
       );
 }
 
