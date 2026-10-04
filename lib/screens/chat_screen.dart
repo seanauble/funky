@@ -19,22 +19,42 @@ Future<void> _showReactionPicker(BuildContext context, AppStore store, ChatMessa
     context: context,
     backgroundColor: tokens.surface,
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-    builder: (_) => SafeArea(
+    builder: (sheetContext) => SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 14,
-          children: _reactionEmojis
-              .map((e) => InkWell(
-                    onTap: () => Navigator.of(context).pop(e),
-                    customBorder: const CircleBorder(),
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Text(e, style: const TextStyle(fontSize: 30)),
-                    ),
-                  ))
-              .toList(),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 14,
+              children: _reactionEmojis
+                  .map((e) => InkWell(
+                        onTap: () => Navigator.of(sheetContext).pop(e),
+                        customBorder: const CircleBorder(),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Text(e, style: const TextStyle(fontSize: 30)),
+                        ),
+                      ))
+                  .toList(),
+            ),
+            // Only a signed-in FUNKY Admin ever sees this — same hardcoded-
+            // admin gate as the place verification/ban controls elsewhere.
+            // Deletes immediately (no extra confirm) since a single chat
+            // message is low-stakes compared to a place or a ban.
+            if (store.isAdmin) ...[
+              const Divider(height: 24),
+              TextButton.icon(
+                onPressed: () {
+                  store.deleteMessage(message.id);
+                  Navigator.of(sheetContext).pop();
+                },
+                icon: Icon(Icons.delete_outline, color: tokens.danger),
+                label: Text('Delete message (Admin)', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ],
         ),
       ),
     ),
@@ -72,31 +92,14 @@ class _ChatScreenState extends State<ChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // ChatScreen normally lives as a bottom tab inside RootShell,
-            // which already supplies a shared AppBar + tab bar — nothing
-            // extra needed there. But Home's "Open chat" shortcut (see
-            // home_screen.dart) pushes this as its own standalone route on
-            // top of that, and with no AppBar of its own, the only way back
-            // used to be an edge-swipe gesture — easy to miss entirely, or
-            // to have swallowed by the keyboard/segmented control, leaving
-            // you stuck with nothing tappable to get out. Navigator.canPop
-            // is only true in that pushed case, never for the tab itself,
-            // so this only ever shows up exactly where it's needed.
-            if (Navigator.canPop(context))
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 10, 16, 0),
-                child: Row(
-                  children: [
-                    IconButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: Icon(Icons.arrow_back, color: tokens.ink),
-                    ),
-                    Text('Chat', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 17)),
-                  ],
-                ),
-              ),
+            // ChatScreen only ever lives as a bottom tab inside RootShell
+            // now, which already supplies a shared AppBar + tab bar — see
+            // rootShellTabRequest in root_shell.dart for how Home's "Open
+            // chat" shortcut switches to this tab instead of pushing a
+            // standalone copy of this screen (which is what used to leave
+            // people stuck in here with no way back out).
             Container(
-              margin: EdgeInsets.fromLTRB(16, Navigator.canPop(context) ? 8 : 16, 16, 0),
+              margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
               child: Row(
@@ -252,7 +255,10 @@ class _LiveChat extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final msgs = store.messagesFor('main');
+    // A banned sender's area-chat messages stop showing up for everyone on
+    // this device (see AppStore.banUser) — ghost-mode messages have no uid
+    // to check here either way, so they're unaffected.
+    final msgs = store.messagesFor('main').where((m) => !store.isBanned(m.uid)).toList();
 
     return ListView(
       padding: const EdgeInsets.all(16),

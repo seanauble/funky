@@ -1,8 +1,37 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../widgets/ui_widgets.dart';
 import 'dm_thread_screen.dart';
+
+/// A FUNKY Admin-only confirmation before banning — this severs an existing
+/// friendship/pending request and hides the person's Stories/chat/DMs
+/// everywhere on this device, so it's worth one tap to make sure before it
+/// happens rather than a single accidental tap on the profile.
+Future<void> _confirmBan(BuildContext context, AppStore store, String personId, String handle) async {
+  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: tokens.surface,
+      title: Text('Ban @$handle?', style: TextStyle(color: tokens.ink)),
+      content: Text(
+        "This unfriends them if you're friends, and hides their Stories, chat messages, and DMs from everyone on this device.",
+        style: TextStyle(color: tokens.mute),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: Text('Ban', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+        ),
+      ],
+    ),
+  );
+  if (confirmed == true) store.banUser(personId);
+}
 
 /// The public profile of someone else — reached by tapping their handle in
 /// chat. Old Story posts only show up here once you're mutual friends;
@@ -33,6 +62,7 @@ class PersonProfileScreen extends StatelessWidget {
     final requestReceived = store.hasRequestFrom(personId);
     final canSeeStories = store.canSeeStoriesOf(personId);
     final theirStories = canSeeStories ? store.storiesByUser(personId) : const [];
+    final banned = store.isBanned(personId);
 
     return Scaffold(
       backgroundColor: tokens.bg,
@@ -80,6 +110,30 @@ class PersonProfileScreen extends StatelessWidget {
             onDecline: () => store.declineFriendRequest(personId),
             onRemove: () => store.removeFriend(personId),
           ),
+          // Only a signed-in FUNKY Admin ever sees this — same hardcoded-
+          // admin gate as the place verification controls on
+          // place_detail_screen. Banning severs any friendship/pending
+          // request with them and hides their Stories/chat messages/DMs
+          // everywhere on this device (see AppStore.banUser).
+          if (store.isAdmin && personId != 'me') ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => banned ? store.unbanUser(personId) : _confirmBan(context, store, personId, person.handle),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  side: BorderSide(color: tokens.danger),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: Icon(banned ? Icons.lock_open : Icons.block, size: 18, color: tokens.danger),
+                label: Text(
+                  banned ? 'Unban user (Admin)' : 'Ban user (Admin)',
+                  style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+          ],
           const SectionHeader(title: 'Stories'),
           if (canSeeStories)
             if (theirStories.isEmpty)
@@ -87,6 +141,8 @@ class PersonProfileScreen extends StatelessWidget {
             else
               ...theirStories.map((s) {
                 final dt = DateTime.fromMillisecondsSinceEpoch(s.t);
+                final hasVideo = s.videoPath != null || s.videoUrl != null;
+                final hasImage = s.imagePath != null || s.imageUrl != null;
                 return FunkyCard(
                   margin: const EdgeInsets.only(bottom: 10),
                   child: Column(
@@ -94,9 +150,7 @@ class PersonProfileScreen extends StatelessWidget {
                     children: [
                       Text(dt.toString(), style: TextStyle(color: tokens.mute, fontSize: 12)),
                       const SizedBox(height: 4),
-                      if (s.text != null && s.text!.isNotEmpty)
-                        Text(s.text!, style: TextStyle(color: tokens.ink))
-                      else if (s.videoPath != null)
+                      if (hasVideo)
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -105,8 +159,27 @@ class PersonProfileScreen extends StatelessWidget {
                             Text('Video story', style: TextStyle(color: tokens.mute)),
                           ],
                         )
+                      else if (s.imagePath != null)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.file(File(s.imagePath!), height: 140, width: double.infinity, fit: BoxFit.cover),
+                        )
+                      // A real friend's old photo Story only ever has a
+                      // signed URL here — their local file lives on their
+                      // own device, never this one.
+                      else if (s.imageUrl != null)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.network(s.imageUrl!, height: 140, width: double.infinity, fit: BoxFit.cover),
+                        )
+                      else if (s.text != null && s.text!.isNotEmpty)
+                        Text(s.text!, style: TextStyle(color: tokens.ink))
                       else
-                        Text('Photo story', style: TextStyle(color: tokens.mute)),
+                        Text('Text story', style: TextStyle(color: tokens.mute)),
+                      if (hasImage && s.text != null && s.text!.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Text(s.text!, style: TextStyle(color: tokens.ink)),
+                      ],
                     ],
                   ),
                 );

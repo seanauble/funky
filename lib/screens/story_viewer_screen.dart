@@ -70,7 +70,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   }
 
   void _ensureVideoFor(Story story, VoidCallback advance) {
-    if (story.videoPath == null) {
+    // A local file (your own just-captured Story) takes priority; a remote
+    // signed URL (someone else's real-backend Story) is the fallback — see
+    // Story.videoUrl's doc comment in models.dart.
+    if (story.videoPath == null && story.videoUrl == null) {
       _videoController?.dispose();
       _videoController = null;
       _videoForStoryId = null;
@@ -81,7 +84,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     final old = _videoController;
     _videoController = null;
     old?.dispose();
-    final controller = VideoPlayerController.file(File(story.videoPath!));
+    final localPath = story.videoPath;
+    final controller =
+        localPath != null ? VideoPlayerController.file(File(localPath)) : VideoPlayerController.networkUrl(Uri.parse(story.videoUrl!));
     controller.addListener(() {
       final value = controller.value;
       if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero) {
@@ -371,7 +376,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               },
               child: KeyedSubtree(
                 key: ValueKey(story.id),
-                child: story.videoPath != null
+                child: story.videoPath != null || story.videoUrl != null
                     ? Center(
                         child: _videoController != null && _videoController!.value.isInitialized
                             ? AspectRatio(
@@ -382,23 +387,27 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                       )
                     : story.imagePath != null
                         ? Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
-                        : Center(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 28),
-                              child: story.text != null && story.text!.isNotEmpty
-                                  ? Text(
-                                      story.text!,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
-                                    )
-                                  : const Text('📸', style: TextStyle(fontSize: 48)),
-                            ),
-                          ),
+                        : story.imageUrl != null
+                            ? Center(child: Image.network(story.imageUrl!, fit: BoxFit.contain))
+                            : Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 28),
+                                  child: story.text != null && story.text!.isNotEmpty
+                                      ? Text(
+                                          story.text!,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
+                                        )
+                                      : const Text('📸', style: TextStyle(fontSize: 48)),
+                                ),
+                              ),
               ),
             ),
             // A photo/video Story can still carry a caption — show it near
             // the bottom so it doesn't compete with the media itself.
-            if ((story.imagePath != null || story.videoPath != null) && story.text != null && story.text!.isNotEmpty)
+            if ((story.imagePath != null || story.videoPath != null || story.imageUrl != null || story.videoUrl != null) &&
+                story.text != null &&
+                story.text!.isNotEmpty)
               Positioned(
                 left: 16,
                 right: 16,

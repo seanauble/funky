@@ -38,13 +38,18 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
   void _send(AppStore store) {
     final text = _draftController.text.trim();
     if (text.isEmpty) return;
-    void doSend() {
-      final error = store.sendDirectMessage(widget.personId, text);
+    Future<void> doSend() async {
+      // Cleared up front so the input doesn't sit full while the real
+      // (possibly network) send is in flight — same instant feel as before,
+      // now that a real account's send is a genuine await instead of a
+      // synchronous local-only write.
+      _draftController.clear();
+      final error = await store.sendDirectMessage(widget.personId, text);
+      if (!mounted) return;
       if (error != null) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
         return;
       }
-      _draftController.clear();
       // Jump to the newest message once it's actually in the list.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_scrollController.hasClients) return;

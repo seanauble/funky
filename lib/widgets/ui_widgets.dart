@@ -225,20 +225,25 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
   }
 
   void _ensureController() {
+    // A local file (your own just-captured Story) takes priority; a remote
+    // signed URL (someone else's real-backend Story) is the fallback —
+    // see Story.videoUrl's doc comment in models.dart.
     final path = widget.story?.videoPath;
-    if (path == null) {
+    final url = widget.story?.videoUrl;
+    final key = path ?? url;
+    if (key == null) {
       final old = _controller;
       _controller = null;
       _controllerForPath = null;
       old?.dispose();
       return;
     }
-    if (_controllerForPath == path) return;
-    _controllerForPath = path;
+    if (_controllerForPath == key) return;
+    _controllerForPath = key;
     final old = _controller;
     _controller = null;
     old?.dispose();
-    final c = VideoPlayerController.file(File(path));
+    final c = path != null ? VideoPlayerController.file(File(path)) : VideoPlayerController.networkUrl(Uri.parse(url!));
     c.setLooping(true);
     c.setVolume(0);
     c.initialize().then((_) {
@@ -260,7 +265,7 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final story = widget.story;
     final controller = _controller;
-    if (story?.videoPath != null && controller != null && controller.value.isInitialized) {
+    if ((story?.videoPath != null || story?.videoUrl != null) && controller != null && controller.value.isInitialized) {
       return FittedBox(
         fit: BoxFit.cover,
         child: SizedBox(
@@ -273,6 +278,15 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     if (story?.imagePath != null) {
       return Image.file(
         File(story!.imagePath!),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, __, ___) => _fallback(tokens),
+      );
+    }
+    if (story?.imageUrl != null) {
+      return Image.network(
+        story!.imageUrl!,
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,

@@ -13,11 +13,10 @@ import '../widgets/ui_widgets.dart';
 /// sign-up/log-in succeeds, dropping straight back into whatever they were
 /// doing.
 ///
-/// There's no backend here (this whole app is a local mock store), so an
-/// "account" is an email + password saved only on this device, gating local
-/// actions — not a server-verified identity. See AppStore's account
-/// methods for the (deliberately non-cryptographic — there's nothing real
-/// for it to protect yet) password hashing.
+/// A REAL Supabase account as of the backend migration — see AppStore's
+/// signUp/signIn/etc. Anyone who created a local-only account before that
+/// migration will need to sign up again here; the old local accounts were
+/// never backed by anything a second device could ever see anyway.
 class AccountScreen extends StatefulWidget {
   final bool closeOnSuccess;
   const AccountScreen({super.key, this.closeOnSuccess = false});
@@ -41,8 +40,9 @@ class _AccountScreenState extends State<AccountScreen> {
   String? _accountError;
 
   bool _showResetPassword = false;
-  final _resetPasswordController = TextEditingController();
   String? _resetError;
+  bool _resetSent = false;
+  bool _resetBusy = false;
 
   @override
   void dispose() {
@@ -51,15 +51,15 @@ class _AccountScreenState extends State<AccountScreen> {
     _newEmailController.dispose();
     _currentPasswordController.dispose();
     _newPasswordController.dispose();
-    _resetPasswordController.dispose();
     super.dispose();
   }
 
-  void _submitAuth(AppStore store) {
+  Future<void> _submitAuth(AppStore store) async {
     setState(() => _busy = true);
     final error = _signUpMode
-        ? store.signUp(_emailController.text, _passwordController.text)
-        : store.signIn(_emailController.text, _passwordController.text);
+        ? await store.signUp(_emailController.text, _passwordController.text)
+        : await store.signIn(_emailController.text, _passwordController.text);
+    if (!mounted) return;
     setState(() {
       _busy = false;
       _authError = error;
@@ -141,6 +141,7 @@ class _AccountScreenState extends State<AccountScreen> {
               onPressed: () => setState(() {
                 _showResetPassword = !_showResetPassword;
                 _resetError = null;
+                _resetSent = false;
               }),
               child: Text('Forgot password?', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600)),
             ),
@@ -209,7 +210,10 @@ class _AccountScreenState extends State<AccountScreen> {
         SizedBox(
           width: double.infinity,
           child: OutlinedButton(
-            onPressed: () => setState(() => store.signOut()),
+            // signOut() is async now and calls notifyListeners() itself once
+            // Supabase confirms — store.watch above already rebuilds this
+            // screen off of that, so no local setState needed to drive it.
+            onPressed: () => store.signOut(),
             style: OutlinedButton.styleFrom(
               foregroundColor: tokens.danger,
               side: BorderSide(color: tokens.danger),
@@ -248,16 +252,15 @@ class _AccountScreenState extends State<AccountScreen> {
           ],
           const SizedBox(height: 10),
           ElevatedButton(
-            onPressed: () {
-              final err = store.changeEmail(_newEmailController.text, _currentPasswordController.text);
-              setState(() {
-                _accountError = err;
-                if (err == null) {
-                  _showChangeEmail = false;
-                  _newEmailController.clear();
-                  _currentPasswordController.clear();
-                }
-              });
+            onPressed: () async {
+              // A real email change needs a confirmation-link click before it
+              // takes effect (see AppStore.changeEmail) — there's no "it
+              // worked" state to collapse into yet, so (like sign-up's email
+              // confirmation message) this reuses the error slot to surface
+              // that instruction and deliberately leaves the form open.
+              final err = await store.changeEmail(_newEmailController.text, _currentPasswordController.text);
+              if (!mounted) return;
+              setState(() => _accountError = err);
             },
             style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
             child: Text('Save email', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w700)),
@@ -292,8 +295,9 @@ class _AccountScreenState extends State<AccountScreen> {
           ],
           const SizedBox(height: 10),
           ElevatedButton(
-            onPressed: () {
-              final err = store.changePassword(_currentPasswordController.text, _newPasswordController.text);
+            onPressed: () async {
+              final err = await store.changePassword(_currentPasswordController.text, _newPasswordController.text);
+              if (!mounted) return;
               setState(() {
                 _accountError = err;
                 if (err == null) {
@@ -311,9 +315,12 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
-  /// A mock, local-only reset — see AppStore.resetPassword's doc comment
-  /// for exactly what this does and doesn't guarantee (no backend, no
-  /// actual email sent; just "the email on this device matches").
+  /// A REAL password-reset email now (see AppStore.resetPassword's doc
+  /// comment) — there's no way to hand back a "type your new password"
+  /// field directly anymore, since nothing here can prove you actually own
+  /// that inbox without an emailed link. This only gets as far as "the
+  /// email's been sent"; actually catching that link and finishing the
+  /// reset needs deep linking, which isn't wired up yet.
   Widget _buildResetPasswordForm(ThemeTokens tokens, AppStore store) {
     return Container(
       margin: const EdgeInsets.only(top: 8, bottom: 4),
@@ -322,39 +329,38 @@ class _AccountScreenState extends State<AccountScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "This device-only reset just checks the email above matches the account here — there's no email link, since FUNKY has no backend yet.",
-            style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _resetPasswordController,
-            obscureText: true,
-            decoration: _fieldDecoration(tokens, 'New password (8+ characters)'),
-            style: TextStyle(color: tokens.ink),
-          ),
-          if (_resetError != null) ...[
-            const SizedBox(height: 8),
-            Text(_resetError!, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600, fontSize: 13)),
+          if (_resetSent)
+            Text(
+              "Check ${_emailController.text.trim()} for a password-reset link.",
+              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13, height: 1.3),
+            )
+          else ...[
+            Text(
+              "We'll email the address above a reset link.",
+              style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
+            ),
+            if (_resetError != null) ...[
+              const SizedBox(height: 8),
+              Text(_resetError!, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600, fontSize: 13)),
+            ],
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _resetBusy
+                  ? null
+                  : () async {
+                      setState(() => _resetBusy = true);
+                      final err = await store.resetPassword(_emailController.text);
+                      if (!mounted) return;
+                      setState(() {
+                        _resetBusy = false;
+                        _resetError = err;
+                        _resetSent = err == null;
+                      });
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+              child: Text('Send reset email', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w700)),
+            ),
           ],
-          const SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: () {
-              final err = store.resetPassword(_emailController.text, _resetPasswordController.text);
-              setState(() {
-                _resetError = err;
-                if (err == null) {
-                  _showResetPassword = false;
-                  _authError = null;
-                  _passwordController.clear();
-                  _resetPasswordController.clear();
-                }
-              });
-              if (err == null && widget.closeOnSuccess && mounted) Navigator.of(context).pop();
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            child: Text('Reset password', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w700)),
-          ),
         ],
       ),
     );

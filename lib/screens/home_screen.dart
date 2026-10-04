@@ -10,7 +10,7 @@ import '../widgets/ui_widgets.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
 import 'place_detail_screen.dart';
-import 'chat_screen.dart';
+import '../root_shell.dart';
 import 'story_viewer_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -49,7 +49,7 @@ class HomeScreen extends StatelessWidget {
     final storytellerIds = <String>{
       for (final s in store.stories)
         if (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!)) s.uid,
-    }..remove('me');
+    }..remove('me')..removeWhere(store.isBanned);
     bool isFriend(String uid) => store.me.friends.contains(uid);
     // Friends always lead the queue (green ring), full stop — ahead of
     // unwatched strangers, not just tie-broken by them. Within each of
@@ -257,7 +257,10 @@ class HomeScreen extends StatelessWidget {
           SectionHeader(
             title: 'Live Chat',
             action: 'Open chat',
-            onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatScreen())),
+            // Switches RootShell to its own Chat tab instead of pushing a
+            // standalone ChatScreen on top — see rootShellTabRequest's doc
+            // comment in root_shell.dart for why.
+            onAction: () => rootShellTabRequest.value = 1,
           ),
           if (recentAreaMessages.isEmpty)
             const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.')
@@ -314,14 +317,17 @@ class _StoryRing extends StatelessWidget {
   final String label;
   final bool isAdd;
   // Whether this person has at least one Story you haven't watched yet —
-  // drives the orange-vs-gray ring color (gray = already seen, so there's
-  // no reason to still flag it at full brightness). Irrelevant for the
-  // bare "add" ring.
+  // drives the ring color (gray = already seen, so there's no reason to
+  // still flag it at full brightness) for both friends and strangers alike
+  // now — see isFriend below. Irrelevant for the bare "add" ring.
   final bool unseen;
-  // Whether you and this person are friends — always draws the ring green
-  // (instead of the normal orange-if-unseen/gray-if-seen) and, separately
-  // (see sortedStorytellerIds), always sorts them to the front. Irrelevant
-  // for the bare "add" ring.
+  // Whether you and this person are friends — while unseen, draws the ring
+  // green instead of the normal orange so a friend's Story still stands out
+  // from a stranger's; once you've actually watched it (unseen flips to
+  // false) a friend's ring drops to the same neutral gray a stranger's seen
+  // ring uses, rather than staying green forever just for being a friend.
+  // Separately (see sortedStorytellerIds) friends always sort to the front
+  // regardless of seen state. Irrelevant for the bare "add" ring.
   final bool isFriend;
   final String seed;
   final String? photoPath;
@@ -346,7 +352,7 @@ class _StoryRing extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final showBadge = isAdd || onAddBadgeTap != null;
-    final Color ringColor = isAdd ? tokens.line : (isFriend ? tokens.friend : (unseen ? tokens.orange : tokens.line));
+    final Color ringColor = isAdd ? tokens.line : (unseen ? (isFriend ? tokens.friend : tokens.orange) : tokens.line);
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,

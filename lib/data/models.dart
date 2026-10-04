@@ -311,6 +311,16 @@ class Story {
   // to keep one around forever. Always false for anyone but 'me' in
   // practice, since only your own Stories are ever kept as Memories at all.
   final bool savedToTimeline;
+  // A resolved, temporary download URL for someone else's photo/video,
+  // fetched live from Supabase Storage (see AppStore's real-backend sync
+  // section) — set only for a Story that came from the real backend and
+  // isn't already playable from a local file on this device (your own
+  // Stories always have that local imagePath/videoPath instead, from when
+  // you captured them, and keep using that). Null for anything local-only
+  // or text-only. Deliberately left out of toJson/fromJson — a signed URL
+  // expires, so it's always worth re-resolving fresh rather than caching.
+  final String? imageUrl;
+  final String? videoUrl;
 
   const Story({
     required this.id,
@@ -327,6 +337,8 @@ class Story {
     this.videoPath,
     this.placeName,
     this.savedToTimeline = false,
+    this.imageUrl,
+    this.videoUrl,
   });
 
   Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy, bool? savedToTimeline}) => Story(
@@ -344,6 +356,8 @@ class Story {
         videoPath: videoPath,
         placeName: placeName,
         savedToTimeline: savedToTimeline ?? this.savedToTimeline,
+        imageUrl: imageUrl,
+        videoUrl: videoUrl,
       );
 
   Map<String, dynamic> toJson() => {

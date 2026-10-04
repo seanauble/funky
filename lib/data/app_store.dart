@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'geo.dart';
 import 'mock_data.dart';
 import 'models.dart';
@@ -11,30 +13,6 @@ import 'session.dart';
 const _storageKey = 'funky.store.v1';
 
 final _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-
-/// A lightweight local hash — NOT real cryptographic security. This whole
-/// app is a mock store with no backend to actually authenticate against, so
-/// there's nothing a strong hash would meaningfully protect; this just
-/// keeps the password from sitting around in plain text in local storage.
-/// Swap this (and the account fields below) for real server-side auth
-/// before this app ever talks to a backend.
-String _hashPassword(String password, String salt) {
-  final bytes = utf8.encode('$salt:$password');
-  int h1 = 0x811c9dc5;
-  for (final b in bytes) {
-    h1 = ((h1 ^ b) * 0x01000193) & 0xFFFFFFFF;
-  }
-  int h2 = 0x1000193 ^ bytes.length;
-  for (final b in bytes.reversed) {
-    h2 = ((h2 ^ b) * 0x811c9dc5) & 0xFFFFFFFF;
-  }
-  return '${h1.toRadixString(16)}${h2.toRadixString(16)}';
-}
-
-String _newSalt() {
-  final rand = Random.secure();
-  return List<int>.generate(16, (_) => rand.nextInt(256)).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-}
 
 enum LocationStatus { unknown, requesting, granted, denied }
 
@@ -136,6 +114,81 @@ class AppStore extends ChangeNotifier {
   Set<String> adminVerifiedPlaceIds = {};
 
   bool isAdminVerified(String placeId) => adminVerifiedPlaceIds.contains(placeId);
+
+  // Who a FUNKY Admin has banned — hides their Stories, live-chat messages,
+  // and DM threads from everyone on this device (see the isBanned filters
+  // in home_screen.dart/chat_screen.dart), and banning also severs any
+  // existing friendship/pending request with them (see banUser). Never
+  // tied to tonight's session, same as adminVerifiedPlaceIds — a ban
+  // shouldn't quietly undo itself at the 2 PM reset.
+  Set<String> bannedUserIds = {};
+
+  bool isBanned(String personId) => bannedUserIds.contains(personId);
+
+  /// Admin-only — removes [personId] from the social graph on this device:
+  /// unfriends them both ways, clears any pending request between you, and
+  /// marks them banned so their Stories/chat messages/DMs stop showing up
+  /// anywhere (home_screen's story rings, the live chat, Messages). Silently
+  /// does nothing for a non-admin account or for 'me', same guard pattern as
+  /// setAdminVerified.
+  void banUser(String personId) {
+    if (!isAdmin || personId == 'me') return;
+    final next = Set<String>.from(bannedUserIds)..add(personId);
+    bannedUserIds = next;
+    me = me.copyWith(
+      friends: me.friends.where((id) => id != personId).toList(),
+      friendRequestsSent: me.friendRequestsSent.where((id) => id != personId).toList(),
+      friendRequestsReceived: me.friendRequestsReceived.where((id) => id != personId).toList(),
+    );
+    final them = people[personId];
+    if (them != null) {
+      people = {
+        ...people,
+        personId: them.copyWith(
+          friends: them.friends.where((id) => id != 'me').toList(),
+          friendRequestsSent: them.friendRequestsSent.where((id) => id != 'me').toList(),
+          friendRequestsReceived: them.friendRequestsReceived.where((id) => id != 'me').toList(),
+        ),
+      };
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  /// Admin-only — lifts a ban. Doesn't restore the friendship that banning
+  /// severed; that's a fresh Add Friend if either side wants it back.
+  void unbanUser(String personId) {
+    if (!isAdmin) return;
+    final next = Set<String>.from(bannedUserIds)..remove(personId);
+    bannedUserIds = next;
+    notifyListeners();
+    _persist();
+  }
+
+  /// Admin-only — permanently removes a place from tonight's list, along
+  /// with its reports/confirmations/verification. Stories already posted
+  /// there stay in whoever posted them's Memories (same as what happens
+  /// when a place naturally rolls off at the 2 PM reset) — they just lose
+  /// the still-live venue record they pointed at. Silently does nothing for
+  /// a non-admin account.
+  void deletePlace(String placeId) {
+    if (!isAdmin) return;
+    places = places.where((p) => p.id != placeId).toList();
+    placeReports = placeReports.where((r) => r.placeId != placeId).toList();
+    placeConfirmations = Map<String, List<String>>.from(placeConfirmations)..remove(placeId);
+    adminVerifiedPlaceIds = Set<String>.from(adminVerifiedPlaceIds)..remove(placeId);
+    notifyListeners();
+    _persist();
+  }
+
+  /// Admin-only — permanently deletes one chat message, area-chat or a DM.
+  /// Silently does nothing for a non-admin account.
+  void deleteMessage(String messageId) {
+    if (!isAdmin) return;
+    messages = messages.where((m) => m.id != messageId).toList();
+    notifyListeners();
+    _persist();
+  }
 
   /// Admin-only toggle — silently does nothing for a non-admin account, so
   /// a UI bug can never let a regular user flip this (the UI itself also
@@ -308,14 +361,17 @@ class AppStore extends ChangeNotifier {
   // Account — browsing FUNKY is always anonymous and free; you only need
   // one of these to post a Story/poll/place or send a message (see
   // requireAccountThen in lib/screens/account_screen.dart, which is what
-  // actually enforces that gate from the UI). Survives the 2 PM reset and
-  // app restarts, same as friends.
+  // actually enforces that gate from the UI). A REAL Supabase Auth account
+  // now (see signUp/signIn/etc. below) — accountEmail/signedIn/
+  // supabaseUserId always mirror Supabase's own current session (re-derived
+  // fresh in load(), not trusted from local storage), not a locally-faked
+  // password check like before. supabaseUserId is this device's bridge to
+  // the real backend's `profiles`/`friendships`/`stories`/`messages` tables
+  // — everything else in AppStore still runs on the local 'me' sentinel id
+  // for now; wiring those up to the real tables is the next phase.
   String? accountEmail;
-  String? _passwordHash;
-  String? _passwordSalt;
+  String? supabaseUserId;
   bool signedIn = false;
-
-  bool get hasAccount => accountEmail != null && _passwordHash != null;
 
   // Anti-spam: the server-free equivalent of a rate limit. Covers chat
   // messages (sendMessage) — see also the 15-day cooldown on setHandle just
@@ -415,15 +471,12 @@ class AppStore extends ChangeNotifier {
           }
         }
 
-        // Account info is never tied to tonight's session — it survives
-        // same as friends/DMs, read unconditionally either way below.
-        accountEmail = parsed['accountEmail'] as String?;
-        _passwordHash = parsed['passwordHash'] as String?;
-        _passwordSalt = parsed['passwordSalt'] as String?;
-        signedIn = parsed['signedIn'] as bool? ?? false;
         // Also never tied to tonight's session — a FUNKY Admin verification
         // should survive the 2 PM reset the same way the account itself does.
         adminVerifiedPlaceIds = ((parsed['adminVerifiedPlaceIds'] as List?) ?? const []).map((e) => e as String).toSet();
+
+        // Same reasoning — a ban shouldn't quietly lift itself at 2 PM.
+        bannedUserIds = ((parsed['bannedUserIds'] as List?) ?? const []).map((e) => e as String).toSet();
 
         if (storedSession == currentSession) {
           me = parsedMe;
@@ -478,6 +531,14 @@ class AppStore extends ChangeNotifier {
     } catch (_) {
       // Corrupt or missing storage — just start fresh, same as a new install.
     } finally {
+      // Real sign-in state now comes from Supabase's own session, not a
+      // locally-stored flag — supabase_flutter persists and auto-refreshes
+      // that session on its own, so this just mirrors whatever it already
+      // restored rather than trusting (possibly stale) local JSON.
+      final session = Supabase.instance.client.auth.currentSession;
+      signedIn = session != null;
+      accountEmail = session?.user.email;
+      supabaseUserId = session?.user.id;
       // Age out old Memories before anyone ever sees them — otherwise the
       // very first frame could flash a Memory that's about to disappear.
       _purgeExpiredMemories();
@@ -488,6 +549,11 @@ class AppStore extends ChangeNotifier {
       // the next launch (load() above always merges whatever's still on
       // disk; only _persist() ever rewrites it).
       _persist();
+      // A session already on this device (you never signed out last time)
+      // — pick the real backend sync back up the same as a fresh signIn
+      // would, so Stories/DMs start flowing in without waiting for you to
+      // touch the account screen.
+      if (signedIn) _startRemoteSync();
     }
   }
 
@@ -504,11 +570,12 @@ class AppStore extends ChangeNotifier {
         'stories': stories.where((s) => s.uid == 'me').map((s) => s.toJson()).toList(),
         'placeReports': placeReports.where((r) => r.reporterId == 'me').map((r) => r.toJson()).toList(),
         'myVenueConfirmations': placeConfirmations.entries.where((e) => e.value.contains('me')).map((e) => e.key).toList(),
-        'accountEmail': accountEmail,
-        'passwordHash': _passwordHash,
-        'passwordSalt': _passwordSalt,
-        'signedIn': signedIn,
+        // accountEmail/signedIn/supabaseUserId are no longer written here —
+        // they're derived fresh from Supabase's own session on every load()
+        // instead (see there), so there's nothing real to persist locally
+        // for them anymore.
         'adminVerifiedPlaceIds': adminVerifiedPlaceIds.toList(),
+        'bannedUserIds': bannedUserIds.toList(),
       };
       await prefs.setString(_storageKey, jsonEncode(payload));
     } catch (_) {
@@ -676,6 +743,12 @@ class AppStore extends ChangeNotifier {
     return theirs.where((s) => s.session == today).toList();
   }
 
+  /// Everyone 'me' is actually (mutually) friends with right now, resolved
+  /// to full Person records so the UI can show their real @handle — what
+  /// the new "Friends" section on FriendRequestsScreen lists, separate from
+  /// the incoming/outgoing pending requests below.
+  List<Person> get myFriends => me.friends.map(personById).whereType<Person>().toList();
+
   List<Person> get incomingFriendRequests =>
       me.friendRequestsReceived.map(personById).whereType<Person>().toList();
 
@@ -683,6 +756,55 @@ class AppStore extends ChangeNotifier {
       me.friendRequestsSent.map(personById).whereType<Person>().toList();
 
   int get pendingFriendRequestCount => me.friendRequestsReceived.length;
+
+  /// Looks up people by @handle for the magnifying-glass search on the
+  /// Friends screen — so you can add someone by username directly instead
+  /// of only being able to Add Friend from a Story/DM/chat you already saw
+  /// them in. Always checks everyone already known on this device first
+  /// (demo accounts, friends, anyone already synced in from a Story or DM)
+  /// so search still works offline/signed-out; when signed in, this also
+  /// queries the real `profiles` table for a case-insensitive partial match
+  /// and merges any new matches into [people] (via _personFromProfileRow,
+  /// same as _ensurePeopleFor) so their avatar/profile page have something
+  /// real to show. Falls back to just the local matches if the remote
+  /// lookup fails (offline, etc.) rather than showing an error. Banned
+  /// users never show up here, same as everywhere else they're hidden.
+  Future<List<Person>> searchPeopleByHandle(String query) async {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final localMatches = people.values.where((p) => p.handle.toLowerCase().contains(q) && !isBanned(p.id)).toList();
+    if (!signedIn || supabaseUserId == null) return localMatches;
+    try {
+      final rows = await Supabase.instance.client
+          .from('profiles')
+          .select()
+          .ilike('handle', '%$q%')
+          .neq('id', supabaseUserId!)
+          .limit(25);
+      final updated = Map<String, Person>.from(people);
+      final matchedIds = <String>{};
+      for (final row in rows) {
+        final id = row['id'] as String;
+        matchedIds.add(id);
+        if (isBanned(id)) continue;
+        // Same rule as _ensurePeopleFor — never clobber a Person record
+        // already in [people] (e.g. an existing friend's local state), only
+        // fill in ones this device hasn't seen before.
+        if (!people.containsKey(id)) updated[id] = _personFromProfileRow(row);
+        _remotePersonIds.add(id);
+      }
+      people = updated;
+      notifyListeners();
+      // Re-resolve through `people` (rather than the raw rows) so a match
+      // that's already a friend/pending request still shows its real local
+      // state, and de-dupe against anyone already caught by localMatches.
+      final ids = <String>{...localMatches.map((p) => p.id), ...matchedIds};
+      return ids.where((id) => !isBanned(id)).map(personById).whereType<Person>().toList();
+    } catch (_) {
+      // Offline or a transient error — still show whatever matched locally.
+      return localMatches;
+    }
+  }
 
   void sendFriendRequest(String personId) {
     if (personId == 'me' || isFriendsWith(personId) || hasSentRequestTo(personId)) return;
@@ -767,6 +889,16 @@ class AppStore extends ChangeNotifier {
     me = me.copyWith(handle: trimmed, lastHandleChangeAt: DateTime.now().millisecondsSinceEpoch);
     notifyListeners();
     _persist();
+    // Best-effort — other real accounts read your @handle from the
+    // `profiles` table (see _personFromProfileRow), not from this device's
+    // local copy, so a real account's handle needs to actually reach the
+    // server. profiles.handle is UNIQUE there; a collision just fails this
+    // silently and your local handle stays changed anyway — a known gap
+    // (not surfaced as an error here) rather than reworking this into an
+    // async, pre-checked flow.
+    if (signedIn && supabaseUserId != null) {
+      _fireAndForgetUpdate('profiles', {'handle': trimmed}, supabaseUserId!);
+    }
     return null;
   }
 
@@ -783,6 +915,9 @@ class AppStore extends ChangeNotifier {
     me = me.copyWith(bio: bio);
     notifyListeners();
     _persist();
+    if (signedIn && supabaseUserId != null) {
+      _fireAndForgetUpdate('profiles', {'bio': bio}, supabaseUserId!);
+    }
   }
 
   void setAnon(bool value) {
@@ -939,17 +1074,53 @@ class AppStore extends ChangeNotifier {
   }
 
   /// A DM to one specific person instead of the shared area chat — same
-  /// message plumbing (ChatMessage/sendMessage), just addressed to a
-  /// per-pair room (see dmRoomId) instead of 'main'. Always sent under your
-  /// real handle; ghost mode is an area-chat-only thing. Returns null on
-  /// success, same contract as sendMessage.
-  String? sendDirectMessage(String toPersonId, String text) => sendMessage(dmRoomId('me', toPersonId), text, false);
+  /// message plumbing (ChatMessage/sendMessage) for a local/demo person,
+  /// just addressed to a per-pair room (see dmRoomId) instead of 'main'.
+  /// Always sent under your real handle; ghost mode is an area-chat-only
+  /// thing. For a REAL account (one whose profile we've actually fetched
+  /// from the backend — see _remotePersonIds/_ensurePeopleFor), this
+  /// instead writes straight to Supabase's `messages` table and waits for
+  /// the real row back, so it shows up under the id the realtime
+  /// subscription will also see — see _onRemoteMessageInsert's no-op-if-
+  /// already-present check, which is what stops that from double-posting.
+  /// Returns null on success, same contract as sendMessage.
+  Future<String?> sendDirectMessage(String toPersonId, String text) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastMessageAt;
+    if (last != null && now - last < _messageCooldownMs) {
+      return 'Slow down a sec before sending another message.';
+    }
+    if (signedIn && supabaseUserId != null && _remotePersonIds.contains(toPersonId)) {
+      try {
+        final rows = await Supabase.instance.client.from('messages').insert({
+          'sender_id': supabaseUserId,
+          'recipient_id': toPersonId,
+          'text': text,
+        }).select();
+        final msg = _messageFromRow(rows.first);
+        if (msg != null) {
+          _remoteMessageIds.add(msg.id);
+          messages = [...messages, msg];
+          _lastMessageAt = now;
+          notifyListeners();
+          _persist();
+          return null;
+        }
+      } catch (_) {
+        // Falls through to the local-only send below so the message still
+        // shows up on this device even if the real send failed (offline,
+        // etc.) — it just won't reach the other person's phone until a
+        // retry succeeds.
+      }
+    }
+    return sendMessage(dmRoomId('me', toPersonId), text, false);
+  }
 
   /// Everyone 'me' has a DM thread with, most-recently-active first — what
-  /// the Messages segment of Chat lists. NOTE: since FUNKY has no backend
-  /// (see the comment at the top of this file), this only ever reflects
-  /// messages sent *from this device* — there's nothing here yet that lets
-  /// two different phones actually exchange a DM.
+  /// the Messages segment of Chat lists. Real accounts' threads (synced via
+  /// the backend's `messages` table) and local/demo ones are both just
+  /// entries in [messages] by this point, so this reads the same either way
+  /// — see sendDirectMessage/_onRemoteMessageInsert for how a real one gets in.
   List<Person> get dmConversations {
     final lastByPartner = <String, int>{};
     for (final m in messages) {
@@ -961,12 +1132,21 @@ class AppStore extends ChangeNotifier {
       final existing = lastByPartner[other];
       if (existing == null || m.t > existing) lastByPartner[other] = m.t;
     }
-    final partners = lastByPartner.keys.map(personById).whereType<Person>().toList();
+    final partners = lastByPartner.keys.map(personById).whereType<Person>().where((p) => !isBanned(p.id)).toList();
     partners.sort((a, b) => lastByPartner[b.id]!.compareTo(lastByPartner[a.id]!));
     return partners;
   }
 
-  void addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) {
+  /// Posts a new Story. When signed in, this also uploads any photo/video
+  /// to Supabase Storage and inserts the real row first (see the real
+  /// backend sync section below) so other real accounts can actually see
+  /// it — the local Story this device displays then carries the server's
+  /// own id, with its own local file kept for instant local playback (no
+  /// need to re-download your own just-captured upload). If that upload or
+  /// insert fails (offline, etc.) this still posts locally under a local id
+  /// so posting never silently fails on this device — it just won't reach
+  /// anyone else's phone until a retry succeeds.
+  Future<void> addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) async {
     // A snapshot of the place's name right now — Places are tonight-only
     // and get wiped at 2 PM, but a Story's entry in Memories is permanent,
     // so this is what lets an old Memory still say "Posted at Sigma Chi"
@@ -980,8 +1160,40 @@ class AppStore extends ChangeNotifier {
         }
       }
     }
+
+    String? remoteId;
+    final uid = supabaseUserId;
+    if (signedIn && uid != null) {
+      try {
+        final client = Supabase.instance.client;
+        String? mediaPath;
+        final localMediaFile = imagePath ?? videoPath;
+        if (localMediaFile != null) {
+          final ext = localMediaFile.contains('.') ? localMediaFile.split('.').last : 'dat';
+          // Storage RLS checks (storage.foldername(name))[1] = auth.uid(),
+          // so the upload path's first folder segment must be your own id —
+          // see supabase/schema.sql.
+          mediaPath = '$uid/${DateTime.now().millisecondsSinceEpoch}.$ext';
+          final bytes = await File(localMediaFile).readAsBytes();
+          await client.storage.from('stories').uploadBinary(mediaPath, bytes, fileOptions: const FileOptions(upsert: false));
+        }
+        final rows = await client.from('stories').insert({
+          'uid': uid,
+          'text': text,
+          'place_id': place == 'main' ? null : place,
+          'place_name': placeName,
+          'anon': anon,
+          'media_path': mediaPath,
+          'is_video': videoPath != null,
+        }).select();
+        remoteId = rows.first['id'] as String;
+      } catch (_) {
+        // Falls through to the local-only post below.
+      }
+    }
+
     final story = Story(
-      id: 'story_${DateTime.now().millisecondsSinceEpoch}',
+      id: remoteId ?? 'story_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
       uid: 'me',
       text: text,
@@ -991,12 +1203,14 @@ class AppStore extends ChangeNotifier {
       placeName: placeName,
       anon: anon,
       session: sessionKey(),
-      // Seed a few of tonight's demo people as having already seen it, so a
-      // freshly-posted Story doesn't just sit at a dead "0 views" — same
-      // reasoning as the poll-vote and friend-request seeds above.
-      views: (people.keys.toList()..shuffle()).take(2).toList(),
+      // A real post starts at its real (zero) view count — the demo-seed
+      // "a couple people already saw it" boost below is only for the
+      // local-only fallback, so a brand-new real account's feed doesn't
+      // look broken before anyone else has actually seen it.
+      views: remoteId != null ? const [] : (people.keys.toList()..shuffle()).take(2).toList(),
       likes: const [],
     );
+    if (remoteId != null) _remoteStoryIds.add(remoteId);
     stories = [...stories, story];
     if (place != 'main') _award(5); // "post a Story at a venue"
     _recordNightActivity();
@@ -1039,6 +1253,16 @@ class AppStore extends ChangeNotifier {
     stories = [...stories]..removeAt(i);
     notifyListeners();
     _persist();
+    if (signedIn && supabaseUserId != null && _remoteStoryIds.contains(storyId)) {
+      _remoteStoryIds.remove(storyId);
+      unawaited(() async {
+        try {
+          await Supabase.instance.client.from('stories').delete().eq('id', storyId);
+        } catch (_) {
+          // Best-effort — it's already gone from this device either way.
+        }
+      }());
+    }
   }
 
   /// Pins a Memory so it never auto-deletes — the bookmark action on a
@@ -1075,14 +1299,14 @@ class AppStore extends ChangeNotifier {
   }
 
   void likeStory(String id) {
-    stories = stories.map((s) {
-      if (s.id == id && !s.likes.contains('me')) {
-        return s.copyWith(likes: [...s.likes, 'me']);
-      }
-      return s;
-    }).toList();
+    final i = stories.indexWhere((s) => s.id == id);
+    if (i == -1 || stories[i].likes.contains('me')) return;
+    stories = [...stories]..[i] = stories[i].copyWith(likes: [...stories[i].likes, 'me']);
     notifyListeners();
     _persist();
+    if (signedIn && supabaseUserId != null && _remoteStoryIds.contains(id)) {
+      _fireAndForgetInsert('story_likes', {'story_id': id, 'liker_id': supabaseUserId});
+    }
   }
 
   /// Marks a Story as seen by 'me' — called once per Story shown in the
@@ -1094,6 +1318,9 @@ class AppStore extends ChangeNotifier {
     stories = [...stories]..[i] = updated;
     notifyListeners();
     _persist();
+    if (signedIn && supabaseUserId != null && _remoteStoryIds.contains(storyId)) {
+      _fireAndForgetInsert('story_views', {'story_id': storyId, 'viewer_id': supabaseUserId});
+    }
   }
 
   /// Marks a Story as screenshotted by 'me' — fed by the native iOS/Android
@@ -1211,78 +1438,530 @@ class AppStore extends ChangeNotifier {
     return null;
   }
 
-  String? signUp(String email, String password) {
+  /// Creates a REAL Supabase account — this is the first point where FUNKY
+  /// actually talks to the backend (see supabase/schema.sql). A trigger on
+  /// that project creates the matching `profiles` row server-side the
+  /// instant this succeeds. If the project has email confirmation turned on
+  /// (the Supabase default), Supabase hands back a user but no session yet
+  /// — there's nothing to sign in as until the confirmation link is
+  /// clicked, so this reports that back as its "error" (really an
+  /// instruction) rather than claiming signedIn.
+  Future<String?> signUp(String email, String password) async {
     final emailError = validateEmail(email);
     if (emailError != null) return emailError;
     final pwError = validatePassword(password);
     if (pwError != null) return pwError;
-    final salt = _newSalt();
-    accountEmail = email.trim().toLowerCase();
-    _passwordSalt = salt;
-    _passwordHash = _hashPassword(password, salt);
-    signedIn = true;
-    notifyListeners();
-    _persist();
-    return null;
+    try {
+      final response = await Supabase.instance.client.auth.signUp(
+        email: email.trim(),
+        password: password,
+      );
+      if (response.session == null) {
+        return 'Check your email to confirm your account, then log in.';
+      }
+      accountEmail = response.user?.email;
+      supabaseUserId = response.user?.id;
+      signedIn = true;
+      notifyListeners();
+      _persist();
+      _startRemoteSync();
+      return null;
+    } on AuthException catch (e) {
+      return e.message;
+    } catch (_) {
+      return "Couldn't create an account — check your connection and try again.";
+    }
   }
 
-  String? signIn(String email, String password) {
-    if (!hasAccount) return 'No account on this device yet — create one first.';
-    final matches = email.trim().toLowerCase() == accountEmail && _hashPassword(password, _passwordSalt!) == _passwordHash;
-    if (!matches) return 'Email or password is wrong.';
-    signedIn = true;
-    notifyListeners();
-    _persist();
-    return null;
+  Future<String?> signIn(String email, String password) async {
+    try {
+      final response = await Supabase.instance.client.auth.signInWithPassword(
+        email: email.trim(),
+        password: password,
+      );
+      if (response.session == null) return 'Email or password is wrong.';
+      accountEmail = response.user?.email;
+      supabaseUserId = response.user?.id;
+      signedIn = true;
+      notifyListeners();
+      _persist();
+      _startRemoteSync();
+      return null;
+    } on AuthException catch (_) {
+      return 'Email or password is wrong.';
+    } catch (_) {
+      return "Couldn't log in — check your connection and try again.";
+    }
   }
 
-  void signOut() {
+  Future<void> signOut() async {
+    try {
+      await Supabase.instance.client.auth.signOut();
+    } catch (_) {
+      // Best-effort — fall through and clear local state either way below,
+      // so a network hiccup never traps someone in a "signed in" UI with no
+      // way to actually get out of it.
+    }
+    _stopRemoteSync();
+    // So a shared device doesn't keep showing the account that just signed
+    // out's synced Stories/DMs/profiles to whoever uses it next.
+    _clearRemoteData();
     signedIn = false;
+    accountEmail = null;
+    supabaseUserId = null;
     notifyListeners();
     _persist();
   }
 
-  String? changeEmail(String newEmail, String currentPassword) {
-    if (!signedIn || !hasAccount) return 'Log in first.';
-    if (_hashPassword(currentPassword, _passwordSalt!) != _passwordHash) return 'Current password is wrong.';
+  /// Re-signs-in with the current password first — proof you're really you
+  /// — before asking Supabase to change anything sensitive. Supabase's
+  /// "secure email change" sends a confirmation link to the new address (and
+  /// often the old one too) before it actually takes effect, so accountEmail
+  /// deliberately isn't updated here yet; load()/signIn() will pick up the
+  /// real new address once the link is clicked and a session is re-derived.
+  Future<String?> changeEmail(String newEmail, String currentPassword) async {
+    if (!signedIn || accountEmail == null) return 'Log in first.';
     final error = validateEmail(newEmail);
     if (error != null) return error;
-    accountEmail = newEmail.trim().toLowerCase();
-    notifyListeners();
-    _persist();
-    return null;
+    try {
+      await Supabase.instance.client.auth.signInWithPassword(email: accountEmail!, password: currentPassword);
+      await Supabase.instance.client.auth.updateUser(UserAttributes(email: newEmail.trim()));
+      return "Check your new email's inbox for a confirmation link — it won't change until you click it.";
+    } on AuthException catch (_) {
+      return 'Current password is wrong.';
+    } catch (_) {
+      return "Couldn't update your email — check your connection and try again.";
+    }
   }
 
-  /// A mock, local-only "reset password" — there's no backend or email
-  /// delivery in this app to actually prove you own the inbox at [email],
-  /// so this just checks the email matches the account already on this
-  /// device and lets you set a new password directly. Good enough for a
-  /// demo/local install; a real backend would need to replace this with an
-  /// actual emailed reset link before this could ever ship for real users.
-  String? resetPassword(String email, String newPassword) {
-    if (!hasAccount) return 'No account on this device yet — create one first.';
-    if (email.trim().toLowerCase() != accountEmail) return "That email doesn't match the account on this device.";
-    final pwError = validatePassword(newPassword);
-    if (pwError != null) return pwError;
-    final salt = _newSalt();
-    _passwordSalt = salt;
-    _passwordHash = _hashPassword(newPassword, salt);
-    signedIn = true;
-    notifyListeners();
-    _persist();
-    return null;
+  /// Sends a REAL password-reset email via Supabase. Unlike the old local
+  /// mock, this can no longer just hand you a new-password field directly —
+  /// there's no way to prove you own the inbox at [email] without an actual
+  /// emailed link. NOTE: this app doesn't have deep linking wired up yet to
+  /// catch that link and bring someone back in to actually set the new
+  /// password, so for now this only gets as far as "the email is sent" —
+  /// finishing that loop is follow-up work once deep linking exists.
+  Future<String?> resetPassword(String email) async {
+    final emailError = validateEmail(email);
+    if (emailError != null) return emailError;
+    try {
+      await Supabase.instance.client.auth.resetPasswordForEmail(email.trim());
+      return null;
+    } on AuthException catch (e) {
+      return e.message;
+    } catch (_) {
+      return "Couldn't send the reset email — check your connection and try again.";
+    }
   }
 
-  String? changePassword(String currentPassword, String newPassword) {
-    if (!signedIn || !hasAccount) return 'Log in first.';
-    if (_hashPassword(currentPassword, _passwordSalt!) != _passwordHash) return 'Current password is wrong.';
+  Future<String?> changePassword(String currentPassword, String newPassword) async {
+    if (!signedIn || accountEmail == null) return 'Log in first.';
     final error = validatePassword(newPassword);
     if (error != null) return error;
-    final salt = _newSalt();
-    _passwordSalt = salt;
-    _passwordHash = _hashPassword(newPassword, salt);
+    try {
+      await Supabase.instance.client.auth.signInWithPassword(email: accountEmail!, password: currentPassword);
+      await Supabase.instance.client.auth.updateUser(UserAttributes(password: newPassword));
+      return null;
+    } on AuthException catch (_) {
+      return 'Current password is wrong.';
+    } catch (_) {
+      return "Couldn't update your password — check your connection and try again.";
+    }
+  }
+
+  // --- Real backend sync: Stories + DMs -------------------------------
+  // Only Stories and 1:1 DMs are wired to the real Supabase backend so far
+  // (see supabase/schema.sql) — friends and the shared area Live Chat are
+  // still local-only. Live Chat in particular has no matching table at all
+  // to wire up: `messages` is strictly 1:1 (sender/recipient columns, no
+  // 'room' or anonymous concept), so it would need its own new table and
+  // policies, not just new code here.
+  //
+  // Everything below only ever runs while signedIn with a real
+  // supabaseUserId (see _startRemoteSync's callers: signUp, signIn, and
+  // load() when a session already exists), and is torn down again on
+  // signOut (_stopRemoteSync + _clearRemoteData) so a shared device doesn't
+  // keep showing the previous account's synced content to whoever uses it
+  // next.
+  //
+  // Identity note: your OWN content is always stored/displayed locally
+  // under the 'me' sentinel id, same as every other local list in this
+  // file — a remote row authored by your own supabaseUserId gets
+  // translated to 'me' the moment it's read (see _storyFromRow/
+  // _messageFromRow); a remote row authored by anyone else keeps their real
+  // uuid as the id, and _ensurePeopleFor fetches a Person record for it
+  // from `profiles` so the rest of the UI (FunkyAvatar, FunkyHandle,
+  // PersonProfileScreen, …) has something to render.
+
+  RealtimeChannel? _storiesChannel;
+  RealtimeChannel? _storyViewsChannel;
+  RealtimeChannel? _storyLikesChannel;
+  RealtimeChannel? _messagesChannel;
+
+  // Every story/message/person id that came from the real backend, tracked
+  // just so signOut (_clearRemoteData) can cleanly drop them again.
+  final Set<String> _remoteStoryIds = {};
+  final Set<String> _remoteMessageIds = {};
+  final Set<String> _remotePersonIds = {};
+
+  void _startRemoteSync() {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    _stopRemoteSync();
+    unawaited(_fetchRemoteStories());
+    unawaited(_fetchRemoteMessages());
+
+    final client = Supabase.instance.client;
+    _storiesChannel = client.channel('public:stories:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'stories',
+        callback: (payload) => _onRemoteStoryInsert(payload.newRecord),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'stories',
+        callback: (payload) => _onRemoteStoryDelete(payload.oldRecord),
+      )
+      ..subscribe();
+
+    _storyViewsChannel = client.channel('public:story_views:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'story_views',
+        callback: (payload) => _onRemoteStoryViewInsert(payload.newRecord),
+      )
+      ..subscribe();
+
+    _storyLikesChannel = client.channel('public:story_likes:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'story_likes',
+        callback: (payload) => _onRemoteStoryLikeChange(payload.newRecord, true),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'story_likes',
+        callback: (payload) => _onRemoteStoryLikeChange(payload.oldRecord, false),
+      )
+      ..subscribe();
+
+    _messagesChannel = client.channel('public:messages:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'messages',
+        callback: (payload) => _onRemoteMessageInsert(payload.newRecord),
+      )
+      ..subscribe();
+  }
+
+  void _stopRemoteSync() {
+    final client = Supabase.instance.client;
+    for (final channel in [_storiesChannel, _storyViewsChannel, _storyLikesChannel, _messagesChannel]) {
+      if (channel != null) client.removeChannel(channel);
+    }
+    _storiesChannel = null;
+    _storyViewsChannel = null;
+    _storyLikesChannel = null;
+    _messagesChannel = null;
+  }
+
+  void _clearRemoteData() {
+    stories = stories.where((s) => !_remoteStoryIds.contains(s.id)).toList();
+    messages = messages.where((m) => !_remoteMessageIds.contains(m.id)).toList();
+    people = {for (final entry in people.entries) if (!_remotePersonIds.contains(entry.key)) entry.key: entry.value};
+    _remoteStoryIds.clear();
+    _remoteMessageIds.clear();
+    _remotePersonIds.clear();
+  }
+
+  void _fireAndForgetInsert(String table, Map<String, dynamic> data) {
+    unawaited(() async {
+      try {
+        await Supabase.instance.client.from(table).insert(data);
+      } catch (_) {
+        // Best-effort — the local copy already updated on this device;
+        // if this fails (offline, etc.) the server just won't have it
+        // until a retry succeeds.
+      }
+    }());
+  }
+
+  void _fireAndForgetUpdate(String table, Map<String, dynamic> data, String matchId) {
+    unawaited(() async {
+      try {
+        await Supabase.instance.client.from(table).update(data).eq('id', matchId);
+      } catch (_) {
+        // Best-effort — see _fireAndForgetInsert.
+      }
+    }());
+  }
+
+  /// Fetches a Person record from `profiles` for every id in [uids] this
+  /// device doesn't already know about (skipping 'me' and anyone already
+  /// in [people], demo accounts included) so FunkyAvatar/FunkyHandle/
+  /// PersonProfileScreen all have something real to render for a story or
+  /// DM from an actual other account.
+  Future<void> _ensurePeopleFor(Iterable<String> uids) async {
+    final toFetch = uids.where((id) => id != 'me' && !people.containsKey(id)).toSet();
+    if (toFetch.isEmpty) return;
+    try {
+      final rows = await Supabase.instance.client.from('profiles').select().inFilter('id', toFetch.toList());
+      final updated = Map<String, Person>.from(people);
+      for (final row in rows) {
+        final id = row['id'] as String;
+        updated[id] = _personFromProfileRow(row);
+        _remotePersonIds.add(id);
+      }
+      people = updated;
+      notifyListeners();
+    } catch (_) {
+      // Offline — these ids just render with a '?' avatar / a placeholder
+      // handle until the next successful sync.
+    }
+  }
+
+  Person _personFromProfileRow(Map<String, dynamic> row) {
+    final id = row['id'] as String;
+    return Person(
+      id: id,
+      handle: (row['handle'] as String?) ?? 'funky_${id.substring(0, 8)}',
+      bio: (row['bio'] as String?) ?? '',
+      since: 0,
+      points: (row['points'] as num?)?.toInt() ?? 0,
+      friends: const [],
+      friendRequestsSent: const [],
+      friendRequestsReceived: const [],
+      muted: const [],
+      anon: false,
+      session: sessionKey(),
+      votes: const {},
+      seen: const [],
+      likes: const [],
+      // Their avatar_url (if they ever set one) is a remote URL, not a
+      // local file path — FunkyAvatar only renders local files right now,
+      // so a real account just falls back to its initial-letter circle
+      // until avatars are part of this sync too.
+      photoPath: null,
+    );
+  }
+
+  /// Builds a local Story from one `stories` row — resolving its media to a
+  /// temporary signed download URL when it has any, since a real row never
+  /// carries a local file path. Returns null for a malformed row rather
+  /// than throwing, so one bad row can't break the whole fetch/subscription.
+  Future<Story?> _storyFromRow(Map<String, dynamic> row, {List<String> views = const [], List<String> likes = const []}) async {
+    final rowUid = row['uid'] as String?;
+    final id = row['id'] as String?;
+    if (rowUid == null || id == null) return null;
+    final createdAtRaw = row['created_at'] as String?;
+    final createdAt = createdAtRaw != null ? DateTime.parse(createdAtRaw).toLocal() : DateTime.now();
+    final mediaPath = row['media_path'] as String?;
+    final isVideo = row['is_video'] as bool? ?? false;
+    String? mediaUrl;
+    if (mediaPath != null) {
+      try {
+        // An hour is generous for how long a Story viewer session could
+        // plausibly stay open on one Story; it's re-resolved fresh on
+        // every fetch anyway, never cached past that.
+        mediaUrl = await Supabase.instance.client.storage.from('stories').createSignedUrl(mediaPath, 3600);
+      } catch (_) {
+        // No access (shouldn't happen if the row itself was visible) or
+        // offline — the Story still shows with its caption/placeholder.
+      }
+    }
+    return Story(
+      id: id,
+      t: createdAt.millisecondsSinceEpoch,
+      uid: rowUid == supabaseUserId ? 'me' : rowUid,
+      text: row['text'] as String?,
+      place: row['place_id'] as String?,
+      placeName: row['place_name'] as String?,
+      anon: row['anon'] as bool? ?? false,
+      session: sessionKey(createdAt),
+      views: views,
+      likes: likes,
+      savedToTimeline: row['saved_to_timeline'] as bool? ?? false,
+      imageUrl: mediaUrl != null && !isVideo ? mediaUrl : null,
+      videoUrl: mediaUrl != null && isVideo ? mediaUrl : null,
+    );
+  }
+
+  /// Merges freshly-fetched/updated remote Stories into [stories] — a real
+  /// Story you posted FROM THIS DEVICE already has a local imagePath/
+  /// videoPath from when you captured it, so that local copy's file
+  /// reference is kept and only its server-tracked fields (views/likes/
+  /// savedToTimeline) are refreshed from [fetched]; anything else (someone
+  /// else's Story, or your own fetched back on a second device) is used
+  /// as-is, signed URL and all.
+  void _mergeRemoteStories(List<Story> fetched) {
+    if (fetched.isEmpty) return;
+    final byId = {for (final s in stories) s.id: s};
+    for (final story in fetched) {
+      _remoteStoryIds.add(story.id);
+      final existingLocal = byId[story.id];
+      if (existingLocal != null && (existingLocal.imagePath != null || existingLocal.videoPath != null)) {
+        byId[story.id] = existingLocal.copyWith(views: story.views, likes: story.likes, savedToTimeline: story.savedToTimeline);
+      } else {
+        byId[story.id] = story;
+      }
+    }
+    stories = byId.values.toList();
     notifyListeners();
     _persist();
-    return null;
+  }
+
+  Future<void> _fetchRemoteStories() async {
+    if (supabaseUserId == null) return;
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client.from('stories').select().order('created_at');
+      final viewRows = await client.from('story_views').select();
+      final likeRows = await client.from('story_likes').select();
+      final viewsByStory = <String, List<String>>{};
+      for (final v in viewRows) {
+        final sid = v['story_id'] as String;
+        (viewsByStory[sid] ??= []).add(v['viewer_id'] as String);
+      }
+      final likesByStory = <String, List<String>>{};
+      for (final l in likeRows) {
+        final sid = l['story_id'] as String;
+        (likesByStory[sid] ??= []).add(l['liker_id'] as String);
+      }
+      final fetched = <Story>[];
+      for (final row in rows) {
+        final story = await _storyFromRow(row, views: viewsByStory[row['id']] ?? const [], likes: likesByStory[row['id']] ?? const []);
+        if (story != null) fetched.add(story);
+      }
+      await _ensurePeopleFor(fetched.map((s) => s.uid));
+      _mergeRemoteStories(fetched);
+    } catch (_) {
+      // Offline or a transient error — keep whatever's already showing;
+      // the realtime subscription (or the next sign-in) will catch up.
+    }
+  }
+
+  void _onRemoteStoryInsert(Map<String, dynamic> row) {
+    unawaited(() async {
+      final story = await _storyFromRow(row);
+      if (story == null) return;
+      await _ensurePeopleFor([story.uid]);
+      _mergeRemoteStories([story]);
+    }());
+  }
+
+  void _onRemoteStoryDelete(Map<String, dynamic> oldRow) {
+    final id = oldRow['id'] as String?;
+    if (id == null) return;
+    stories = stories.where((s) => s.id != id).toList();
+    _remoteStoryIds.remove(id);
+    notifyListeners();
+    _persist();
+  }
+
+  void _onRemoteStoryViewInsert(Map<String, dynamic> row) {
+    final storyId = row['story_id'] as String?;
+    final viewerId = row['viewer_id'] as String?;
+    if (storyId == null || viewerId == null) return;
+    final i = stories.indexWhere((s) => s.id == storyId);
+    if (i == -1 || stories[i].views.contains(viewerId)) return;
+    stories = [...stories]..[i] = stories[i].copyWith(views: [...stories[i].views, viewerId]);
+    notifyListeners();
+    _persist();
+  }
+
+  void _onRemoteStoryLikeChange(Map<String, dynamic> row, bool added) {
+    final storyId = row['story_id'] as String?;
+    final likerId = row['liker_id'] as String?;
+    if (storyId == null || likerId == null) return;
+    final i = stories.indexWhere((s) => s.id == storyId);
+    if (i == -1) return;
+    final current = stories[i].likes;
+    final next = added ? (current.contains(likerId) ? current : [...current, likerId]) : current.where((id) => id != likerId).toList();
+    stories = [...stories]..[i] = stories[i].copyWith(likes: next);
+    notifyListeners();
+    _persist();
+  }
+
+  /// Builds a local ChatMessage from one `messages` row — same 'me'
+  /// translation and dmRoomId addressing as everywhere else, so DMs synced
+  /// from the real backend slot into exactly the same [messages] list (and
+  /// [dmConversations]/[messagesFor]) as a local/demo DM already does.
+  ChatMessage? _messageFromRow(Map<String, dynamic> row) {
+    final uid = supabaseUserId;
+    if (uid == null) return null;
+    final senderId = row['sender_id'] as String?;
+    final recipientId = row['recipient_id'] as String?;
+    final id = row['id'] as String?;
+    if (senderId == null || recipientId == null || id == null) return null;
+    final otherId = senderId == uid ? recipientId : senderId;
+    final createdAtRaw = row['created_at'] as String?;
+    final createdAt = createdAtRaw != null ? DateTime.parse(createdAtRaw).toLocal() : DateTime.now();
+    return ChatMessage(
+      id: id,
+      t: createdAt.millisecondsSinceEpoch,
+      room: dmRoomId('me', otherId),
+      uid: senderId == uid ? 'me' : senderId,
+      text: row['text'] as String? ?? '',
+      anon: false,
+    );
+  }
+
+  Future<void> _fetchRemoteMessages() async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('messages').select().order('created_at');
+      final fetched = <ChatMessage>[];
+      final otherIds = <String>{};
+      for (final row in rows) {
+        final msg = _messageFromRow(row);
+        if (msg == null) continue;
+        fetched.add(msg);
+        _remoteMessageIds.add(msg.id);
+        final sender = row['sender_id'] as String;
+        final recipient = row['recipient_id'] as String;
+        otherIds.add(sender == supabaseUserId ? recipient : sender);
+      }
+      await _ensurePeopleFor(otherIds);
+      final existingIds = messages.map((m) => m.id).toSet();
+      final newOnes = fetched.where((m) => !existingIds.contains(m.id)).toList();
+      if (newOnes.isNotEmpty) {
+        messages = [...messages, ...newOnes];
+        notifyListeners();
+        _persist();
+      }
+    } catch (_) {
+      // Offline — DMs sent/received while this device couldn't reach
+      // Supabase show up once the realtime channel reconnects or the next
+      // sign-in triggers a fresh fetch.
+    }
+  }
+
+  void _onRemoteMessageInsert(Map<String, dynamic> row) {
+    final msg = _messageFromRow(row);
+    if (msg == null) return;
+    _remoteMessageIds.add(msg.id);
+    // Already here — either this device sent it (sendDirectMessage adds it
+    // straight from the insert response) or a duplicate delivery of the
+    // same realtime event.
+    if (messages.any((m) => m.id == msg.id)) return;
+    unawaited(() async {
+      await _ensurePeopleFor([msg.uid]);
+      messages = [...messages, msg];
+      notifyListeners();
+      _persist();
+    }());
+  }
+
+  @override
+  void dispose() {
+    _stopRemoteSync();
+    super.dispose();
   }
 }

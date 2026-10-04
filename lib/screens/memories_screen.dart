@@ -93,7 +93,7 @@ class _MemoryCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          if (story.videoPath != null)
+          if (story.videoPath != null || story.videoUrl != null)
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
               child: Stack(
@@ -118,11 +118,20 @@ class _MemoryCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
               child: Image.file(File(story.imagePath!), height: 140, width: double.infinity, fit: BoxFit.cover),
+            )
+          // A Memory synced from another device you posted it on has no
+          // local file here — only the signed URL fetched from the real
+          // backend (see Story.imageUrl's doc comment in models.dart).
+          else if (story.imageUrl != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(story.imageUrl!, height: 140, width: double.infinity, fit: BoxFit.cover),
             ),
-          if (story.videoPath != null || story.imagePath != null) const SizedBox(height: 8),
+          if (story.videoPath != null || story.imagePath != null || story.videoUrl != null || story.imageUrl != null)
+            const SizedBox(height: 8),
           if (story.text != null && story.text!.isNotEmpty)
             Text(story.text!, style: TextStyle(color: tokens.ink))
-          else if (story.videoPath == null && story.imagePath == null)
+          else if (story.videoPath == null && story.imagePath == null && story.videoUrl == null && story.imageUrl == null)
             Text('Text story', style: TextStyle(color: tokens.mute)),
           const SizedBox(height: 8),
           Row(

@@ -58,6 +58,35 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     }
   }
 
+  /// FUNKY Admin only — confirms before permanently removing this place
+  /// tonight (see AppStore.deletePlace), then pops back out since the page
+  /// this screen is showing no longer exists.
+  Future<void> _confirmDeletePlace(BuildContext context, AppStore store, String placeName) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: tokens.surface,
+        title: Text('Delete $placeName?', style: TextStyle(color: tokens.ink)),
+        content: Text(
+          "This removes it from tonight's list along with its reports and confirmations. This can't be undone.",
+          style: TextStyle(color: tokens.mute),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Delete', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      store.deletePlace(widget.placeId);
+      if (context.mounted) Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -240,6 +269,15 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton.icon(
+                      onPressed: () => _confirmDeletePlace(context, store, place.name),
+                      icon: Icon(Icons.delete_outline, size: 18, color: tokens.danger),
+                      label: Text('Delete place (Admin)', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+                    ),
                   ),
                 ],
               ],

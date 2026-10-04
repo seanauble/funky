@@ -343,10 +343,14 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
 
   /// Video's own zoom gesture — slide up/down from the shutter button while
   /// it's held, same feel as Snapchat/TikTok, instead of pinching. Dragging
-  /// the full finger's travel (~220px) up sweeps from min to max zoom;
-  /// down sweeps back. _baseZoom is snapshotted in _startRecording, same
-  /// pattern as the pinch gesture's _onZoomStart.
-  static const double _dragZoomRange = 220;
+  /// the full finger's travel (~900px, well more than a full screen's
+  /// worth of drag on any phone) up sweeps from min to max zoom; down
+  /// sweeps back. _baseZoom is snapshotted in _startRecording, same pattern
+  /// as the pinch gesture's _onZoomStart. This used to be 220, which meant
+  /// well under half a screen's drag already hit max zoom — way too
+  /// sensitive, a small flinch of the finger would send it flying to the
+  /// end of the range.
+  static const double _dragZoomRange = 900;
 
   void _onRecordDragUpdate(LongPressMoveUpdateDetails details) {
     if (!_isRecording) return;
@@ -680,12 +684,15 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   }
 
   void _post(AppStore store) {
-    store.addStory(
+    // Posting (including any real-backend upload) keeps running after this
+    // screen closes — fire-and-forget rather than awaiting here, so the
+    // camera flow still feels instant even on a slow upload.
+    unawaited(store.addStory(
       imagePath: _isVideo ? null : _mediaFile!.path,
       videoPath: _isVideo ? _mediaFile!.path : null,
       place: _place,
       anon: _anon,
-    );
+    ));
     Navigator.of(context).pop();
   }
 
@@ -881,9 +888,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
           // button below), which stays here and reopens the camera.
           Positioned(
             top: 8,
-            right: 8,
+            left: 8,
             child: SafeArea(
               bottom: false,
+              right: false,
               child: InkWell(
                 onTap: _close,
                 customBorder: const CircleBorder(),
@@ -901,9 +909,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
           // with the in-app Memories/Timeline archive.
           Positioned(
             top: 8,
-            left: 8,
+            right: 8,
             child: SafeArea(
               bottom: false,
+              left: false,
               child: InkWell(
                 onTap: _savingToGallery ? null : _saveToCameraRoll,
                 customBorder: const CircleBorder(),
@@ -1191,7 +1200,7 @@ class _TextStoryPageState extends State<_TextStoryPage> {
             child: ElevatedButton(
               onPressed: canPost
                   ? () => requireAccountThen(context, store, () {
-                        store.addStory(text: _textController.text.trim(), place: _place, anon: _anon);
+                        unawaited(store.addStory(text: _textController.text.trim(), place: _place, anon: _anon));
                         Navigator.of(context).pop();
                       })
                   : null,

@@ -9,6 +9,17 @@ import 'screens/profile_screen.dart';
 import 'widgets/top_bar_actions.dart';
 import 'widgets/ui_widgets.dart';
 
+/// Lets a screen outside RootShell (e.g. Home's "Open chat" shortcut) jump
+/// to one of RootShell's own tabs instead of pushing a whole new route on
+/// top of it — set this to a tab index and RootShellState's listener below
+/// switches to it and immediately resets this back to null. Pushing a
+/// standalone ChatScreen used to be what left people stuck with no way
+/// back out of chat (it has no AppBar of its own by design, since it's
+/// meant to live as a tab); switching the existing tab instead means
+/// there's always the normal bottom tab bar to get anywhere else, so no
+/// back button is needed on ChatScreen at all.
+final ValueNotifier<int?> rootShellTabRequest = ValueNotifier<int?>(null);
+
 /// The five-tab bar from rule 12 — Home, Chat, a centre "+" that opens the
 /// Story/Poll/Place sheet, Places, Profile.
 class RootShell extends StatefulWidget {
@@ -20,6 +31,28 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    rootShellTabRequest.addListener(_handleTabRequest);
+  }
+
+  @override
+  void dispose() {
+    rootShellTabRequest.removeListener(_handleTabRequest);
+    super.dispose();
+  }
+
+  void _handleTabRequest() {
+    final requested = rootShellTabRequest.value;
+    if (requested == null) return;
+    setState(() => _index = requested);
+    // Reset immediately so a second tap on the same shortcut later still
+    // fires the listener (setting a ValueNotifier to its current value is a
+    // no-op that never notifies).
+    rootShellTabRequest.value = null;
+  }
 
   static const _screens = [
     HomeScreen(),
