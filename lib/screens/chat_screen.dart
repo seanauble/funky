@@ -100,12 +100,24 @@ class _ChatScreenState extends State<ChatScreen> {
                         onTap: () {
                           final text = _draftController.text.trim();
                           if (text.isEmpty) return;
-                          // Reading/browsing the live chat never needs an
-                          // account — only actually sending does.
-                          requireAccountThen(context, store, () {
-                            store.sendMessage('main', text, _anon);
+                          void send() {
+                            final error = store.sendMessage('main', text, _anon);
+                            if (error != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+                              return;
+                            }
                             _draftController.clear();
-                          });
+                          }
+                          // Reading/browsing the live chat never needs an
+                          // account. Sending under your real handle does too
+                          // — but a 👻 ghost-mode message never shows a name
+                          // either way, so it goes straight through with no
+                          // account gate at all.
+                          if (_anon) {
+                            send();
+                          } else {
+                            requireAccountThen(context, store, send);
+                          }
                         },
                         child: Container(
                           width: 38,

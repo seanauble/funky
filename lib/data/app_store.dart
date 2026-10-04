@@ -111,9 +111,54 @@ class AppStore extends ChangeNotifier {
   Map<String, List<String>> placeConfirmations = {};
   static const int venueVerificationThreshold = 15;
 
-  bool isPlaceVerified(String placeId) => (placeConfirmations[placeId]?.length ?? 0) >= venueVerificationThreshold;
+  // FUNKY Admin — one hardcoded account (there's no real backend/roles
+  // here, so this just checks the signed-in account's email against the
+  // one real admin address) who can mark a venue verified outright,
+  // bypassing the 15-confirmation crowd bar entirely. Everyone else's
+  // "Confirm" button still only ever feeds the normal count.
+  static const String _adminEmail = 'seanauble@icloud.com';
+  bool get isAdmin => signedIn && accountEmail == _adminEmail;
+
+  // Which venues a FUNKY Admin has manually verified — separate from
+  // placeConfirmations (which only ever holds real crowd confirmations).
+  // Deliberately not tied to tonight's session/reset: an admin shouldn't
+  // have to re-verify the same bar every night.
+  Set<String> adminVerifiedPlaceIds = {};
+
+  bool isAdminVerified(String placeId) => adminVerifiedPlaceIds.contains(placeId);
+
+  /// Admin-only toggle — silently does nothing for a non-admin account, so
+  /// a UI bug can never let a regular user flip this (the UI itself also
+  /// only ever shows the control to store.isAdmin in the first place).
+  void setAdminVerified(String placeId, bool verified) {
+    if (!isAdmin) return;
+    final next = Set<String>.from(adminVerifiedPlaceIds);
+    if (verified) {
+      next.add(placeId);
+    } else {
+      next.remove(placeId);
+    }
+    adminVerifiedPlaceIds = next;
+    notifyListeners();
+    _persist();
+  }
+
+  bool isPlaceVerified(String placeId) =>
+      isAdminVerified(placeId) || (placeConfirmations[placeId]?.length ?? 0) >= venueVerificationThreshold;
 
   int venueConfirmationCount(String placeId) => placeConfirmations[placeId]?.length ?? 0;
+
+  /// The venue-status line shown wherever a place is listed without the
+  /// room for place_detail_screen's full two-line card — three distinct
+  /// states, so "not verified yet" never reads the same as "a FUNKY Admin
+  /// manually verified this": admin override, cleared the crowd's
+  /// confirmation bar on its own, or still short of it (and by how much).
+  String venueStatusLabel(String placeId) {
+    if (isAdminVerified(placeId)) return 'FUNKY Verified';
+    final count = venueConfirmationCount(placeId);
+    if (count >= venueVerificationThreshold) return 'Verified · $count confirmations';
+    return 'Not admin verified · $count/$venueVerificationThreshold confirmations';
+  }
 
   bool hasConfirmedPlace(String placeId) => placeConfirmations[placeId]?.contains('me') ?? false;
 
@@ -218,6 +263,13 @@ class AppStore extends ChangeNotifier {
 
   bool get hasAccount => accountEmail != null && _passwordHash != null;
 
+  // Anti-spam: the server-free equivalent of a rate limit. Covers chat
+  // messages (sendMessage) — see also the 15-day cooldown on setHandle just
+  // below, which reuses the same "store the last-change timestamp, compare
+  // against now" pattern.
+  int? _lastMessageAt;
+  static const int _messageCooldownMs = 3000;
+
   AppStore() {
     final session = sessionKey();
     people = {for (final p in samplePeople(session)) p.id: p};
@@ -315,6 +367,9 @@ class AppStore extends ChangeNotifier {
         _passwordHash = parsed['passwordHash'] as String?;
         _passwordSalt = parsed['passwordSalt'] as String?;
         signedIn = parsed['signedIn'] as bool? ?? false;
+        // Also never tied to tonight's session — a FUNKY Admin verification
+        // should survive the 2 PM reset the same way the account itself does.
+        adminVerifiedPlaceIds = ((parsed['adminVerifiedPlaceIds'] as List?) ?? const []).map((e) => e as String).toSet();
 
         if (storedSession == currentSession) {
           me = parsedMe;
@@ -348,7 +403,16 @@ class AppStore extends ChangeNotifier {
             activeNights: parsedMe.activeNights,
             streak: parsedMe.streak,
             placesVisited: parsedMe.placesVisited,
+            photoPath: parsedMe.photoPath,
+            lastHandleChangeAt: parsedMe.lastHandleChangeAt,
           );
+          // Your own Stories are permanent (Memories), even though the
+          // *place* records and everyone else's tonight-only Stories get
+          // wiped at reset — this used to just drop `parsedStories`
+          // entirely, which is why Memories kept losing photos/videos every
+          // night. _persist() only ever writes 'me'-authored stories here,
+          // so this merge is always just your own history.
+          stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
           justReset = true;
         }
       } else {
@@ -382,6 +446,7 @@ class AppStore extends ChangeNotifier {
         'passwordHash': _passwordHash,
         'passwordSalt': _passwordSalt,
         'signedIn': signedIn,
+        'adminVerifiedPlaceIds': adminVerifiedPlaceIds.toList(),
       };
       await prefs.setString(_storageKey, jsonEncode(payload));
     } catch (_) {
@@ -492,6 +557,22 @@ class AppStore extends ChangeNotifier {
 
   List<Story> storiesFor(String ring) => stories.where((s) => s.place == ring).toList();
 
+  /// The newest Story at [placeId] that actually has a photo or video —
+  /// what a place's thumbnail/banner switches to showing once something's
+  /// been posted there, instead of just the flat colored-letter
+  /// placeholder (Place Detail's banner, Home's trending cards, the
+  /// Places list all read this). Null when nothing with media has gone up
+  /// there yet.
+  Story? latestMediaStoryFor(String placeId) {
+    Story? latest;
+    for (final s in stories) {
+      if (s.place != placeId) continue;
+      if (s.videoPath == null && s.imagePath == null) continue;
+      if (latest == null || s.t > latest.t) latest = s;
+    }
+    return latest;
+  }
+
   List<Story> get myStories {
     final mine = stories.where((s) => s.uid == 'me').toList();
     mine.sort((a, b) => b.t.compareTo(a.t));
@@ -589,8 +670,36 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
-  void setHandle(String handle) {
-    me = me.copyWith(handle: handle);
+  // How often you're allowed to actually change your @handle — just
+  // picking a handle for the first time (lastHandleChangeAt still null)
+  // isn't rate-limited, only changing an existing one is.
+  static const int _handleChangeCooldownMs = 15 * 24 * 60 * 60 * 1000;
+
+  /// Returns null on success, or a user-facing error (still inside the
+  /// 15-day cooldown) if the change didn't go through.
+  String? setHandle(String handle) {
+    final trimmed = handle.trim();
+    if (trimmed.isEmpty) return 'Enter a username.';
+    if (trimmed == me.handle) return null; // unchanged — no-op, no cooldown hit
+    final last = me.lastHandleChangeAt;
+    if (last != null) {
+      final elapsedMs = DateTime.now().millisecondsSinceEpoch - last;
+      if (elapsedMs < _handleChangeCooldownMs) {
+        final daysLeft = ((_handleChangeCooldownMs - elapsedMs) / (24 * 60 * 60 * 1000)).ceil();
+        return "You can change your username again in $daysLeft day${daysLeft == 1 ? '' : 's'}.";
+      }
+    }
+    me = me.copyWith(handle: trimmed, lastHandleChangeAt: DateTime.now().millisecondsSinceEpoch);
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  /// Sets a profile photo captured with the in-app camera — FUNKY never
+  /// uses a gallery/image picker, same rule as Stories (see
+  /// CameraCaptureScreen).
+  void setProfilePhoto(String path) {
+    me = me.copyWith(photoPath: path);
     notifyListeners();
     _persist();
   }
@@ -655,6 +764,15 @@ class AppStore extends ChangeNotifier {
       session: sessionKey(),
     );
     places = [...places, place];
+    // Same demo-boost the 5 built-in venues got in the constructor — without
+    // this, a venue you add starts at 0 confirmations and can never clear
+    // the 15-confirmation bar, so it would never show up on Home's
+    // verified-only surfaces (trending, story rings, what's-the-move) no
+    // matter how much Story activity happened there.
+    placeConfirmations = {
+      ...placeConfirmations,
+      place.id: [...List.generate(venueVerificationThreshold - 1, (i) => 'demo_confirm_${place.id}_$i'), 'me'],
+    };
     _award(10); // "add a missing venue"
     _recordNightActivity();
     notifyListeners();
@@ -680,7 +798,14 @@ class AppStore extends ChangeNotifier {
     return poll;
   }
 
-  void sendMessage(String room, String text, bool anon) {
+  /// Returns null on success, or a user-facing error if you're still inside
+  /// the cooldown (basic anti-spam — nothing fancier than "wait a moment").
+  String? sendMessage(String room, String text, bool anon) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastMessageAt;
+    if (last != null && now - last < _messageCooldownMs) {
+      return 'Slow down a sec before sending another message.';
+    }
     final message = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
@@ -690,11 +815,26 @@ class AppStore extends ChangeNotifier {
       anon: anon,
     );
     messages = [...messages, message];
+    _lastMessageAt = now;
     notifyListeners();
     _persist();
+    return null;
   }
 
   void addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) {
+    // A snapshot of the place's name right now — Places are tonight-only
+    // and get wiped at 2 PM, but a Story's entry in Memories is permanent,
+    // so this is what lets an old Memory still say "Posted at Sigma Chi"
+    // long after that place record is gone. Null for the general feed.
+    String? placeName;
+    if (place != 'main') {
+      for (final p in places) {
+        if (p.id == place) {
+          placeName = p.name;
+          break;
+        }
+      }
+    }
     final story = Story(
       id: 'story_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
@@ -703,6 +843,7 @@ class AppStore extends ChangeNotifier {
       imagePath: imagePath,
       videoPath: videoPath,
       place: place,
+      placeName: placeName,
       anon: anon,
       session: sessionKey(),
       // Seed a few of tonight's demo people as having already seen it, so a
@@ -820,6 +961,21 @@ class AppStore extends ChangeNotifier {
     return null;
   }
 
+  /// Pulls back a report you submitted by mistake. Only the original
+  /// reporter can retract it (no removing someone else's report), and once
+  /// it's gone its confirmations go with it — there's nothing left to
+  /// re-report under that id, a fresh submitReport starts over from 0 the
+  /// same as if the kind had just been superseded.
+  String? retractReport(String reportId) {
+    final i = placeReports.indexWhere((r) => r.id == reportId);
+    if (i == -1) return null; // already gone — nothing to do
+    if (placeReports[i].reporterId != 'me') return "You can only remove a report you submitted.";
+    placeReports = [...placeReports]..removeAt(i);
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
   void dismissResetBanner() {
     justReset = false;
     notifyListeners();
@@ -877,6 +1033,26 @@ class AppStore extends ChangeNotifier {
     final error = validateEmail(newEmail);
     if (error != null) return error;
     accountEmail = newEmail.trim().toLowerCase();
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  /// A mock, local-only "reset password" — there's no backend or email
+  /// delivery in this app to actually prove you own the inbox at [email],
+  /// so this just checks the email matches the account already on this
+  /// device and lets you set a new password directly. Good enough for a
+  /// demo/local install; a real backend would need to replace this with an
+  /// actual emailed reset link before this could ever ship for real users.
+  String? resetPassword(String email, String newPassword) {
+    if (!hasAccount) return 'No account on this device yet — create one first.';
+    if (email.trim().toLowerCase() != accountEmail) return "That email doesn't match the account on this device.";
+    final pwError = validatePassword(newPassword);
+    if (pwError != null) return pwError;
+    final salt = _newSalt();
+    _passwordSalt = salt;
+    _passwordHash = _hashPassword(newPassword, salt);
+    signedIn = true;
     notifyListeners();
     _persist();
     return null;

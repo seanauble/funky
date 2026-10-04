@@ -34,6 +34,13 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     }
   }
 
+  void _retract(AppStore store, String reportId) {
+    final error = store.retractReport(reportId);
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -61,7 +68,9 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     final going = store.me.move == place.id;
     final reports = store.reportsFor(place.id);
     final venueStories = store.storiesFor(place.id);
+    final latestVenueStory = store.latestMediaStoryFor(place.id);
     final venueVerified = store.isPlaceVerified(place.id);
+    final venueAdminVerified = store.isAdminVerified(place.id);
     final venueConfirmations = store.venueConfirmationCount(place.id);
     final iConfirmedVenue = store.hasConfirmedPlace(place.id);
 
@@ -77,14 +86,20 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                 : () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => PlaceStoryViewerScreen(placeId: place.id, placeName: place.name)),
                     ),
-            child: Container(
-              height: 160,
-              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(18)),
-              alignment: Alignment.center,
-              child: Stack(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: SizedBox(
+                height: 160,
+                width: double.infinity,
+                child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  Text(place.name.substring(0, 1), style: TextStyle(fontSize: 40, fontWeight: FontWeight.w800, color: tokens.mute)),
+                  // Switches from the flat colored-letter box to a looping
+                  // preview of the latest photo/video posted here the
+                  // moment someone posts a Story at this place.
+                  Positioned.fill(
+                    child: PlaceMediaThumbnail(story: latestVenueStory, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
+                  ),
                   if (venueStories.isNotEmpty)
                     Positioned(
                       bottom: 10,
@@ -108,6 +123,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                 ],
               ),
             ),
+          ),
           ),
           const SizedBox(height: 14),
           Text(place.name, style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
@@ -133,38 +149,73 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           Text('🔥 ${place.going} going tonight', style: TextStyle(color: tokens.mute)),
           const SizedBox(height: 20),
           FunkyCard(
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(venueVerified ? Icons.verified : Icons.help_outline, color: venueVerified ? tokens.gold : tokens.mute, size: 22),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        venueVerified ? 'Verified venue' : 'Is this venue real & active?',
-                        style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
+                Row(
+                  children: [
+                    Icon(
+                      venueAdminVerified ? Icons.shield : (venueVerified ? Icons.verified : Icons.help_outline),
+                      color: venueAdminVerified ? tokens.brand : (venueVerified ? tokens.gold : tokens.mute),
+                      size: 22,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            venueAdminVerified ? 'FUNKY Verified' : (venueVerified ? 'Verified venue' : 'Is this venue real & active?'),
+                            style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            venueAdminVerified
+                                ? 'Verified by a FUNKY Admin · $venueConfirmations confirmations'
+                                : '${venueVerified ? '' : 'Not admin verified · '}$venueConfirmations of ${AppStore.venueVerificationThreshold} confirmations',
+                            style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '$venueConfirmations of ${AppStore.venueVerificationThreshold} confirmations',
-                        style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                    ),
+                    ElevatedButton(
+                      onPressed: iConfirmedVenue ? null : () => store.confirmPlace(place.id),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: iConfirmedVenue ? tokens.raised : tokens.brand,
+                        disabledBackgroundColor: tokens.raised,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: Text(
+                        iConfirmedVenue ? 'Confirmed ✓' : 'Confirm',
+                        style: TextStyle(color: iConfirmedVenue ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                // Only a signed-in FUNKY Admin (store.isAdmin — one
+                // hardcoded account, see app_store.dart) ever sees this.
+                if (store.isAdmin) ...[
+                  const Divider(height: 22),
+                  Row(
+                    children: [
+                      Icon(Icons.admin_panel_settings, size: 18, color: tokens.brand),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'FUNKY Admin — skips the confirmation bar entirely',
+                          style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600, fontSize: 12),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => store.setAdminVerified(place.id, !venueAdminVerified),
+                        child: Text(
+                          venueAdminVerified ? 'Remove verification' : 'Verify as Admin',
+                          style: TextStyle(color: venueAdminVerified ? tokens.danger : tokens.brand, fontWeight: FontWeight.w700),
+                        ),
                       ),
                     ],
                   ),
-                ),
-                ElevatedButton(
-                  onPressed: iConfirmedVenue ? null : () => store.confirmPlace(place.id),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: iConfirmedVenue ? tokens.raised : tokens.brand,
-                    disabledBackgroundColor: tokens.raised,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  child: Text(
-                    iConfirmedVenue ? 'Confirmed ✓' : 'Confirm',
-                    style: TextStyle(color: iConfirmedVenue ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800),
-                  ),
-                ),
+                ],
               ],
             ),
           ),
@@ -186,6 +237,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   label: reports[ReportKind.cover]?.detail != null ? '${reports[ReportKind.cover]!.detail} cover' : 'Cover charge',
                   report: reports[ReportKind.cover],
                   onConfirm: (id) => _confirm(store, id),
+                  onRetract: (id) => _retract(store, id),
                   trailing: Row(
                     children: [
                       SizedBox(
@@ -229,6 +281,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   label: '🚨 Police',
                   report: reports[ReportKind.police],
                   onConfirm: (id) => _confirm(store, id),
+                  onRetract: (id) => _retract(store, id),
                   trailing: ElevatedButton(
                     onPressed: () => _submit(store, ReportKind.police),
                     style: ElevatedButton.styleFrom(backgroundColor: tokens.raised, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -240,6 +293,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   label: 'Shut down',
                   report: reports[ReportKind.shutdown],
                   onConfirm: (id) => _confirm(store, id),
+                  onRetract: (id) => _retract(store, id),
                   trailing: ElevatedButton(
                     onPressed: () => _submit(store, ReportKind.shutdown),
                     style: ElevatedButton.styleFrom(backgroundColor: tokens.raised, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -251,6 +305,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   label: reports[ReportKind.line]?.detail != null ? 'Line · ${reports[ReportKind.line]!.detail}' : 'Line / wait',
                   report: reports[ReportKind.line],
                   onConfirm: (id) => _confirm(store, id),
+                  onRetract: (id) => _retract(store, id),
                   trailing: ElevatedButton(
                     onPressed: () => _submit(store, ReportKind.line, detail: '20 min'),
                     style: ElevatedButton.styleFrom(backgroundColor: tokens.raised, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -262,6 +317,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   label: 'At capacity',
                   report: reports[ReportKind.capacity],
                   onConfirm: (id) => _confirm(store, id),
+                  onRetract: (id) => _retract(store, id),
                   trailing: ElevatedButton(
                     onPressed: () => _submit(store, ReportKind.capacity),
                     style: ElevatedButton.styleFrom(backgroundColor: tokens.raised, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
@@ -286,8 +342,9 @@ class _ReportTile extends StatelessWidget {
   final String label;
   final PlaceReport? report;
   final void Function(String reportId) onConfirm;
+  final void Function(String reportId) onRetract;
   final Widget trailing;
-  const _ReportTile({required this.label, required this.report, required this.onConfirm, required this.trailing});
+  const _ReportTile({required this.label, required this.report, required this.onConfirm, required this.onRetract, required this.trailing});
 
   @override
   Widget build(BuildContext context) {
@@ -348,6 +405,18 @@ class _ReportTile extends StatelessWidget {
           const SizedBox(height: 10),
         ] else
           const SizedBox(height: 4),
+        // Lets you undo a report you submitted by accident — only ever
+        // shown to the person who actually posted it, never to whoever's
+        // just confirming someone else's.
+        if (r != null && r.reporterId == 'me')
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => onRetract(r.id),
+              style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 32)),
+              child: Text('Remove my report', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600, fontSize: 12.5)),
+            ),
+          ),
         trailing,
       ],
     );

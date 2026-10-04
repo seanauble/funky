@@ -131,8 +131,12 @@ class PlacesScreen extends StatelessWidget {
                         }),
                       ],
                     ),
-                    RichAttributionWidget(
-                      attributions: [TextSourceAttribution('OpenStreetMap contributors')],
+                    // Plain, non-interactive text credit — no flutter_map
+                    // logo button, no tappable "i" info icon, just the
+                    // small attribution line OpenStreetMap's tile usage
+                    // policy requires somewhere on the map.
+                    const SimpleAttributionWidget(
+                      source: Text('© OpenStreetMap contributors'),
                     ),
                   ],
                 ),
@@ -184,6 +188,7 @@ class PlacesScreen extends StatelessWidget {
                     if (cover != null) bits.add('${cover.detail ?? 'Cover'} cover${cover.verified ? '' : ' (unverified)'}');
                     if (line != null) bits.add('Line ${line.detail ?? ''}${line.verified ? '' : ' (unverified)'}');
 
+                    final latestStory = store.latestMediaStoryFor(p.id);
                     return InkWell(
                       onTap: () => _openPlace(context, p.id),
                       child: Container(
@@ -191,15 +196,26 @@ class PlacesScreen extends StatelessWidget {
                         decoration: BoxDecoration(border: Border(bottom: BorderSide(color: tokens.line))),
                         child: Row(
                           children: [
-                            Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-                              alignment: Alignment.center,
-                              child: p.id == topPlaceId
-                                  ? const Text('👑', style: TextStyle(fontSize: 18))
-                                  : Text(p.name.substring(0, 1), style: TextStyle(fontWeight: FontWeight.w800, color: tokens.mute)),
-                            ),
+                            // 👑 for tonight's busiest spot always wins over
+                            // the media preview — that crown is the more
+                            // useful signal in a one-line list row.
+                            if (p.id == topPlaceId)
+                              Container(
+                                width: 44,
+                                height: 44,
+                                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
+                                alignment: Alignment.center,
+                                child: const Text('👑', style: TextStyle(fontSize: 18)),
+                              )
+                            else
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: PlaceMediaThumbnail(story: latestStory, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
+                                ),
+                              ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
@@ -212,13 +228,17 @@ class PlacesScreen extends StatelessWidget {
                                       ),
                                       if (store.isPlaceVerified(p.id)) ...[
                                         const SizedBox(width: 4),
-                                        Icon(Icons.verified, size: 14, color: tokens.gold),
+                                        Icon(
+                                          store.isAdminVerified(p.id) ? Icons.shield : Icons.verified,
+                                          size: 14,
+                                          color: store.isAdminVerified(p.id) ? tokens.brand : tokens.gold,
+                                        ),
                                       ],
                                     ],
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    store.isPlaceVerified(p.id) ? bits.join(' · ') : '${bits.join(' · ')} · unverified venue',
+                                    store.isPlaceVerified(p.id) ? bits.join(' · ') : '${bits.join(' · ')} · ${store.venueStatusLabel(p.id)}',
                                     style: TextStyle(color: tokens.mute, fontSize: 12.5),
                                   ),
                                 ],
