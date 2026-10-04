@@ -32,7 +32,7 @@ class FriendRequestsScreen extends StatelessWidget {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
-                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40),
+                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -60,7 +60,7 @@ class FriendRequestsScreen extends StatelessWidget {
                   margin: const EdgeInsets.only(bottom: 10),
                   child: Row(
                     children: [
-                      FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40),
+                      FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
                       const SizedBox(width: 12),
                       Expanded(child: FunkyHandle(handle: p.handle)),
                       Text('Pending', style: TextStyle(color: tokens.mute, fontSize: 12.5)),

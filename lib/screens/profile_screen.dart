@@ -1,10 +1,17 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../widgets/ui_widgets.dart';
+import 'camera_capture_screen.dart';
 import 'friend_requests_screen.dart';
 import 'memories_screen.dart';
 import 'points_info_screen.dart';
+
+enum _PhotoSource { camera, library }
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -32,6 +39,72 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  /// Picks a new profile photo — either the in-app camera (same as before)
+  /// or an existing photo from the library. Stories stay camera-only; this
+  /// is the one place in the app that opens an actual gallery picker.
+  Future<void> _changePhoto(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final source = await showModalBottomSheet<_PhotoSource>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (_) => const _PhotoSourceSheet(),
+    );
+    if (source == null || !mounted) return;
+
+    if (source == _PhotoSource.camera) {
+      await _changePhotoFromCamera(store);
+    } else {
+      await _changePhotoFromLibrary(store);
+    }
+  }
+
+  Future<void> _changePhotoFromCamera(AppStore store) async {
+    final media = await Navigator.of(context).push<CapturedMedia>(
+      MaterialPageRoute(fullscreenDialog: true, builder: (_) => const CameraCaptureScreen()),
+    );
+    if (media == null || !mounted) return;
+    if (media.isVideo) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile pictures are photos only — tap the shutter instead of holding it.')),
+      );
+      return;
+    }
+    store.setProfilePhoto(media.file.path);
+  }
+
+  Future<void> _changePhotoFromLibrary(AppStore store) async {
+    try {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
+      if (picked == null || !mounted) return;
+      // Copy into our own app-documents folder, same as every camera
+      // capture already does — the picker's own temp file isn't guaranteed
+      // to stick around.
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory('${docs.path}/stories');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final dest = '${dir.path}/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedFile = await File(picked.path).copy(dest);
+      if (!mounted) return;
+      store.setProfilePhoto(savedFile.path);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
+      }
+    }
+  }
+
+  /// Commits whatever's in the handle field right now — called on submit
+  /// (keyboard "done") or the save button, not on every keystroke like
+  /// before, since every keystroke used to try to spend the 15-day cooldown.
+  void _commitHandle(AppStore store) {
+    final error = store.setHandle(_handleController.text);
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+      setState(() => _handleController.text = store.me.handle);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -51,21 +124,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: [
           Column(
             children: [
-              FunkyAvatar(seed: store.me.id, label: store.me.handle.isNotEmpty ? store.me.handle : '?', size: 88),
+              Stack(
+                alignment: Alignment.bottomRight,
+                children: [
+                  FunkyAvatar(
+                    seed: store.me.id,
+                    label: store.me.handle.isNotEmpty ? store.me.handle : '?',
+                    size: 88,
+                    photoPath: store.me.photoPath,
+                  ),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: GestureDetector(
+                      onTap: () => _changePhoto(store),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        width: 30,
+                        height: 30,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 2.5)),
+                        child: const Icon(Icons.camera_alt, color: Colors.white, size: 16),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Flexible(
                     child: TextField(
                       controller: _handleController,
-                      onChanged: store.setHandle,
+                      onSubmitted: (_) => _commitHandle(store),
                       textAlign: TextAlign.center,
                       decoration: InputDecoration(hintText: 'Pick a screen name', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
                       style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
                     ),
                   ),
+                  IconButton(
+                    onPressed: () => _commitHandle(store),
+                    tooltip: 'Save username',
+                    icon: Icon(Icons.check_circle_outline, color: tokens.brand, size: 20),
+                  ),
                   if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
                 ],
+              ),
+              Text(
+                'Usernames can only change once every 15 days.',
+                style: TextStyle(color: tokens.mute, fontSize: 11),
               ),
               TextField(
                 controller: _bioController,
@@ -142,6 +249,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The bottom sheet that asks "take a new photo or pick one from your
+/// library" when you tap the camera badge on your profile picture.
+class _PhotoSourceSheet extends StatelessWidget {
+  const _PhotoSourceSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          Container(width: 36, height: 4, decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 8),
+          ListTile(
+            leading: Icon(Icons.camera_alt, color: tokens.ink),
+            title: Text('Take Photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.of(context).pop(_PhotoSource.camera),
+          ),
+          ListTile(
+            leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
+            title: Text('Choose from Library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.of(context).pop(_PhotoSource.library),
+          ),
+          const SizedBox(height: 8),
         ],
       ),
     );

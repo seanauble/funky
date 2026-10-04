@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import '../theme/colors.dart';
+import '../data/models.dart';
 
 class SectionHeader extends StatelessWidget {
   final String title;
@@ -111,20 +115,137 @@ class FunkyAvatar extends StatelessWidget {
   final String seed;
   final String label;
   final double size;
-  const FunkyAvatar({super.key, required this.seed, required this.label, this.size = 40});
+  // A profile photo taken with the in-app camera (Person.photoPath) — when
+  // set, this is shown instead of the colored-initial circle. Null (the
+  // common case for everyone but 'me' right now, and for 'me' before ever
+  // setting one) falls back to the initial.
+  final String? photoPath;
+  const FunkyAvatar({super.key, required this.seed, required this.label, this.size = 40, this.photoPath});
 
   @override
   Widget build(BuildContext context) {
     final color = hueOf(seed);
     final letter = label.isNotEmpty ? label.substring(0, 1).toUpperCase() : '?';
-    return Container(
-      width: size,
-      height: size,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-      child: Text(letter, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: size * 0.4)),
-    );
+    final path = photoPath;
+    if (path != null) {
+      return ClipOval(
+        child: Image.file(
+          File(path),
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          // Falls back to the initial circle if the file's gone missing
+          // (e.g. the OS cleared app storage) instead of a broken-image icon.
+          errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+        ),
+      );
+    }
+    return _initialCircle(color, letter);
   }
+
+  Widget _initialCircle(Color color, String letter) => Container(
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Text(letter, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: size * 0.4)),
+      );
+}
+
+/// What a place's thumbnail/banner shows: the newest Story posted there
+/// that actually has a photo or video, looping and muted if it's a video —
+/// falling back to the old flat colored-letter box when nothing's been
+/// posted yet. Used anywhere a place shows a preview image: the Place
+/// Detail banner, Home's trending cards, and the Places list.
+class PlaceMediaThumbnail extends StatefulWidget {
+  final Story? story;
+  final String fallbackLabel;
+  final double fontSize;
+  const PlaceMediaThumbnail({super.key, required this.story, required this.fallbackLabel, this.fontSize = 22});
+
+  @override
+  State<PlaceMediaThumbnail> createState() => _PlaceMediaThumbnailState();
+}
+
+class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
+  VideoPlayerController? _controller;
+  String? _controllerForPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureController();
+  }
+
+  @override
+  void didUpdateWidget(PlaceMediaThumbnail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _ensureController();
+  }
+
+  void _ensureController() {
+    final path = widget.story?.videoPath;
+    if (path == null) {
+      final old = _controller;
+      _controller = null;
+      _controllerForPath = null;
+      old?.dispose();
+      return;
+    }
+    if (_controllerForPath == path) return;
+    _controllerForPath = path;
+    final old = _controller;
+    _controller = null;
+    old?.dispose();
+    final c = VideoPlayerController.file(File(path));
+    c.setLooping(true);
+    c.setVolume(0);
+    c.initialize().then((_) {
+      if (!mounted) return;
+      c.play();
+      setState(() {});
+    });
+    _controller = c;
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final story = widget.story;
+    final controller = _controller;
+    if (story?.videoPath != null && controller != null && controller.value.isInitialized) {
+      return FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: controller.value.size.width,
+          height: controller.value.size.height,
+          child: VideoPlayer(controller),
+        ),
+      );
+    }
+    if (story?.imagePath != null) {
+      return Image.file(
+        File(story!.imagePath!),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, __, ___) => _fallback(tokens),
+      );
+    }
+    return _fallback(tokens);
+  }
+
+  Widget _fallback(ThemeTokens tokens) => Container(
+        color: tokens.raised,
+        alignment: Alignment.center,
+        child: Text(widget.fallbackLabel, style: TextStyle(fontSize: widget.fontSize, fontWeight: FontWeight.w800, color: tokens.mute)),
+      );
 }
 
 class FunkyHandle extends StatelessWidget {

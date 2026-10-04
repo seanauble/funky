@@ -19,7 +19,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>FUNKY uses your microphone to record audio for video Stories.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>FUNKY never saves to your photo library, but the video editing tool it uses to stitch a flipped-camera Story together declares this permission.</string>
+	<string>FUNKY uses your photo library so you can choose an existing photo for your profile picture. Stories are always taken live in the app, never from your library.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>FUNKY never saves to your photo library, but the video editing tool it uses to stitch a flipped-camera Story together declares this permission.</string>
 	<key>CFBundleInfoDictionaryVersion</key>

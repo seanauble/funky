@@ -208,6 +208,22 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     _openCamera((_cameraIndex + 1) % _cameras.length);
   }
 
+  /// Same full-bleed trick as the Story camera tab — scales the already
+  /// correctly-rotated CameraPreview up until it covers the screen instead
+  /// of leaving black bars above/below it, cropping the overflow.
+  Widget _buildFullBleedPreview(BuildContext context, CameraController controller) {
+    final size = MediaQuery.of(context).size;
+    var scale = size.aspectRatio * controller.value.aspectRatio;
+    if (scale < 1) scale = 1 / scale;
+    return ClipRect(
+      child: Transform.scale(
+        scale: scale,
+        alignment: Alignment.center,
+        child: Center(child: CameraPreview(controller)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -216,7 +232,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         fit: StackFit.expand,
         children: [
           if (_ready && _controller != null)
-            Center(child: CameraPreview(_controller!))
+            _buildFullBleedPreview(context, _controller!)
           else
             Center(
               child: _error != null

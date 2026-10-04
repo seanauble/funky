@@ -28,6 +28,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   VideoPlayerController? _videoController;
   String? _videoForStoryId;
 
+  // Vertical swipe-to-dismiss (rule: "u can swipe out") — drag down far
+  // enough, or flick down fast enough, and the viewer closes instead of
+  // only ever closing via the X button or tapping through to the end.
+  double _dragDy = 0;
+
   @override
   void initState() {
     super.initState();
@@ -119,7 +124,20 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Stack(
+        child: GestureDetector(
+          onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
+          onVerticalDragEnd: (details) {
+            if (_dragDy > 90 || (details.primaryVelocity ?? 0) > 700) {
+              Navigator.of(context).pop();
+            } else {
+              setState(() => _dragDy = 0);
+            }
+          },
+          child: Transform.translate(
+            offset: Offset(0, _dragDy),
+            child: Opacity(
+              opacity: 1 - (_dragDy / 400).clamp(0.0, 0.6),
+              child: Stack(
           children: [
             // Content
             if (story.videoPath != null)
@@ -193,7 +211,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               right: 14,
               child: Row(
                 children: [
-                  FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32),
+                  FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -218,6 +236,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               ),
             ),
           ],
+              ),
+            ),
+          ),
         ),
       ),
     );

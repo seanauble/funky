@@ -365,6 +365,12 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         final outputPath = await VideoEditorBuilder(videoPath: earlierSegments.first)
             .merge(otherVideoPaths: [...earlierSegments.sublist(1), finalSegment.path])
             .export(outputPath: mergeDest);
+        // export() returns String? (null if the native side failed to
+        // produce a file) — surface that as the same stitching failure we
+        // already handle below rather than crashing on a null File path.
+        if (outputPath == null) {
+          throw Exception('Video stitching returned no output file');
+        }
         mergedFile = File(outputPath);
         // Clean up the individual pieces now that the merged file holds
         // everything — best-effort, a leftover temp file here is harmless.
@@ -517,6 +523,24 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     return _reviewing ? _buildReview(context, tokens, store) : _buildCamera(context, tokens);
   }
 
+  /// The camera plugin's own CameraPreview letterboxes itself at the
+  /// sensor's native aspect ratio, which leaves black bars above/below (or
+  /// beside) it on most phones. This scales that already-correctly-rotated
+  /// preview up until it covers the whole available area, like Snapchat's
+  /// camera, cropping the overflow via ClipRect rather than distorting it.
+  Widget _buildFullBleedPreview(BuildContext context, CameraController controller) {
+    final size = MediaQuery.of(context).size;
+    var scale = size.aspectRatio * controller.value.aspectRatio;
+    if (scale < 1) scale = 1 / scale;
+    return ClipRect(
+      child: Transform.scale(
+        scale: scale,
+        alignment: Alignment.center,
+        child: Center(child: CameraPreview(controller)),
+      ),
+    );
+  }
+
   Widget _buildCamera(BuildContext context, ThemeTokens tokens) {
     return Container(
       color: Colors.black,
@@ -524,7 +548,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         fit: StackFit.expand,
         children: [
           if (_ready && _controller != null)
-            Center(child: CameraPreview(_controller!))
+            _buildFullBleedPreview(context, _controller!)
           else
             Center(
               child: _error != null

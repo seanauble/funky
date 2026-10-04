@@ -30,6 +30,9 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
   VideoPlayerController? _videoController;
   String? _videoForStoryId;
 
+  // Vertical swipe-to-dismiss — same as the per-person StoryViewerScreen.
+  double _dragDy = 0;
+
   @override
   void initState() {
     super.initState();
@@ -116,7 +119,20 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Stack(
+        child: GestureDetector(
+          onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
+          onVerticalDragEnd: (details) {
+            if (_dragDy > 90 || (details.primaryVelocity ?? 0) > 700) {
+              Navigator.of(context).pop();
+            } else {
+              setState(() => _dragDy = 0);
+            }
+          },
+          child: Transform.translate(
+            offset: Offset(0, _dragDy),
+            child: Opacity(
+              opacity: 1 - (_dragDy / 400).clamp(0.0, 0.6),
+              child: Stack(
           children: [
             if (story.videoPath != null)
               Center(
@@ -184,7 +200,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               right: 14,
               child: Row(
                 children: [
-                  FunkyAvatar(seed: story.uid, label: author?.handle.isNotEmpty == true ? author!.handle : '?', size: 32),
+                  FunkyAvatar(seed: story.uid, label: author?.handle.isNotEmpty == true ? author!.handle : '?', size: 32, photoPath: author?.photoPath),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -217,6 +233,9 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               ),
             ),
           ],
+              ),
+            ),
+          ),
         ),
       ),
     );

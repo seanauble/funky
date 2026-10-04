@@ -45,10 +45,22 @@ class HomeScreen extends StatelessWidget {
     // that happens to have stories" (that mismatch was why rings used to
     // show up for the wrong people and did nothing when tapped), and not
     // someone whose only Story tonight is at an unconfirmed venue.
+    bool hasUnseenFrom(String uid) => store.storiesByUser(uid).any((s) => !s.views.contains('me'));
     final storytellerIds = <String>{
       for (final s in store.stories)
         if (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!)) s.uid,
     }..remove('me');
+    // Unwatched rings first (orange), already-watched ones sink to the
+    // back of the queue (gray) instead of just sitting there forever —
+    // same idea Snapchat/Instagram use.
+    final sortedStorytellerIds = storytellerIds.toList()
+      ..sort((a, b) {
+        final aSeen = hasUnseenFrom(a) ? 0 : 1;
+        final bSeen = hasUnseenFrom(b) ? 0 : 1;
+        return aSeen.compareTo(bSeen);
+      });
+    final myStories = store.myStories;
+    final hasMyStories = myStories.isNotEmpty;
     final areaMessages = store.messagesFor('main');
     final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
 
@@ -64,16 +76,35 @@ class HomeScreen extends StatelessWidget {
               children: [
                 _StoryRing(
                   label: 'Your story',
-                  isAdd: true,
+                  // Only treated as a bare "add" ring (dashed/gray, camera
+                  // badge is the whole thing) when you have nothing to show
+                  // yet. Once you've posted, the ring itself opens your own
+                  // Stories — tapping it used to always jump straight to
+                  // the camera, with no way to just look back at what you
+                  // already posted tonight.
+                  isAdd: !hasMyStories,
+                  // Never orange for your own ring — "unseen" doesn't mean
+                  // anything for your own Stories, so this just always
+                  // reads as the neutral/gray border.
+                  unseen: false,
                   seed: store.me.id,
-                  onTap: () => showCreateSheet(context),
+                  photoPath: store.me.photoPath,
+                  onTap: hasMyStories
+                      ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personId: 'me')))
+                      : () => showCreateSheet(context),
+                  // The little camera badge in the corner is always a
+                  // shortcut straight to the camera, even once you have
+                  // stories to look back at.
+                  onAddBadgeTap: hasMyStories ? () => showCreateSheet(context) : null,
                 ),
-                ...storytellerIds.map((uid) {
+                ...sortedStorytellerIds.map((uid) {
                   final person = store.personById(uid);
                   if (person == null) return const SizedBox.shrink();
                   return _StoryRing(
                     label: person.handle,
                     seed: person.id,
+                    photoPath: person.photoPath,
+                    unseen: hasUnseenFrom(uid),
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personId: uid))),
                   );
                 }),
@@ -144,11 +175,20 @@ class HomeScreen extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            height: 60,
-                            decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-                            alignment: Alignment.center,
-                            child: Text(p.name.substring(0, 1), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: tokens.mute)),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: SizedBox(
+                              height: 60,
+                              width: double.infinity,
+                              // Same switch as the Place Detail banner —
+                              // shows the latest posted photo/video here
+                              // once there is one.
+                              child: PlaceMediaThumbnail(
+                                story: store.latestMediaStoryFor(p.id),
+                                fallbackLabel: p.name.substring(0, 1),
+                                fontSize: 22,
+                              ),
+                            ),
                           ),
                           const SizedBox(height: 8),
                           Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
@@ -258,13 +298,33 @@ class HomeScreen extends StatelessWidget {
 class _StoryRing extends StatelessWidget {
   final String label;
   final bool isAdd;
+  // Whether this person has at least one Story you haven't watched yet —
+  // drives the orange-vs-gray ring color (gray = already seen, so there's
+  // no reason to still flag it at full brightness). Irrelevant for the
+  // bare "add" ring.
+  final bool unseen;
   final String seed;
+  final String? photoPath;
   final VoidCallback? onTap;
-  const _StoryRing({required this.label, this.isAdd = false, required this.seed, this.onTap});
+  // When set, the little corner camera badge gets its OWN tap target
+  // (always opens the camera) separate from [onTap] on the ring itself —
+  // used for "Your story" once you have stories to look back at, so the
+  // ring can open your Stories while the badge still jumps to the camera.
+  final VoidCallback? onAddBadgeTap;
+  const _StoryRing({
+    required this.label,
+    this.isAdd = false,
+    this.unseen = true,
+    required this.seed,
+    this.photoPath,
+    this.onTap,
+    this.onAddBadgeTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final showBadge = isAdd || onAddBadgeTap != null;
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -282,24 +342,28 @@ class _StoryRing extends StatelessWidget {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: isAdd ? tokens.line : tokens.orange, width: 2.5),
+                    border: Border.all(color: isAdd || !unseen ? tokens.line : tokens.orange, width: 2.5),
                   ),
-                  child: FunkyAvatar(seed: seed, label: label, size: 56),
+                  child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath),
                 ),
-                if (isAdd)
+                if (showBadge)
                   Positioned(
                     right: -2,
                     bottom: -2,
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: tokens.brand,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: tokens.bg, width: 2.5),
+                    child: GestureDetector(
+                      onTap: onAddBadgeTap ?? onTap,
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: tokens.brand,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: tokens.bg, width: 2.5),
+                        ),
+                        child: const Icon(Icons.camera_alt, color: Colors.white, size: 13),
                       ),
-                      child: const Icon(Icons.camera_alt, color: Colors.white, size: 13),
                     ),
                   ),
               ],

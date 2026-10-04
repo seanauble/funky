@@ -40,6 +40,10 @@ class _AccountScreenState extends State<AccountScreen> {
   final _newPasswordController = TextEditingController();
   String? _accountError;
 
+  bool _showResetPassword = false;
+  final _resetPasswordController = TextEditingController();
+  String? _resetError;
+
   @override
   void dispose() {
     _emailController.dispose();
@@ -47,6 +51,7 @@ class _AccountScreenState extends State<AccountScreen> {
     _newEmailController.dispose();
     _currentPasswordController.dispose();
     _newPasswordController.dispose();
+    _resetPasswordController.dispose();
     super.dispose();
   }
 
@@ -127,6 +132,20 @@ class _AccountScreenState extends State<AccountScreen> {
         if (_authError != null) ...[
           const SizedBox(height: 10),
           Text(_authError!, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600)),
+        ],
+        if (!_signUpMode) ...[
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => setState(() {
+                _showResetPassword = !_showResetPassword;
+                _resetError = null;
+              }),
+              child: Text('Forgot password?', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600)),
+            ),
+          ),
+          if (_showResetPassword) _buildResetPasswordForm(tokens, store),
         ],
         const SizedBox(height: 20),
         SizedBox(
@@ -286,6 +305,55 @@ class _AccountScreenState extends State<AccountScreen> {
             },
             style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
             child: Text('Save password', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A mock, local-only reset — see AppStore.resetPassword's doc comment
+  /// for exactly what this does and doesn't guarantee (no backend, no
+  /// actual email sent; just "the email on this device matches").
+  Widget _buildResetPasswordForm(ThemeTokens tokens, AppStore store) {
+    return Container(
+      margin: const EdgeInsets.only(top: 8, bottom: 4),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "This device-only reset just checks the email above matches the account here — there's no email link, since FUNKY has no backend yet.",
+            style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _resetPasswordController,
+            obscureText: true,
+            decoration: _fieldDecoration(tokens, 'New password (8+ characters)'),
+            style: TextStyle(color: tokens.ink),
+          ),
+          if (_resetError != null) ...[
+            const SizedBox(height: 8),
+            Text(_resetError!, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600, fontSize: 13)),
+          ],
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: () {
+              final err = store.resetPassword(_emailController.text, _resetPasswordController.text);
+              setState(() {
+                _resetError = err;
+                if (err == null) {
+                  _showResetPassword = false;
+                  _authError = null;
+                  _passwordController.clear();
+                  _resetPasswordController.clear();
+                }
+              });
+              if (err == null && widget.closeOnSuccess && mounted) Navigator.of(context).pop();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+            child: Text('Reset password', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w700)),
           ),
         ],
       ),

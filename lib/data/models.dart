@@ -261,6 +261,13 @@ class Story {
   // to match the rest of this mock model. Same single-device limitation as
   // imagePath above.
   final String? videoPath;
+  // A snapshot of the place's name at the moment this Story was posted.
+  // Places themselves are tonight-only (wiped at 2 PM, rule 2) but a
+  // Story's entry in Memories is permanent, so by the time you look back
+  // at an old Memory the place record it pointed to may be long gone —
+  // this is what lets Memories still say "Posted at Sigma Chi" anyway.
+  // Null for a general/"main" Story.
+  final String? placeName;
 
   const Story({
     required this.id,
@@ -275,6 +282,7 @@ class Story {
     this.screenshotBy = const [],
     this.imagePath,
     this.videoPath,
+    this.placeName,
   });
 
   Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy}) => Story(
@@ -290,6 +298,7 @@ class Story {
         screenshotBy: screenshotBy ?? this.screenshotBy,
         imagePath: imagePath,
         videoPath: videoPath,
+        placeName: placeName,
       );
 
   Map<String, dynamic> toJson() => {
@@ -305,6 +314,7 @@ class Story {
         'screenshotBy': screenshotBy,
         'imagePath': imagePath,
         'videoPath': videoPath,
+        'placeName': placeName,
       };
 
   factory Story.fromJson(Map<String, dynamic> json) => Story(
@@ -320,6 +330,7 @@ class Story {
         screenshotBy: ((json['screenshotBy'] as List?) ?? const []).map((e) => e as String).toList(),
         imagePath: json['imagePath'] as String?,
         videoPath: json['videoPath'] as String?,
+        placeName: json['placeName'] as String?,
       );
 }
 
@@ -361,6 +372,15 @@ class Person {
   // to — powers the Explorer badge.
   final List<String> placesVisited;
 
+  // Local file path to a profile photo taken with the in-app camera (same
+  // "no gallery/image-picker" rule as Stories — see CameraCaptureScreen).
+  // Null falls back to the colored-initial avatar. Cumulative, survives
+  // the 2 PM reset.
+  final String? photoPath;
+  // Epoch ms of the last time the handle actually changed — null if it
+  // never has. Drives the 15-day change cooldown in AppStore.setHandle.
+  final int? lastHandleChangeAt;
+
   const Person({
     required this.id,
     required this.handle,
@@ -381,6 +401,8 @@ class Person {
     this.activeNights = const [],
     this.streak = 0,
     this.placesVisited = const [],
+    this.photoPath,
+    this.lastHandleChangeAt,
   });
 
   Person copyWith({
@@ -397,6 +419,8 @@ class Person {
     List<String>? activeNights,
     int? streak,
     List<String>? placesVisited,
+    String? photoPath,
+    int? lastHandleChangeAt,
   }) =>
       Person(
         id: id,
@@ -418,6 +442,8 @@ class Person {
         activeNights: activeNights ?? this.activeNights,
         streak: streak ?? this.streak,
         placesVisited: placesVisited ?? this.placesVisited,
+        photoPath: photoPath ?? this.photoPath,
+        lastHandleChangeAt: lastHandleChangeAt ?? this.lastHandleChangeAt,
       );
 
   Map<String, dynamic> toJson() => {
@@ -440,6 +466,8 @@ class Person {
         'activeNights': activeNights,
         'streak': streak,
         'placesVisited': placesVisited,
+        'photoPath': photoPath,
+        'lastHandleChangeAt': lastHandleChangeAt,
       };
 
   factory Person.fromJson(Map<String, dynamic> json) => Person(
@@ -457,6 +485,8 @@ class Person {
         session: json['session'] as String,
         move: json['move'] as String?,
         votes: (json['votes'] as Map).map((k, v) => MapEntry(k as String, v as int)),
+        photoPath: json['photoPath'] as String?,
+        lastHandleChangeAt: json['lastHandleChangeAt'] as int?,
         seen: (json['seen'] as List).map((e) => e as String).toList(),
         likes: (json['likes'] as List).map((e) => e as String).toList(),
         activeNights: ((json['activeNights'] as List?) ?? const []).map((e) => e as String).toList(),
