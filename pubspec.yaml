@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+11
+version: 1.0.0+12
 
 environment:
   sdk: ^3.13.3
@@ -124,3 +124,14 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# The published easy_video_editor 0.1.6 (declared above) fails to compile on
+# Codemagic's Xcode/Swift toolchain — two real bugs in its iOS Swift source,
+# confirmed directly against the real package source, not guessed. No newer
+# pub.dev release exists and the upstream fix PRs are still open. This
+# override points pub at a hand-patched local copy instead of pub.dev — see
+# third_party/easy_video_editor/PATCH_NOTES.md for exactly what was changed
+# and why, and how to drop this override if upstream ever ships a real fix.
+dependency_overrides:
+  easy_video_editor:
+    path: third_party/easy_video_editor
