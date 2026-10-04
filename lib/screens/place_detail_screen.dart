@@ -154,8 +154,12 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
               children: [
                 Row(
                   children: [
+                    // FUNKY Admin-verified gets the same checkmark as
+                    // crowd-verified, just in the brand orange instead of
+                    // gold, rather than a shield that read as a different
+                    // kind of badge entirely.
                     Icon(
-                      venueAdminVerified ? Icons.shield : (venueVerified ? Icons.verified : Icons.help_outline),
+                      venueVerified || venueAdminVerified ? Icons.verified : Icons.help_outline,
                       color: venueAdminVerified ? tokens.brand : (venueVerified ? tokens.gold : tokens.mute),
                       size: 22,
                     ),

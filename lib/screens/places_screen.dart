@@ -228,8 +228,15 @@ class PlacesScreen extends StatelessWidget {
                                       ),
                                       if (store.isPlaceVerified(p.id)) ...[
                                         const SizedBox(width: 4),
+                                        // FUNKY Admin-verified gets the same
+                                        // checkmark as crowd-verified, just
+                                        // in the brand orange instead of
+                                        // gold — a shield read as a
+                                        // different kind of badge entirely
+                                        // rather than a "more official"
+                                        // verified checkmark.
                                         Icon(
-                                          store.isAdminVerified(p.id) ? Icons.shield : Icons.verified,
+                                          Icons.verified,
                                           size: 14,
                                           color: store.isAdminVerified(p.id) ? tokens.brand : tokens.gold,
                                         ),

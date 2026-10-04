@@ -1,10 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'person_profile_screen.dart';
+
+// The hold-to-react picker's fixed set — "custom" in the sense that it's
+// FUNKY's own curated strip rather than the OS's full emoji keyboard, same
+// idea as iMessage tapbacks rather than a free-for-all picker.
+const _reactionEmojis = ['❤️', '😂', '😮', '😢', '🔥', '👍'];
+
+Future<void> _showReactionPicker(BuildContext context, AppStore store, ChatMessage message) async {
+  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+  final chosen = await showModalBottomSheet<String>(
+    context: context,
+    backgroundColor: tokens.surface,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+    builder: (_) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 14,
+          children: _reactionEmojis
+              .map((e) => InkWell(
+                    onTap: () => Navigator.of(context).pop(e),
+                    customBorder: const CircleBorder(),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(e, style: const TextStyle(fontSize: 30)),
+                    ),
+                  ))
+              .toList(),
+        ),
+      ),
+    ),
+  );
+  if (chosen != null) store.toggleReaction(message.id, chosen);
+}
 
 /// One shared live chat for everyone within 25 miles — no per-place rooms,
 /// no room picker. Just LIVE CHAT with a blinking dot so it feels alive.
@@ -179,13 +214,45 @@ class _LiveChat extends StatelessWidget {
           }
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                nameLine,
-                const SizedBox(height: 2),
-                Text(m.text, style: TextStyle(color: tokens.ink)),
-              ],
+            child: GestureDetector(
+              // Double-tap for a quick ❤️ (toggles it back off if you
+              // already reacted with a heart) — hold for the full strip.
+              onDoubleTap: () => store.toggleReaction(m.id, '❤️'),
+              onLongPress: () => _showReactionPicker(context, store, m),
+              behavior: HitTestBehavior.opaque,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  nameLine,
+                  const SizedBox(height: 2),
+                  Text(m.text, style: TextStyle(color: tokens.ink)),
+                  if (m.reactions.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: m.reactions.entries.map((entry) {
+                        final mine = entry.value.contains('me');
+                        return GestureDetector(
+                          onTap: () => store.toggleReaction(m.id, entry.key),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: mine ? tokens.brand.withValues(alpha: 0.18) : tokens.raised,
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: mine ? tokens.brand : tokens.line, width: 1),
+                            ),
+                            child: Text(
+                              '${entry.key} ${entry.value.length}',
+                              style: TextStyle(color: tokens.ink, fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ],
+              ),
             ),
           );
         }),

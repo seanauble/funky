@@ -185,9 +185,18 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   bool _isVideo = false;
   VideoPlayerController? _videoController;
 
-  final _captionController = TextEditingController();
   bool _anon = false;
   String _place = 'main';
+
+  // Pinch-to-zoom. Bounds come from the camera itself once it's open;
+  // _baseZoom snapshots the zoom level at the start of each pinch gesture so
+  // onScaleUpdate's cumulative `scale` (always relative to gesture start,
+  // not the previous frame) multiplies against a fixed point instead of
+  // compounding across frames.
+  double _minZoom = 1;
+  double _maxZoom = 1;
+  double _currentZoom = 1;
+  double _baseZoom = 1;
 
   late final AnimationController _partyController =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
@@ -230,15 +239,48 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         await controller.dispose();
         return;
       }
+      // Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
+      // camera phones report different ranges), so these get refreshed on
+      // every open, including camera flips — and reset to 1x each time,
+      // matching how the stock camera app behaves on a lens switch.
+      var minZoom = 1.0;
+      var maxZoom = 1.0;
+      try {
+        minZoom = await controller.getMinZoomLevel();
+        maxZoom = await controller.getMaxZoomLevel();
+      } catch (_) {
+        // Some devices/plugin versions don't support zoom queries — fall
+        // back to a fixed 1x (pinch becomes a no-op rather than crashing).
+      }
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
       setState(() {
         _controller = controller;
         _cameraIndex = index;
         _ready = true;
         _error = null;
+        _minZoom = minZoom;
+        _maxZoom = maxZoom;
+        _currentZoom = minZoom;
       });
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
+  }
+
+  void _onZoomStart(ScaleStartDetails details) {
+    _baseZoom = _currentZoom;
+  }
+
+  void _onZoomUpdate(ScaleUpdateDetails details) {
+    final controller = _controller;
+    if (controller == null || _maxZoom <= _minZoom) return;
+    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
+    if (zoom == _currentZoom) return;
+    _currentZoom = zoom;
+    controller.setZoomLevel(zoom);
   }
 
   @override
@@ -261,7 +303,6 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     _partyController.dispose();
     _controller?.dispose();
     _videoController?.dispose();
-    _captionController.dispose();
     super.dispose();
   }
 
@@ -485,7 +526,6 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     setState(() {
       _mediaFile = null;
       _isVideo = false;
-      _captionController.clear();
     });
     // Defensive — these should already be empty by this point, but a
     // retake is exactly the moment any leftover take-wide state should die.
@@ -505,9 +545,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   }
 
   void _post(AppStore store) {
-    final caption = _captionController.text.trim();
     store.addStory(
-      text: caption.isEmpty ? null : caption,
       imagePath: _isVideo ? null : _mediaFile!.path,
       videoPath: _isVideo ? _mediaFile!.path : null,
       place: _place,
@@ -578,6 +616,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
               onDoubleTap: _flipDuringRecording,
+              onScaleStart: _onZoomStart,
+              onScaleUpdate: _onZoomUpdate,
             ),
           ),
 
@@ -605,11 +645,21 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (!_isRecording)
-                  const Padding(
+                // Visibility(maintainSize: ...) instead of an `if` — removing
+                // this row outright used to shrink the Column and, since
+                // it's bottom-anchored, shove the shutter button down the
+                // instant recording started. Keeping the space reserved
+                // (just invisible) keeps the button locked in place.
+                Visibility(
+                  visible: !_isRecording,
+                  maintainState: true,
+                  maintainAnimation: true,
+                  maintainSize: true,
+                  child: const Padding(
                     padding: EdgeInsets.only(bottom: 14),
                     child: Text('Tap for a photo · Hold for a video', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
                   ),
+                ),
                 GestureDetector(
                   onTap: _takePhoto,
                   onLongPressStart: (_) => _startRecording(),
@@ -631,153 +681,137 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     );
   }
 
+  /// Fills the screen edge-to-edge with the captured photo/video, cropping
+  /// the overflow via FittedBox(cover) rather than letterboxing it — the
+  /// same "feels like Snapchat" treatment as the live camera preview above,
+  /// just via a simpler mechanism since Image/VideoPlayer (unlike
+  /// CameraPreview) don't force their own AspectRatio wrapper on you.
+  Widget _buildFullBleedReviewMedia() {
+    if (_isVideo && _videoController != null && _videoController!.value.isInitialized) {
+      final size = _videoController!.value.size;
+      return FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(width: size.width, height: size.height, child: VideoPlayer(_videoController!)),
+      );
+    }
+    return Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+  }
+
   Widget _buildReview(BuildContext context, ThemeTokens tokens, AppStore store) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Container(
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          // Deliberately smaller than before (was a fixed 280 and used
-          // BoxFit.cover, which made it feel like it swallowed the whole
-          // screen) — this is a review thumbnail, not the final playback.
-          ClipRRect(
-            borderRadius: BorderRadius.circular(14),
+          ClipRect(child: SizedBox.expand(child: _buildFullBleedReviewMedia())),
+
+          // Closes the whole create flow — separate from Retake (the
+          // button below), which stays here and reopens the camera.
+          Positioned(
+            top: 8,
+            right: 8,
+            child: SafeArea(
+              bottom: false,
+              child: InkWell(
+                onTap: _close,
+                customBorder: const CircleBorder(),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                  child: const Icon(Icons.close, color: Colors.white, size: 18),
+                ),
+              ),
+            ),
+          ),
+          if (_isVideo) const Positioned(left: 8, top: 8, child: SafeArea(bottom: false, child: _VideoBadge())),
+
+          // Post-to / anonymous / Retake-Post controls, overlaid on a
+          // bottom gradient so the full-bleed media underneath stays
+          // uncropped by an opaque panel.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
             child: Container(
-              width: double.infinity,
-              height: 200,
-              color: Colors.black,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Center(
-                    child: _isVideo && _videoController != null && _videoController!.value.isInitialized
-                        ? AspectRatio(
-                            aspectRatio: _videoController!.value.aspectRatio,
-                            child: VideoPlayer(_videoController!),
-                          )
-                        : Image.file(_mediaFile!, fit: BoxFit.contain),
-                  ),
-                  // The caption, live, directly on top of the media — same
-                  // as it'll actually look once posted — instead of only
-                  // ever showing up in the plain text field below it.
-                  ValueListenableBuilder<TextEditingValue>(
-                    valueListenable: _captionController,
-                    builder: (context, value, _) {
-                      final text = value.text.trim();
-                      if (text.isEmpty) return const SizedBox.shrink();
-                      return Positioned(
-                        left: 10,
-                        right: 10,
-                        bottom: 10,
-                        child: Text(
-                          text,
-                          textAlign: TextAlign.center,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15,
-                            shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  // Closes the whole create flow — separate from Retake
-                  // (the button below), which stays here and reopens the
-                  // camera. This used to secretly BE retake, mislabeled.
-                  Positioned(
-                    top: 8,
-                    right: 8,
-                    child: InkWell(
-                      onTap: _close,
-                      customBorder: const CircleBorder(),
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                        child: const Icon(Icons.close, color: Colors.white, size: 18),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.88)],
+                ),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 24, 18, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Post to', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FunkyChip(label: 'Area', active: _place == 'main', onPressed: () => setState(() => _place = 'main')),
+                          ...store.rankedPlaces.take(6).map((p) => FunkyChip(label: p.name, active: _place == p.id, onPressed: () => setState(() => _place = p.id))),
+                        ],
                       ),
-                    ),
-                  ),
-                  if (_isVideo) const Positioned(left: 8, top: 8, child: _VideoBadge()),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _captionController,
-            maxLength: 200,
-            maxLines: 2,
-            decoration: InputDecoration(
-              hintText: 'Add a caption (optional)',
-              hintStyle: TextStyle(color: tokens.mute),
-              filled: true,
-              fillColor: tokens.raised,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-            ),
-            style: TextStyle(color: tokens.ink),
-          ),
-          const SizedBox(height: 10),
-          Text('Post to', style: TextStyle(color: tokens.mute, fontSize: 13)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              FunkyChip(label: 'Area', active: _place == 'main', onPressed: () => setState(() => _place = 'main')),
-              ...store.rankedPlaces.take(6).map((p) => FunkyChip(label: p.name, active: _place == p.id, onPressed: () => setState(() => _place = p.id))),
-            ],
-          ),
-          const SizedBox(height: 18),
-          GestureDetector(
-            onTap: () => setState(() => _anon = !_anon),
-            child: Row(
-              children: [
-                Container(
-                  width: 20,
-                  height: 20,
-                  decoration: BoxDecoration(
-                    border: Border.all(color: tokens.line, width: 1.5),
-                    borderRadius: BorderRadius.circular(5),
-                    color: _anon ? tokens.brand : Colors.transparent,
+                      const SizedBox(height: 16),
+                      GestureDetector(
+                        onTap: () => setState(() => _anon = !_anon),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 20,
+                              height: 20,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.white70, width: 1.5),
+                                borderRadius: BorderRadius.circular(5),
+                                color: _anon ? tokens.brand : Colors.transparent,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            const Text('Post anonymously', style: TextStyle(color: Colors.white)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _retake,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                side: const BorderSide(color: Colors.white70),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              child: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700)),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () => requireAccountThen(context, store, () => _post(store)),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: tokens.brand,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              child: Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 10),
-                Text('Post anonymously', style: TextStyle(color: tokens.ink)),
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _retake,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: tokens.ink,
-                    side: BorderSide(color: tokens.line),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700)),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => requireAccountThen(context, store, () => _post(store)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: tokens.brand,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-                ),
-              ),
-            ],
           ),
         ],
       ),

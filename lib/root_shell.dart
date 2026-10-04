@@ -100,47 +100,77 @@ class _TabBar extends StatelessWidget {
   final ValueChanged<int> onTap;
   const _TabBar({required this.index, required this.onTap});
 
+  static const double _barHeight = 60;
+  // How far the raised camera button's top edge sits above the bar's own
+  // top edge (matches what the old Transform.translate(0, -10) on a 66px
+  // button centered in a 60px row worked out to). The bug wasn't this
+  // amount of "raise" itself — Instagram/Snapchat-style buttons really do
+  // poke up like this on purpose — it's that Transform.translate just
+  // painted the button outside the bar Container's own 60px bounds, which
+  // Scaffold never knew to reserve space for. That overflow landed directly
+  // on top of whatever sat at the very bottom of the screen above the bar
+  // (the Chat tab's message composer has no bottom padding, so it was the
+  // most visible place it broke). Wrapping everything in a Stack sized to
+  // _barHeight + _buttonPoke makes this the bar's real height, so Scaffold
+  // reserves the extra space and the button stays inside its own territory.
+  static const double _buttonPoke = 13;
+  static const double _buttonSize = 66;
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return Container(
-      height: 60,
-      decoration: BoxDecoration(color: tokens.glass, border: Border(top: BorderSide(color: tokens.line))),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: [
-            _TabItem(icon: Icons.home, label: 'Home', active: index == 0, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(0)),
-            _TabItem(icon: Icons.chat_bubble, label: 'Chat', active: index == 1, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(1)),
-            Expanded(
-              child: Center(
-                child: GestureDetector(
-                  onTap: () => onTap(2),
-                  behavior: HitTestBehavior.opaque,
-                  // Bigger and lifted above the bar (Instagram/Snapchat-style)
-                  // so it reads clearly as THE main action, not just another
-                  // tab icon — was a flat 50x50 sitting flush in the row.
-                  child: Transform.translate(
-                    offset: const Offset(0, -10),
-                    child: Container(
-                      width: 66,
-                      height: 66,
-                      decoration: BoxDecoration(
-                        color: tokens.brand,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: tokens.glass, width: 4),
-                        boxShadow: [BoxShadow(color: tokens.brand.withValues(alpha: 0.5), blurRadius: 14, offset: const Offset(0, 5))],
-                      ),
-                      child: const Icon(Icons.camera_alt, color: Colors.white, size: 30),
-                    ),
-                  ),
+    return SizedBox(
+      height: _barHeight + _buttonPoke,
+      child: Stack(
+        children: [
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              height: _barHeight,
+              decoration: BoxDecoration(color: tokens.glass, border: Border(top: BorderSide(color: tokens.line))),
+              child: SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    _TabItem(icon: Icons.home, label: 'Home', active: index == 0, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(0)),
+                    _TabItem(icon: Icons.chat_bubble, label: 'Chat', active: index == 1, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(1)),
+                    // Empty middle slot — the raised button is drawn
+                    // separately below so it can extend above this row
+                    // without being clipped by it, but this Expanded still
+                    // keeps the side tab items spaced exactly as before.
+                    const Expanded(child: SizedBox.shrink()),
+                    _TabItem(icon: Icons.location_on, label: 'Places', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
+                    _TabItem(icon: Icons.person, label: 'Profile', active: index == 4, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(4)),
+                  ],
                 ),
               ),
             ),
-            _TabItem(icon: Icons.location_on, label: 'Places', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
-            _TabItem(icon: Icons.person, label: 'Profile', active: index == 4, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(4)),
-          ],
-        ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: Center(
+              child: GestureDetector(
+                onTap: () => onTap(2),
+                behavior: HitTestBehavior.opaque,
+                child: Container(
+                  width: _buttonSize,
+                  height: _buttonSize,
+                  decoration: BoxDecoration(
+                    color: tokens.brand,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: tokens.glass, width: 4),
+                    boxShadow: [BoxShadow(color: tokens.brand.withValues(alpha: 0.5), blurRadius: 14, offset: const Offset(0, 5))],
+                  ),
+                  child: const Icon(Icons.camera_alt, color: Colors.white, size: 30),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

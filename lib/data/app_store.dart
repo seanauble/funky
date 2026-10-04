@@ -859,6 +859,30 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
+  /// Toggles 'me' reacting to a chat message with [emoji] — double-tapping a
+  /// bubble sends a quick ❤️, or picking from the hold-to-react strip sends
+  /// whichever emoji was tapped. Tapping the same emoji again (either way)
+  /// removes it; reacting with a different emoji replaces your previous one
+  /// on that message instead of stacking multiple reactions from the same
+  /// person, same as iMessage tapbacks.
+  void toggleReaction(String messageId, String emoji) {
+    final i = messages.indexWhere((m) => m.id == messageId);
+    if (i == -1) return;
+    final current = messages[i].reactions;
+    final next = <String, List<String>>{};
+    final alreadyThisEmoji = (current[emoji] ?? const []).contains('me');
+    for (final entry in current.entries) {
+      final uids = entry.value.where((u) => u != 'me').toList();
+      if (uids.isNotEmpty) next[entry.key] = uids;
+    }
+    if (!alreadyThisEmoji) {
+      next[emoji] = [...(next[emoji] ?? const []), 'me'];
+    }
+    messages = [...messages]..[i] = messages[i].copyWith(reactions: next);
+    notifyListeners();
+    _persist();
+  }
+
   void likeStory(String id) {
     stories = stories.map((s) {
       if (s.id == id && !s.likes.contains('me')) {

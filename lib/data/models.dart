@@ -214,6 +214,11 @@ class ChatMessage {
   final String uid;
   final String text;
   final bool anon;
+  // Emoji -> ids of everyone who reacted with it (double-tap for a quick ❤️,
+  // or hold a message for the full picker). Same ids-not-shown-by-name
+  // shape as Story views/likes — the sender only ever sees counts, never
+  // who reacted, except for their own reaction reflecting back as active.
+  final Map<String, List<String>> reactions;
 
   const ChatMessage({
     required this.id,
@@ -222,9 +227,28 @@ class ChatMessage {
     required this.uid,
     required this.text,
     required this.anon,
+    this.reactions = const {},
   });
 
-  Map<String, dynamic> toJson() => {'id': id, 't': t, 'room': room, 'uid': uid, 'text': text, 'anon': anon};
+  ChatMessage copyWith({Map<String, List<String>>? reactions}) => ChatMessage(
+        id: id,
+        t: t,
+        room: room,
+        uid: uid,
+        text: text,
+        anon: anon,
+        reactions: reactions ?? this.reactions,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        't': t,
+        'room': room,
+        'uid': uid,
+        'text': text,
+        'anon': anon,
+        'reactions': reactions.map((emoji, uids) => MapEntry(emoji, uids)),
+      };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
         id: json['id'] as String,
@@ -233,6 +257,9 @@ class ChatMessage {
         uid: json['uid'] as String,
         text: json['text'] as String,
         anon: json['anon'] as bool,
+        reactions: ((json['reactions'] as Map?) ?? const {}).map(
+          (emoji, uids) => MapEntry(emoji as String, (uids as List).map((e) => e as String).toList()),
+        ),
       );
 }
 

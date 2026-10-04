@@ -50,6 +50,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   late final AnimationController _partyController =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
 
+  // Pinch-to-zoom — same approach as the Story camera tab (create_flow_screen.dart).
+  double _minZoom = 1;
+  double _maxZoom = 1;
+  double _currentZoom = 1;
+  double _baseZoom = 1;
+
   @override
   void initState() {
     super.initState();
@@ -90,15 +96,44 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         await controller.dispose();
         return;
       }
+      var minZoom = 1.0;
+      var maxZoom = 1.0;
+      try {
+        minZoom = await controller.getMinZoomLevel();
+        maxZoom = await controller.getMaxZoomLevel();
+      } catch (_) {
+        // Zoom queries aren't supported on every device — fall back to a
+        // fixed 1x rather than crash.
+      }
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
       setState(() {
         _controller = controller;
         _cameraIndex = index;
         _ready = true;
         _error = null;
+        _minZoom = minZoom;
+        _maxZoom = maxZoom;
+        _currentZoom = minZoom;
       });
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
+  }
+
+  void _onZoomStart(ScaleStartDetails details) {
+    _baseZoom = _currentZoom;
+  }
+
+  void _onZoomUpdate(ScaleUpdateDetails details) {
+    final controller = _controller;
+    if (controller == null || _maxZoom <= _minZoom) return;
+    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
+    if (zoom == _currentZoom) return;
+    _currentZoom = zoom;
+    controller.setZoomLevel(zoom);
   }
 
   @override
@@ -257,6 +292,17 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
               ),
             ),
 
+          // Pinch anywhere on the open preview to zoom. Sits behind the top
+          // bar and shutter controls below it in the Stack, so it never
+          // steals their taps — just the empty preview area.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onScaleStart: _onZoomStart,
+              onScaleUpdate: _onZoomUpdate,
+            ),
+          ),
+
           // Top bar
           SafeArea(
             child: Padding(
@@ -294,14 +340,24 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (!_isRecording)
-                  const Padding(
+                // Visibility(maintainSize: ...) instead of an `if` — see the
+                // matching comment in create_flow_screen.dart's camera tab:
+                // removing this row outright shrinks the bottom-anchored
+                // Column and shoves the shutter button down the instant
+                // recording starts.
+                Visibility(
+                  visible: !_isRecording,
+                  maintainState: true,
+                  maintainAnimation: true,
+                  maintainSize: true,
+                  child: const Padding(
                     padding: EdgeInsets.only(bottom: 14),
                     child: Text(
                       'Tap for a photo · Hold for a video',
                       style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
                     ),
                   ),
+                ),
                 GestureDetector(
                   onTap: _takePhoto,
                   onLongPressStart: (_) => _startRecording(),
