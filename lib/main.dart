@@ -1,13 +1,29 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'data/app_store.dart';
+import 'data/supabase_config.dart';
 import 'root_shell.dart';
 import 'theme/colors.dart';
 import 'theme/theme_provider.dart';
 import 'widgets/reset_banner.dart';
 import 'widgets/ui_widgets.dart';
 
-void main() {
+Future<void> main() async {
+  // Has to happen before anything else touches a plugin (Supabase's client
+  // included) — see the Flutter docs on calling plugins before runApp.
+  WidgetsFlutterBinding.ensureInitialized();
+  // Wires up the real backend (see supabase_config.dart + supabase/
+  // schema.sql). AppStore itself doesn't read/write through this yet —
+  // this is deliberately just the connection, landing on its own first so
+  // a build break is easy to pin on this one change rather than buried
+  // inside the bigger real-accounts/friends/DMs/Stories rewiring to come.
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.publishableKey,
+  );
   runApp(const FunkyApp());
 }
 
@@ -72,13 +88,36 @@ class _FunkyAppState extends State<FunkyApp> with WidgetsBindingObserver {
   }
 }
 
-class _AppRoot extends StatelessWidget {
+/// The branded splash — shown for a flat 2 seconds every time the app
+/// opens, no matter how fast (or slow) AppStore.load() actually finishes.
+/// Before this, the old loading screen only showed up for however long the
+/// local mock store took to read from disk, which was fast enough to just
+/// flash and barely register rather than read as a deliberate splash.
+class _AppRoot extends StatefulWidget {
   const _AppRoot();
+
+  @override
+  State<_AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<_AppRoot> {
+  bool _splashElapsed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _splashElapsed = true);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final store = context.watch<AppStore>();
-    if (!store.loaded) {
+    // Whichever finishes last: the 2s splash timer, or the store actually
+    // being ready — so a slow load never drops you into a half-ready app
+    // early, and a fast one never skips the splash.
+    if (!_splashElapsed || !store.loaded) {
       final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
       return Scaffold(
         backgroundColor: tokens.bg,

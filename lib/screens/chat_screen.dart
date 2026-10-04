@@ -72,8 +72,31 @@ class _ChatScreenState extends State<ChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // ChatScreen normally lives as a bottom tab inside RootShell,
+            // which already supplies a shared AppBar + tab bar — nothing
+            // extra needed there. But Home's "Open chat" shortcut (see
+            // home_screen.dart) pushes this as its own standalone route on
+            // top of that, and with no AppBar of its own, the only way back
+            // used to be an edge-swipe gesture — easy to miss entirely, or
+            // to have swallowed by the keyboard/segmented control, leaving
+            // you stuck with nothing tappable to get out. Navigator.canPop
+            // is only true in that pushed case, never for the tab itself,
+            // so this only ever shows up exactly where it's needed.
+            if (Navigator.canPop(context))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 10, 16, 0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: Icon(Icons.arrow_back, color: tokens.ink),
+                    ),
+                    Text('Chat', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 17)),
+                  ],
+                ),
+              ),
             Container(
-              margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              margin: EdgeInsets.fromLTRB(16, Navigator.canPop(context) ? 8 : 16, 16, 0),
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
               child: Row(

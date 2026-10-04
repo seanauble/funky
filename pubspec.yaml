@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.0.0+38
+version: 2.0.0+41
 
 environment:
   sdk: ^3.13.3
@@ -76,6 +76,13 @@ dependencies:
   # Memories/Timeline archive too. Only needs the NSPhotoLibraryAddUsage/
   # NSPhotoLibraryUsage keys already declared in Info.plist.
   gal: ^2.3.1
+  # The real backend. Everything up to now has been a local mock store
+  # (see the "no backend" comments in app_store.dart/models.dart/
+  # account_screen.dart) — this is what starts replacing that with actual
+  # cross-device accounts, friends, Stories, and messages. See
+  # lib/data/supabase_config.dart for the project connection info and
+  # supabase/schema.sql for the database schema this depends on.
+  supabase_flutter: ^2.18.0
 
 dev_dependencies:
   flutter_test:
