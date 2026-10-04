@@ -5,7 +5,7 @@ import '../widgets/ui_widgets.dart';
 // deliberately not pulling in package_info_plus just to read it back, since
 // every extra dependency is one more thing that can break the iOS build.
 const _appVersion = '1.0.0';
-const _appBuild = '7';
+const _appBuild = '9';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});

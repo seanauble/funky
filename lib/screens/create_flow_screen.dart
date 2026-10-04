@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:easy_video_editor/easy_video_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -49,6 +50,14 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
   late int _page = _pageIndexForKind(widget.initial);
   late final PageController _pageController = PageController(initialPage: _page);
 
+  // True from the moment you start recording (or snap a photo) until you
+  // either Retake or Post — covers both the live recording AND the review/
+  // replay screen that follows it. While true, the CAMERA/TEXT/POLL/PLACE
+  // bar is hidden outright (not just disabled) so nothing distracts from
+  // the capture or the replay, and the PageView can't be swiped away from
+  // underneath it either.
+  bool _cameraBusy = false;
+
   @override
   void dispose() {
     _pageController.dispose();
@@ -75,16 +84,17 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
           Expanded(
             child: PageView(
               controller: _pageController,
+              physics: _cameraBusy ? const NeverScrollableScrollPhysics() : null,
               onPageChanged: (i) => setState(() => _page = i),
-              children: const [
-                _CameraStoryPage(),
-                _TextStoryPage(),
-                _PollFormPage(),
-                _PlaceFormPage(),
+              children: [
+                _CameraStoryPage(onBusyChanged: (v) => setState(() => _cameraBusy = v)),
+                const _TextStoryPage(),
+                const _PollFormPage(),
+                const _PlaceFormPage(),
               ],
             ),
           ),
-          _BottomLabelBar(page: _page, onSelect: _goTo),
+          if (!_cameraBusy) _BottomLabelBar(page: _page, onSelect: _goTo),
         ],
       ),
     );
@@ -137,7 +147,12 @@ class _BottomLabelBar extends StatelessWidget {
 /// (same shape as the other three tabs' forms) so posting a camera Story
 /// never has to leave this screen.
 class _CameraStoryPage extends StatefulWidget {
-  const _CameraStoryPage();
+  // Fires true the instant you start recording or snap a photo, and stays
+  // true through the review/replay screen — false again only once you
+  // Retake (back to the live camera). Drives hiding the parent's
+  // CAMERA/TEXT/POLL/PLACE bar and locking the PageView.
+  final ValueChanged<bool>? onBusyChanged;
+  const _CameraStoryPage({this.onBusyChanged});
 
   @override
   State<_CameraStoryPage> createState() => _CameraStoryPageState();
@@ -155,6 +170,16 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   double _recordProgress = 0;
   Timer? _recordTicker;
   bool _busy = false;
+  // One "take" can span more than one camera if you flip mid-recording —
+  // each flip ends the current clip and starts a new one on the other
+  // lens, and these are the earlier clips waiting to be glued onto the
+  // final one in _finishRecording. Empty for the common case of a take
+  // that never flipped, which skips the merge step entirely.
+  final List<String> _segmentPaths = [];
+  // Total recording time already banked from earlier segments in this
+  // take, so the 15s cap and progress ring track the WHOLE take across
+  // flips, not just whatever camera happens to be active right now.
+  int _elapsedBeforeCurrentSegmentMs = 0;
 
   File? _mediaFile;
   bool _isVideo = false;
@@ -262,6 +287,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         _isVideo = false;
         _busy = false;
       });
+      widget.onBusyChanged?.call(true);
     } catch (e) {
       if (mounted) setState(() {
         _error = 'Could not take the photo: $e';
@@ -270,45 +296,86 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     }
   }
 
+  /// Starts (or, after a mid-recording flip, resumes) recording on
+  /// whichever camera is currently open, without touching the take-wide
+  /// bookkeeping (_segmentPaths/_elapsedBeforeCurrentSegmentMs) — those are
+  /// only ever reset at the start of a brand-new take, in _startRecording.
+  Future<void> _beginSegmentRecording(CameraController controller) async {
+    await controller.startVideoRecording();
+    _recordStart = DateTime.now();
+    if (mounted) setState(() => _isRecording = true);
+  }
+
   Future<void> _startRecording() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
     try {
-      await controller.startVideoRecording();
-      _recordStart = DateTime.now();
-      setState(() {
-        _isRecording = true;
-        _recordProgress = 0;
-      });
+      _segmentPaths.clear();
+      _elapsedBeforeCurrentSegmentMs = 0;
+      await _beginSegmentRecording(controller);
+      setState(() => _recordProgress = 0);
+      widget.onBusyChanged?.call(true);
       _recordTicker = Timer.periodic(const Duration(milliseconds: 60), (_) {
+        if (!_isRecording) return; // paused for the brief gap of a mid-flip camera swap
         final start = _recordStart;
         if (start == null) return;
-        final elapsed = DateTime.now().difference(start).inMilliseconds;
+        final elapsed = _elapsedBeforeCurrentSegmentMs + DateTime.now().difference(start).inMilliseconds;
         final progress = (elapsed / _maxRecordMs).clamp(0.0, 1.0);
         setState(() => _recordProgress = progress);
-        if (elapsed >= _maxRecordMs) _stopRecording();
+        if (elapsed >= _maxRecordMs) _finishRecording();
       });
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start recording: $e');
     }
   }
 
-  Future<void> _stopRecording() async {
+  /// Ends the take for good (long-press released, or the 15s cap hit) —
+  /// stops whichever camera is currently recording, and, if this take
+  /// included one or more mid-recording flips, glues every earlier segment
+  /// plus this final one together into one continuous-looking clip before
+  /// handing it to the review screen. A take that never flipped skips the
+  /// merge step entirely and just uses the one clip directly.
+  Future<void> _finishRecording() async {
     final controller = _controller;
     if (controller == null || !_isRecording) return;
     _recordTicker?.cancel();
     _recordTicker = null;
+    // Deliberately NOT telling the parent we're "not busy" here, even
+    // though recording itself just stopped — the bottom bar needs to stay
+    // hidden straight through into the review/replay screen below, with no
+    // flicker of it reappearing for the brief moment while the clip saves
+    // (and, if there were flips, while the segments get stitched together).
     setState(() {
       _isRecording = false;
       _busy = true;
     });
+    final hadFlips = _segmentPaths.isNotEmpty;
     try {
       final raw = await controller.stopVideoRecording();
       final dir = await _storiesDir();
       final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.mp4';
-      final savedFile = await File(raw.path).copy(dest);
+      final finalSegment = await File(raw.path).copy(dest);
+
+      File mergedFile;
+      if (!hadFlips) {
+        mergedFile = finalSegment;
+      } else {
+        final earlierSegments = List<String>.from(_segmentPaths);
+        final mergeDest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}_merged.mp4';
+        final outputPath = await VideoEditorBuilder(videoPath: earlierSegments.first)
+            .merge(otherVideoPaths: [...earlierSegments.sublist(1), finalSegment.path])
+            .export(outputPath: mergeDest);
+        mergedFile = File(outputPath);
+        // Clean up the individual pieces now that the merged file holds
+        // everything — best-effort, a leftover temp file here is harmless.
+        for (final p in earlierSegments) {
+          unawaited(File(p).delete().catchError((_) => File(p)));
+        }
+        unawaited(finalSegment.delete().catchError((_) => finalSegment));
+      }
+
       if (!mounted) return;
-      final videoController = VideoPlayerController.file(savedFile);
+      final videoController = VideoPlayerController.file(mergedFile);
       await videoController.initialize();
       await videoController.setLooping(true);
       await videoController.setVolume(0);
@@ -318,26 +385,92 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         return;
       }
       setState(() {
-        _mediaFile = savedFile;
+        _mediaFile = mergedFile;
         _isVideo = true;
         _videoController = videoController;
         _busy = false;
       });
+      _segmentPaths.clear();
+      _elapsedBeforeCurrentSegmentMs = 0;
+      // Still busy (now reviewing instead of recording) — no call needed,
+      // onBusyChanged(true) from _startRecording already covers this.
     } catch (e) {
-      if (mounted) setState(() {
-        _error = 'Could not save the video: $e';
-        _busy = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = hadFlips ? 'Could not stitch the flipped clips together: $e' : 'Could not save the video: $e';
+          _busy = false;
+        });
+        // Nothing usable was captured after all — back to a plain live
+        // camera, so the bottom bar should come back too.
+        widget.onBusyChanged?.call(false);
+        _segmentPaths.clear();
+        _elapsedBeforeCurrentSegmentMs = 0;
+      }
     }
   }
 
   void _cancelRecording() {
-    if (_isRecording) _stopRecording();
+    if (_isRecording) _finishRecording();
   }
 
   void _flipCamera() {
     if (_cameras.length < 2 || _busy || _isRecording) return;
     _openCamera((_cameraIndex + 1) % _cameras.length);
+  }
+
+  /// Double-tapping the live preview while recording flips the camera
+  /// seamlessly — the take keeps going the whole time; this just ends the
+  /// clip on the current lens, swaps to the other one, and immediately
+  /// starts a new clip, all without ever leaving the recording state or
+  /// dropping into the review screen. The brief camera-switch gap (the OS
+  /// tearing down and rebuilding the capture session on the other lens —
+  /// typically well under half a second) is the one visible seam; every
+  /// clip from this take gets glued into one continuous-looking video once
+  /// you finish recording (see _finishRecording).
+  Future<void> _flipDuringRecording() async {
+    if (!_isRecording || _busy || _cameras.length < 2) return;
+    final controller = _controller;
+    final start = _recordStart;
+    if (controller == null || start == null) return;
+    // Bank the time this segment ran before we lose _recordStart to the swap.
+    _elapsedBeforeCurrentSegmentMs += DateTime.now().difference(start).inMilliseconds;
+    // _isRecording goes false for this brief gap too (not just _busy) — the
+    // ticker is keyed off it, and without this it would keep computing
+    // elapsed time against the now-stale _recordStart and double-count the
+    // segment we just banked above. _beginSegmentRecording flips it back
+    // to true (and sets a fresh _recordStart) once the new lens is ready.
+    setState(() {
+      _busy = true;
+      _isRecording = false;
+    });
+    try {
+      final raw = await controller.stopVideoRecording();
+      final dir = await _storiesDir();
+      final dest = '${dir.path}/segment_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final savedSegment = await File(raw.path).copy(dest);
+      _segmentPaths.add(savedSegment.path);
+
+      final nextIndex = (_cameraIndex + 1) % _cameras.length;
+      await _openCamera(nextIndex); // rebuilds _controller on the other lens
+      final newController = _controller;
+      if (!mounted) return;
+      if (newController == null) {
+        // The other camera failed to open — better to end the take cleanly
+        // with what we've got than leave the user stuck mid-flip.
+        setState(() => _busy = false);
+        await _finishRecording();
+        return;
+      }
+      await _beginSegmentRecording(newController);
+      if (mounted) setState(() => _busy = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = 'Could not flip cameras mid-recording: $e';
+          _busy = false;
+        });
+      }
+    }
   }
 
   void _retake() {
@@ -348,6 +481,21 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       _isVideo = false;
       _captionController.clear();
     });
+    // Defensive — these should already be empty by this point, but a
+    // retake is exactly the moment any leftover take-wide state should die.
+    _segmentPaths.clear();
+    _elapsedBeforeCurrentSegmentMs = 0;
+    // Back to the live camera — bring the bottom bar back with it.
+    widget.onBusyChanged?.call(false);
+  }
+
+  /// Discards this capture and leaves the whole create flow — distinct
+  /// from Retake (which stays here and reopens the camera). The small X in
+  /// the corner used to just call _retake, which read as "close" but
+  /// actually meant "try again"; now the corner X really does close, and
+  /// Retake is its own clearly-separate button in the action row below.
+  void _close() {
+    Navigator.of(context).pop();
   }
 
   void _post(AppStore store) {
@@ -397,6 +545,17 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                 child: CustomPaint(painter: _PartyBorderPainter(_partyController.value), size: Size.infinite),
               ),
             ),
+
+          // Double-tap anywhere on the open preview to flip the camera
+          // seamlessly mid-recording (see _flipDuringRecording). Sits
+          // behind the top bar and shutter controls below it in the Stack,
+          // so it never steals their taps — just the empty preview area.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onDoubleTap: _flipDuringRecording,
+            ),
+          ),
 
           Positioned(
             top: 8,
@@ -454,40 +613,73 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Deliberately smaller than before (was a fixed 280 and used
+          // BoxFit.cover, which made it feel like it swallowed the whole
+          // screen) — this is a review thumbnail, not the final playback.
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
-            child: Stack(
-              alignment: Alignment.topRight,
-              children: [
-                SizedBox(
-                  width: double.infinity,
-                  height: 280,
-                  child: _isVideo && _videoController != null && _videoController!.value.isInitialized
-                      ? FittedBox(
-                          fit: BoxFit.cover,
-                          child: SizedBox(
-                            width: _videoController!.value.size.width,
-                            height: _videoController!.value.size.height,
+            child: Container(
+              width: double.infinity,
+              height: 200,
+              color: Colors.black,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Center(
+                    child: _isVideo && _videoController != null && _videoController!.value.isInitialized
+                        ? AspectRatio(
+                            aspectRatio: _videoController!.value.aspectRatio,
                             child: VideoPlayer(_videoController!),
+                          )
+                        : Image.file(_mediaFile!, fit: BoxFit.contain),
+                  ),
+                  // The caption, live, directly on top of the media — same
+                  // as it'll actually look once posted — instead of only
+                  // ever showing up in the plain text field below it.
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _captionController,
+                    builder: (context, value, _) {
+                      final text = value.text.trim();
+                      if (text.isEmpty) return const SizedBox.shrink();
+                      return Positioned(
+                        left: 10,
+                        right: 10,
+                        bottom: 10,
+                        child: Text(
+                          text,
+                          textAlign: TextAlign.center,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                            shadows: [Shadow(color: Colors.black, blurRadius: 6)],
                           ),
-                        )
-                      : Image.file(_mediaFile!, fit: BoxFit.cover),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: InkWell(
-                    onTap: _retake,
-                    customBorder: const CircleBorder(),
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                      child: const Icon(Icons.close, color: Colors.white, size: 18),
+                        ),
+                      );
+                    },
+                  ),
+                  // Closes the whole create flow — separate from Retake
+                  // (the button below), which stays here and reopens the
+                  // camera. This used to secretly BE retake, mislabeled.
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: InkWell(
+                      onTap: _close,
+                      customBorder: const CircleBorder(),
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.close, color: Colors.white, size: 18),
+                      ),
                     ),
                   ),
-                ),
-                if (_isVideo) const Positioned(left: 8, bottom: 8, child: _VideoBadge()),
-              ],
+                  if (_isVideo) const Positioned(left: 8, top: 8, child: _VideoBadge()),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 10),

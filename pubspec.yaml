@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+7
+version: 1.0.0+9
 
 environment:
   sdk: ^3.13.3
@@ -55,6 +55,17 @@ dependencies:
   # Where captured Story photos/videos get copied so they survive after the
   # camera plugin's own temp file is cleaned up. Also an official package.
   path_provider: ^2.1.4
+  # Stitches the before/after clips from a mid-recording camera flip into
+  # one continuous-looking video (see _finishRecording in
+  # create_flow_screen.dart). This one IS a smaller community package, not
+  # an official flutter.dev one — picked deliberately over the much heavier
+  # ffmpeg_kit_flutter route (that one bundles the whole ffmpeg binary and
+  # its original maintainer archived the project), since this does only
+  # the one thing we need (merge) with no ffmpeg binary at all. If a build
+  # ever needs to drop this, the merge-only call site is isolated to
+  # _finishRecording, and the single-segment (no-flip) path never touches
+  # this package at all.
+  easy_video_editor: ^0.1.6
 
 dev_dependencies:
   flutter_test:
