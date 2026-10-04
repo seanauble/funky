@@ -125,6 +125,15 @@ class AppStore extends ChangeNotifier {
 
   bool isBanned(String personId) => bannedUserIds.contains(personId);
 
+  // Whether the one-time "seed a test friend" step (see load()) has
+  // already run on this device. Starts true because the constructor
+  // above already seeds 'p1' as a friend for a brand-new install — this
+  // only ever needs to do real work for an account that existed before
+  // this seed was added, which is why load() overwrites it with the
+  // persisted value (defaulting to false for any such older account) the
+  // moment there's something stored to read.
+  bool _testFriendSeeded = true;
+
   /// Admin-only — removes [personId] from the social graph on this device:
   /// unfriends them both ways, clears any pending request between you, and
   /// marks them banned so their Stories/chat messages/DMs stop showing up
@@ -186,6 +195,32 @@ class AppStore extends ChangeNotifier {
   void deleteMessage(String messageId) {
     if (!isAdmin) return;
     messages = messages.where((m) => m.id != messageId).toList();
+    notifyListeners();
+    _persist();
+  }
+
+  /// Admin-only — permanently deletes a poll (and scrubs its id out of
+  /// everyone's votes, including your own, so a stray old vote can't ever
+  /// point at something that no longer exists). Silently does nothing for
+  /// a non-admin account.
+  void deletePoll(String pollId) {
+    if (!isAdmin) return;
+    polls = polls.where((p) => p.id != pollId).toList();
+    me = me.copyWith(votes: Map<String, int>.from(me.votes)..remove(pollId));
+    people = {
+      for (final entry in people.entries) entry.key: entry.value.copyWith(votes: Map<String, int>.from(entry.value.votes)..remove(pollId)),
+    };
+    notifyListeners();
+    _persist();
+  }
+
+  /// Admin-only — sets your own points to the max, comfortably past every
+  /// level title and badge threshold (see levelTitles in models.dart), so
+  /// the points/levels/badges UI can be tested without actually grinding
+  /// for it. Silently does nothing for a non-admin account.
+  void maxOutMyPoints() {
+    if (!isAdmin) return;
+    me = me.copyWith(points: 999999);
     notifyListeners();
     _persist();
   }
@@ -379,6 +414,10 @@ class AppStore extends ChangeNotifier {
   // against now" pattern.
   int? _lastMessageAt;
   static const int _messageCooldownMs = 3000;
+  // Defense-in-depth alongside the 240-char `maxLength` already set on the
+  // chat/DM TextFields themselves — this is what actually gets saved/sent
+  // no matter how the text got here (paste, a future API caller, etc).
+  static const int _maxMessageLength = 240;
 
   AppStore() {
     final session = sessionKey();
@@ -478,6 +517,22 @@ class AppStore extends ChangeNotifier {
         // Same reasoning — a ban shouldn't quietly lift itself at 2 PM.
         bannedUserIds = ((parsed['bannedUserIds'] as List?) ?? const []).map((e) => e as String).toSet();
 
+        // Defaults to false for any account stored before this flag
+        // existed — which is exactly the account that still needs the
+        // retroactive friend seed just below.
+        _testFriendSeeded = parsed['testFriendSeeded'] as bool? ?? false;
+
+        // Whether 'me' has viewed/liked someone ELSE's story — their story
+        // content itself is never persisted (it's re-seeded fresh from the
+        // demo data or the real backend every launch), but the fact that
+        // YOU already saw/liked it needs to survive a restart too, the
+        // same as every other bit of your own activity does. Re-applied by
+        // story id onto whatever's in `stories` right now below, so it
+        // only ever matters for a story id that still actually exists —
+        // a stale id from a story that's since expired just no-ops.
+        final myViewedStoryIds = ((parsed['myViewedStoryIds'] as List?) ?? const []).map((e) => e as String).toSet();
+        final myLikedStoryIds = ((parsed['myLikedStoryIds'] as List?) ?? const []).map((e) => e as String).toSet();
+
         if (storedSession == currentSession) {
           me = parsedMe;
           places = _dedupeById([...places, ...parsedPlaces], (p) => p.id);
@@ -522,6 +577,42 @@ class AppStore extends ChangeNotifier {
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
           justReset = true;
         }
+
+        // Re-apply onto `stories` above (either branch) now that it's
+        // settled — this is the actual fix for the "story goes back to
+        // orange after closing and reopening the app" bug: without this,
+        // views/likes recorded on someone ELSE's story were computed fine
+        // in-session but never written anywhere _persist() looked at, so
+        // they vanished the instant the app restarted and that story got
+        // re-seeded. A ring/story that's no longer around (expired, or a
+        // demo id that shifted) just silently no-ops here.
+        if (myViewedStoryIds.isNotEmpty || myLikedStoryIds.isNotEmpty) {
+          stories = stories.map((s) {
+            final needsView = myViewedStoryIds.contains(s.id) && !s.views.contains('me');
+            final needsLike = myLikedStoryIds.contains(s.id) && !s.likes.contains('me');
+            if (!needsView && !needsLike) return s;
+            return s.copyWith(
+              views: needsView ? [...s.views, 'me'] : null,
+              likes: needsLike ? [...s.likes, 'me'] : null,
+            );
+          }).toList();
+        }
+
+        // One-time retroactive seed (see _testFriendSeeded above) so an
+        // account that existed before the constructor's own "p1 is
+        // already a friend" demo seed gets that same starting point —
+        // something to immediately test the friends list and DMs with —
+        // instead of just starting from an empty friends list forever.
+        if (!_testFriendSeeded) {
+          _testFriendSeeded = true;
+          if (!me.friends.contains('p1')) {
+            me = me.copyWith(friends: [...me.friends, 'p1']);
+          }
+          final p1 = people['p1'];
+          if (p1 != null && !p1.friends.contains('me')) {
+            people = {...people, 'p1': p1.copyWith(friends: [...p1.friends, 'me'])};
+          }
+        }
       } else {
         // Nothing saved yet — this is a brand-new install, worth the
         // "First night using FUNKY" bonus (see the points comment on
@@ -554,6 +645,16 @@ class AppStore extends ChangeNotifier {
       // would, so Stories/DMs start flowing in without waiting for you to
       // touch the account screen.
       if (signedIn) _startRemoteSync();
+      // Pick location back up automatically on every launch instead of
+      // waiting for a tap on LocationGate's "Enable location" button —
+      // once you've actually granted it to the OS, requestLocation()
+      // below resolves that silently (Geolocator.checkPermission() sees
+      // it's already granted and never re-prompts), so this just quietly
+      // restores it before you ever see a gate. If it's not granted yet
+      // (first launch, or you denied it), this is exactly the same OS
+      // prompt tapping the button would have triggered, just fired
+      // automatically instead of waiting on you to find the button.
+      requestLocation();
     }
   }
 
@@ -576,6 +677,14 @@ class AppStore extends ChangeNotifier {
         // for them anymore.
         'adminVerifiedPlaceIds': adminVerifiedPlaceIds.toList(),
         'bannedUserIds': bannedUserIds.toList(),
+        // Views/likes YOU put on someone ELSE's story — their story row
+        // itself is excluded just above (`stories.where((s) => s.uid ==
+        // 'me')`), so without this your own activity on it would be lost
+        // on every restart (see load()'s re-apply step for the other half
+        // of this fix).
+        'myViewedStoryIds': stories.where((s) => s.uid != 'me' && s.views.contains('me')).map((s) => s.id).toList(),
+        'myLikedStoryIds': stories.where((s) => s.uid != 'me' && s.likes.contains('me')).map((s) => s.id).toList(),
+        'testFriendSeeded': _testFriendSeeded,
       };
       await prefs.setString(_storageKey, jsonEncode(payload));
     } catch (_) {
@@ -610,14 +719,6 @@ class AppStore extends ChangeNotifier {
       locationStatus = LocationStatus.denied;
       notifyListeners();
     }
-  }
-
-  /// A manual override for trying the app away from real sample places —
-  /// the native equivalent of the prototype's "testing only" town picker.
-  void useTestLocation(LatLng loc) {
-    location = loc;
-    locationStatus = LocationStatus.granted;
-    notifyListeners();
   }
 
   List<RankedPlace> get rankedPlaces => rankedPlacesFrom(location ?? defaultLocation);
@@ -874,10 +975,16 @@ class AppStore extends ChangeNotifier {
 
   /// Returns null on success, or a user-facing error (still inside the
   /// 15-day cooldown) if the change didn't go through.
+  static final RegExp _validHandle = RegExp(r'^[a-zA-Z0-9_]+$');
+
   String? setHandle(String handle) {
     final trimmed = handle.trim();
     if (trimmed.isEmpty) return 'Enter a username.';
     if (trimmed == me.handle) return null; // unchanged — no-op, no cooldown hit
+    if (trimmed.length > 20) return 'Usernames can be at most 20 characters.';
+    if (!_validHandle.hasMatch(trimmed)) {
+      return 'Usernames can only use letters, numbers, and underscores.';
+    }
     final last = me.lastHandleChangeAt;
     if (last != null) {
       final elapsedMs = DateTime.now().millisecondsSinceEpoch - last;
@@ -912,11 +1019,14 @@ class AppStore extends ChangeNotifier {
   }
 
   void setBio(String bio) {
-    me = me.copyWith(bio: bio);
+    // Defense-in-depth alongside the bio TextField's own `maxLength: 50` —
+    // whatever actually gets saved/synced is capped here too.
+    final capped = bio.length > 50 ? bio.substring(0, 50) : bio;
+    me = me.copyWith(bio: capped);
     notifyListeners();
     _persist();
     if (signedIn && supabaseUserId != null) {
-      _fireAndForgetUpdate('profiles', {'bio': bio}, supabaseUserId!);
+      _fireAndForgetUpdate('profiles', {'bio': capped}, supabaseUserId!);
     }
   }
 
@@ -1058,12 +1168,13 @@ class AppStore extends ChangeNotifier {
     if (last != null && now - last < _messageCooldownMs) {
       return 'Slow down a sec before sending another message.';
     }
+    final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
     final message = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
       room: room,
       uid: 'me',
-      text: text,
+      text: capped,
       anon: anon,
     );
     messages = [...messages, message];
@@ -1090,12 +1201,13 @@ class AppStore extends ChangeNotifier {
     if (last != null && now - last < _messageCooldownMs) {
       return 'Slow down a sec before sending another message.';
     }
+    final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
     if (signedIn && supabaseUserId != null && _remotePersonIds.contains(toPersonId)) {
       try {
         final rows = await Supabase.instance.client.from('messages').insert({
           'sender_id': supabaseUserId,
           'recipient_id': toPersonId,
-          'text': text,
+          'text': capped,
         }).select();
         final msg = _messageFromRow(rows.first);
         if (msg != null) {
@@ -1113,7 +1225,7 @@ class AppStore extends ChangeNotifier {
         // retry succeeds.
       }
     }
-    return sendMessage(dmRoomId('me', toPersonId), text, false);
+    return sendMessage(dmRoomId('me', toPersonId), capped, false);
   }
 
   /// Everyone 'me' has a DM thread with, most-recently-active first — what

@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
@@ -313,6 +315,177 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
       );
 }
 
+/// A single static frame from a video — used for grid thumbnails (the
+/// Memories grid on Profile) where an always-looping autoplay video like
+/// PlaceMediaThumbnail would be overkill, and a real battery/perf hit once
+/// there's a whole grid of them on screen at once. Initializes the video
+/// just far enough to decode a real frame and then stays paused on it —
+/// seeking to literal position zero renders solid black on a lot of
+/// encoders (the very first frame is often not a real keyframe), so this
+/// seeks a little past zero instead. Works for either a local file (your
+/// own capture) or a remote signed URL (a Memory synced from another
+/// device — see Story.videoUrl's doc comment in models.dart).
+class VideoFrameThumbnail extends StatefulWidget {
+  final String? path;
+  final String? url;
+  final BoxFit fit;
+  const VideoFrameThumbnail({super.key, this.path, this.url, this.fit = BoxFit.cover}) : assert(path != null || url != null);
+
+  @override
+  State<VideoFrameThumbnail> createState() => _VideoFrameThumbnailState();
+}
+
+class _VideoFrameThumbnailState extends State<VideoFrameThumbnail> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(VideoFrameThumbnail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path || oldWidget.url != widget.url) {
+      final old = _controller;
+      _controller = null;
+      _ready = false;
+      _failed = false;
+      old?.dispose();
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final path = widget.path;
+    final url = widget.url;
+    final c = path != null ? VideoPlayerController.file(File(path)) : VideoPlayerController.networkUrl(Uri.parse(url!));
+    _controller = c;
+    try {
+      await c.initialize();
+      await c.seekTo(const Duration(milliseconds: 200));
+      if (!mounted || _controller != c) return;
+      setState(() => _ready = true);
+    } catch (_) {
+      if (!mounted || _controller != c) return;
+      setState(() => _failed = true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final controller = _controller;
+    if (_failed || controller == null) {
+      return Container(color: tokens.raised, alignment: Alignment.center, child: Icon(Icons.videocam_off_outlined, color: tokens.mute));
+    }
+    if (!_ready || !controller.value.isInitialized) {
+      return Container(
+        color: tokens.raised,
+        alignment: Alignment.center,
+        child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: tokens.mute)),
+      );
+    }
+    return FittedBox(
+      fit: widget.fit,
+      child: SizedBox(width: controller.value.size.width, height: controller.value.size.height, child: VideoPlayer(controller)),
+    );
+  }
+}
+
+/// One swipeable camera filter — a plain Flutter ColorFilter matrix, no
+/// extra image-processing package needed. `matrix == null` is "Normal"
+/// (no filter at all), which both camera screens treat as a reason to
+/// skip wrapping the preview in ColorFiltered entirely, so the common
+/// case costs nothing extra to paint.
+class CameraFilter {
+  final String name;
+  final List<double>? matrix;
+  const CameraFilter(this.name, this.matrix);
+  ColorFilter? get colorFilter => matrix == null ? null : ColorFilter.matrix(matrix!);
+}
+
+/// Swipe left/right on the camera preview to cycle through these — see
+/// _onZoomUpdate in create_flow_screen.dart/camera_capture_screen.dart for
+/// the gesture, which reuses the existing pinch-to-zoom GestureDetector
+/// rather than adding a second, competing one (a single-finger drag there
+/// was already effectively a no-op for zoom, since ScaleGestureDetector
+/// only reports a real `scale` once a second finger joins).
+const List<CameraFilter> cameraFilters = [
+  CameraFilter('Normal', null),
+  CameraFilter('B&W', [
+    0.2126, 0.7152, 0.0722, 0, 0, //
+    0.2126, 0.7152, 0.0722, 0, 0, //
+    0.2126, 0.7152, 0.0722, 0, 0, //
+    0, 0, 0, 1, 0,
+  ]),
+  CameraFilter('Warm', [
+    1.15, 0, 0, 0, 10, //
+    0, 1.05, 0, 0, 5, //
+    0, 0, 0.85, 0, 0, //
+    0, 0, 0, 1, 0,
+  ]),
+  CameraFilter('Cool', [
+    0.9, 0, 0, 0, 0, //
+    0, 1.0, 0, 0, 0, //
+    0, 0, 1.2, 0, 10, //
+    0, 0, 0, 1, 0,
+  ]),
+  CameraFilter('Vivid', [
+    1.315, -0.286, -0.029, 0, 0, //
+    -0.085, 1.114, -0.029, 0, 0, //
+    -0.085, -0.286, 1.371, 0, 0, //
+    0, 0, 0, 1, 0,
+  ]),
+  CameraFilter('Vintage', [
+    0.764, 0.215, 0.022, 0, 15, //
+    0.064, 0.915, 0.022, 0, 8, //
+    0.064, 0.215, 0.722, 0, -10, //
+    0, 0, 0, 1, 0,
+  ]),
+];
+
+/// Re-encodes a captured photo's bytes with [filter] baked in permanently
+/// — needed because the live preview's ColorFiltered only ever affects
+/// what's on screen, never the camera plugin's own saved file. Pure
+/// dart:ui (decode → redraw through a Paint with the same ColorFilter →
+/// re-encode), no image-processing package. Returns [bytes] unchanged if
+/// [filter] is Normal. The output is always PNG regardless of the input
+/// format — dart:ui can only re-encode to PNG, not JPEG — so callers
+/// should save it with a .png extension to match.
+Future<Uint8List> applyCameraFilterToImageBytes(Uint8List bytes, CameraFilter filter) async {
+  final cf = filter.colorFilter;
+  if (cf == null) return bytes;
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  try {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawImage(image, Offset.zero, Paint()..colorFilter = cf);
+    final picture = recorder.endRecording();
+    final outputImage = await picture.toImage(image.width, image.height);
+    try {
+      final byteData = await outputImage.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return bytes;
+      return byteData.buffer.asUint8List();
+    } finally {
+      outputImage.dispose();
+    }
+  } finally {
+    image.dispose();
+  }
+}
+
 class FunkyHandle extends StatelessWidget {
   final String handle;
   // Optional — when the full Person is on hand, their point-unlocked
@@ -386,4 +559,80 @@ class FunkyTokens extends ThemeExtension<FunkyTokens> {
 
   @override
   FunkyTokens lerp(ThemeExtension<FunkyTokens>? other, double t) => this;
+}
+
+// --- Content filtering ---------------------------------------------------
+// Slurs get blurred out wherever a message's own text is shown (area chat,
+// DMs) — tap a blurred word to reveal it, the same "sensitive content"
+// pattern used elsewhere. Ordinary cursing is left alone on purpose; this
+// list is specifically slurs (racial, homophobic/transphobic, ableist),
+// not profanity in general, and it deliberately leaves out plain identity
+// words that AREN'T slurs (gay, lesbian, trans, etc) — blurring those out
+// would be wrong, not safer. Not exhaustive — no client-side word list
+// ever catches every spelling/leetspeak dodge — just a reasonable first
+// line of defense; deleteMessage (Admin) still exists for anything this
+// misses.
+const _blurredWords = [
+  'nigger', 'nigga', 'niggers', 'niggas',
+  'faggot', 'faggots', 'fagot', 'fags',
+  'tranny', 'trannies',
+  'chink', 'chinks',
+  'spic', 'spics',
+  'kike', 'kikes',
+  'gook', 'gooks',
+  'wetback', 'wetbacks',
+  'retard', 'retarded',
+];
+
+final RegExp _blurredWordPattern = RegExp(
+  r'\b(' + _blurredWords.map(RegExp.escape).join('|') + r')\b',
+  caseSensitive: false,
+);
+
+/// Renders [text] the same as a plain `Text(text, style: style)`, except
+/// any slur (see _blurredWords above) is blurred out and only reveals on
+/// tap. Use this instead of a bare Text(...) wherever a message's own text
+/// is shown — chat bubbles, DMs.
+Widget filteredMessageText(String text, TextStyle? style) {
+  final matches = _blurredWordPattern.allMatches(text).toList();
+  if (matches.isEmpty) return Text(text, style: style);
+  final spans = <InlineSpan>[];
+  var last = 0;
+  for (final m in matches) {
+    if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start)));
+    spans.add(WidgetSpan(
+      alignment: PlaceholderAlignment.middle,
+      child: _BlurredWord(word: text.substring(m.start, m.end), style: style),
+    ));
+    last = m.end;
+  }
+  if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
+  return Text.rich(TextSpan(style: style, children: spans));
+}
+
+class _BlurredWord extends StatefulWidget {
+  final String word;
+  final TextStyle? style;
+  const _BlurredWord({required this.word, this.style});
+
+  @override
+  State<_BlurredWord> createState() => _BlurredWordState();
+}
+
+class _BlurredWordState extends State<_BlurredWord> {
+  bool _revealed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() => _revealed = !_revealed),
+      child: _revealed
+          ? Text(widget.word, style: widget.style)
+          : ImageFiltered(
+              imageFilter: ui.ImageFilter.blur(sigmaX: 4, sigmaY: 3),
+              child: Text(widget.word, style: widget.style),
+            ),
+    );
+  }
 }

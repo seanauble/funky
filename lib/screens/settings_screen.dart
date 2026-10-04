@@ -5,6 +5,7 @@ import '../theme/theme_provider.dart';
 import '../widgets/ui_widgets.dart';
 import 'about_screen.dart';
 import 'account_screen.dart';
+import 'admin_panel_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
 
@@ -84,6 +85,18 @@ class SettingsScreen extends StatelessWidget {
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AboutScreen())),
             ),
           ),
+          // Only the one hardcoded FUNKY Admin account (store.isAdmin —
+          // see app_store.dart) ever sees this section.
+          if (store.isAdmin) ...[
+            const SectionHeader(title: 'FUNKY Admin'),
+            FunkyCard(
+              padding: EdgeInsets.zero,
+              child: _SettingsRow(
+                label: 'Admin panel',
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminPanelScreen())),
+              ),
+            ),
+          ],
         ],
       ),
     );

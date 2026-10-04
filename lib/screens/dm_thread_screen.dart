@@ -192,7 +192,7 @@ class _DmBubble extends StatelessWidget {
           color: mine ? tokens.brand : tokens.raised,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Text(message.text, style: TextStyle(color: mine ? tokens.onOrange : tokens.ink)),
+        child: filteredMessageText(message.text, TextStyle(color: mine ? tokens.onOrange : tokens.ink)),
       ),
     );
   }

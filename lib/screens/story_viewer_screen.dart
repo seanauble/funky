@@ -8,6 +8,8 @@ import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
 import 'dm_thread_screen.dart';
+import 'person_profile_screen.dart';
+import 'profile_screen.dart';
 
 /// Full-screen Story playback — tap the right half to advance, the left
 /// half to go back, down-arrow/back button to close, and swipe left/right
@@ -452,15 +454,38 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               right: 14,
               child: Row(
                 children: [
-                  FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
-                  const SizedBox(width: 10),
+                  // Tapping the avatar/name opens that person's profile —
+                  // your own profile (the full tab, not the "someone else's"
+                  // card) when it's your own Story, otherwise their public
+                  // profile. Anonymous posts don't reveal who it is, so
+                  // there's nothing to tap through to there.
                   Expanded(
                     child: story.anon
-                        ? const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800))
-                        : StyledName(
-                            person: person,
-                            text: '@${person.handle}',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                        ? Row(
+                            children: [
+                              FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
+                              const SizedBox(width: 10),
+                              const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                            ],
+                          )
+                        : GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                              builder: (_) => story.uid == 'me' ? const ProfileScreen() : PersonProfileScreen(personId: story.uid),
+                            )),
+                            child: Row(
+                              children: [
+                                FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: StyledName(
+                                    person: person,
+                                    text: '@${person.handle}',
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                   ),
                   IconButton(

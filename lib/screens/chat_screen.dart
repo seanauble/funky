@@ -304,7 +304,7 @@ class _LiveChat extends StatelessWidget {
                 children: [
                   nameLine,
                   const SizedBox(height: 2),
-                  Text(m.text, style: TextStyle(color: tokens.ink)),
+                  filteredMessageText(m.text, TextStyle(color: tokens.ink)),
                   if (m.reactions.isNotEmpty) ...[
                     const SizedBox(height: 5),
                     Wrap(

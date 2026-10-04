@@ -276,7 +276,7 @@ class HomeScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         m.anon ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12)) : FunkyHandle(handle: handle),
-                        Text(m.text, style: TextStyle(color: tokens.ink)),
+                        filteredMessageText(m.text, TextStyle(color: tokens.ink)),
                       ],
                     ),
                   );

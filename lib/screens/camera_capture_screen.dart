@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import '../widgets/ui_widgets.dart';
 
 /// What `CameraCaptureScreen` hands back once the user has captured
 /// something — exactly one of a photo or a (<=15s) video, never both.
@@ -50,11 +51,36 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   late final AnimationController _partyController =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
 
+  // The shutter "snap" — a quick button pulse plus a brief white screen
+  // flash the instant you tap to take a photo, so there's an obvious,
+  // satisfying "it took the shot" moment right away instead of the button
+  // just sitting there while takePicture()/the file copy run in the
+  // background (which together can take a noticeable beat). Played once
+  // per tap via _snapController.forward(from: 0) in _takePhoto. Same
+  // treatment as the Story camera's shutter — see create_flow_screen.dart.
+  late final AnimationController _snapController = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+  late final Animation<double> _snapScale = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.82).chain(CurveTween(curve: Curves.easeOut)), weight: 30),
+    TweenSequenceItem(tween: Tween(begin: 0.82, end: 1.0).chain(CurveTween(curve: Curves.elasticOut)), weight: 70),
+  ]).animate(_snapController);
+  late final Animation<double> _flashOpacity = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.75), weight: 12),
+    TweenSequenceItem(tween: Tween(begin: 0.75, end: 0.0), weight: 88),
+  ]).animate(CurvedAnimation(parent: _snapController, curve: Curves.easeOut));
+
   // Pinch-to-zoom — same approach as the Story camera tab (create_flow_screen.dart).
   double _minZoom = 1;
   double _maxZoom = 1;
   double _currentZoom = 1;
   double _baseZoom = 1;
+
+  // Swipe-to-change-filter — see _onZoomUpdate/_changeFilter, same
+  // approach as the Story camera tab.
+  int _filterIndex = 0;
+  double _filterSwipeAccum = 0;
+  static const double _filterSwipeThreshold = 50;
+  bool _showFilterLabel = false;
+  Timer? _filterLabelTimer;
 
   @override
   void initState() {
@@ -153,15 +179,39 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
 
   void _onZoomStart(ScaleStartDetails details) {
     _baseZoom = _currentZoom;
+    _filterSwipeAccum = 0;
   }
 
   void _onZoomUpdate(ScaleUpdateDetails details) {
+    // A single finger was already an effective no-op for zoom (scale only
+    // moves once a second finger joins), repurposed as swipe-to-change-
+    // filter instead — see create_flow_screen.dart's identical comment.
+    if (details.pointerCount == 1) {
+      _filterSwipeAccum += details.focalPointDelta.dx;
+      if (_filterSwipeAccum.abs() >= _filterSwipeThreshold) {
+        _changeFilter(_filterSwipeAccum < 0 ? 1 : -1);
+        _filterSwipeAccum = 0;
+      }
+      return;
+    }
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
     final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
     if (zoom == _currentZoom) return;
     _currentZoom = zoom;
     controller.setZoomLevel(zoom);
+  }
+
+  void _changeFilter(int direction) {
+    setState(() {
+      _filterIndex = (_filterIndex + direction) % cameraFilters.length;
+      if (_filterIndex < 0) _filterIndex += cameraFilters.length;
+      _showFilterLabel = true;
+    });
+    _filterLabelTimer?.cancel();
+    _filterLabelTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _showFilterLabel = false);
+    });
   }
 
   @override
@@ -181,7 +231,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _recordTicker?.cancel();
+    _filterLabelTimer?.cancel();
     _partyController.dispose();
+    _snapController.dispose();
     _controller?.dispose();
     super.dispose();
   }
@@ -196,12 +248,25 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   Future<void> _takePhoto() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
+    _snapController.forward(from: 0);
     setState(() => _busy = true);
     try {
       final shot = await controller.takePicture();
       final dir = await _storiesDir();
-      final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedFile = await File(shot.path).copy(dest);
+      final filter = cameraFilters[_filterIndex];
+      File savedFile;
+      if (filter.colorFilter == null) {
+        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        savedFile = await File(shot.path).copy(dest);
+      } else {
+        // Bake the filter into the actual saved file — see
+        // applyCameraFilterToImageBytes's doc comment for why this comes
+        // back as PNG rather than JPEG.
+        final rawBytes = await File(shot.path).readAsBytes();
+        final filteredBytes = await applyCameraFilterToImageBytes(rawBytes, filter);
+        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.png';
+        savedFile = await File(dest).writeAsBytes(filteredBytes);
+      }
       if (!mounted) return;
       Navigator.of(context).pop(CapturedMedia(file: savedFile, isVideo: false));
     } catch (e) {
@@ -286,7 +351,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     final size = MediaQuery.of(context).size;
     var scale = size.aspectRatio * controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
-    return ClipRect(
+    final preview = ClipRect(
       // The front and back lens usually report different native aspect
       // ratios, so this cover-scale genuinely is a different number on
       // each one — that's what read as "zooms in" on a flip. AnimatedScale
@@ -301,6 +366,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         child: Center(child: CameraPreview(controller)),
       ),
     );
+    final filter = cameraFilters[_filterIndex].colorFilter;
+    return filter == null ? preview : ColorFiltered(colorFilter: filter, child: preview);
   }
 
   @override
@@ -346,6 +413,34 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
               onScaleUpdate: _onZoomUpdate,
             ),
           ),
+
+          // The shutter flash itself — see _snapController's doc comment.
+          AnimatedBuilder(
+            animation: _snapController,
+            builder: (context, _) => IgnorePointer(
+              child: Opacity(opacity: _flashOpacity.value, child: Container(color: Colors.white)),
+            ),
+          ),
+
+          // The current filter's name, shown briefly on every swipe.
+          if (_showFilterLabel && cameraFilters[_filterIndex].name != 'Normal')
+            IgnorePointer(
+              child: Align(
+                alignment: const Alignment(0, -0.45),
+                child: AnimatedOpacity(
+                  opacity: _showFilterLabel ? 1 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      cameraFilters[_filterIndex].name,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // Top bar
           SafeArea(
@@ -408,13 +503,27 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                   onLongPressEnd: (_) => _cancelRecording(),
                   onLongPressCancel: _cancelRecording,
                   child: AnimatedBuilder(
-                    animation: _partyController,
-                    builder: (context, _) => CustomPaint(
-                      size: const Size(88, 88),
-                      painter: _CaptureButtonPainter(
-                        progress: _recordProgress,
-                        recording: _isRecording,
-                        partyT: _partyController.value,
+                    animation: Listenable.merge([_partyController, _snapController]),
+                    builder: (context, _) => Transform.scale(
+                      scale: _snapScale.value,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          CustomPaint(
+                            size: const Size(88, 88),
+                            painter: _CaptureButtonPainter(
+                              progress: _recordProgress,
+                              recording: _isRecording,
+                              partyT: _partyController.value,
+                            ),
+                          ),
+                          if (_busy && !_isRecording)
+                            const SizedBox(
+                              width: 26,
+                              height: 26,
+                              child: CircularProgressIndicator(strokeWidth: 2.6, color: Colors.black54),
+                            ),
+                        ],
                       ),
                     ),
                   ),

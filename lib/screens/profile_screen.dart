@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -185,11 +186,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     controller: _handleController,
                     onSubmitted: (_) => _commitHandle(store),
                     textAlign: TextAlign.center,
+                    // Letters, numbers, and underscores only (blocked live
+                    // while typing), capped at 20 — setHandle enforces the
+                    // same two rules again server/store-side as a backstop.
+                    maxLength: 20,
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_]'))],
                     decoration: InputDecoration(
                       hintText: 'Pick a screen name',
                       hintStyle: TextStyle(color: tokens.mute),
                       border: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 52),
+                      counterText: '', // keeps the existing compact layout below
                     ),
                     style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
                   ),
@@ -217,6 +224,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 controller: _bioController,
                 onChanged: store.setBio,
                 textAlign: TextAlign.center,
+                // Capped at 50 — the counter Flutter shows for `maxLength`
+                // sits right-aligned below the field by default, which is
+                // what shows you how much room is left as you type.
+                maxLength: 50,
                 decoration: InputDecoration(hintText: 'Add a bio', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
                 style: TextStyle(color: tokens.mute, fontSize: 14),
               ),
@@ -270,19 +281,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     padding: const EdgeInsets.only(top: 6, bottom: 8),
                     child: Text(entry.key, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
                   ),
-                  ...entry.value.map((s) {
-                    // myStories is newest-first; the Story viewer always
-                    // plays oldest-first, so this story's position there is
-                    // counted back from the end rather than reusing its
-                    // position here directly.
-                    final viewerIndex = myStories.length - 1 - myStories.indexOf(s);
-                    return _ProfileMemoryCard(
-                      story: s,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: const ['me'], initialStoryIndex: viewerIndex)),
-                      ),
-                    );
-                  }),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 8,
+                      crossAxisSpacing: 8,
+                      childAspectRatio: 0.74,
+                    ),
+                    itemCount: entry.value.length,
+                    itemBuilder: (context, i) {
+                      final s = entry.value[i];
+                      // myStories is newest-first; the Story viewer always
+                      // plays oldest-first, so this story's position there
+                      // is counted back from the end rather than reusing
+                      // its position here directly.
+                      final viewerIndex = myStories.length - 1 - myStories.indexOf(s);
+                      return _MemoryGridTile(
+                        story: s,
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: const ['me'], initialStoryIndex: viewerIndex)),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
                 ]),
           const SectionHeader(title: 'Privacy'),
           FunkyCard(
@@ -340,14 +365,18 @@ class _PhotoSourceSheet extends StatelessWidget {
   }
 }
 
-/// Same card as the old standalone Memories screen used — duplicated here
-/// (rather than imported) since memories now render directly on this page.
-/// Tapping it opens the full Story viewer at exactly this memory; the trash
-/// icon deletes it right here without having to go in first.
-class _ProfileMemoryCard extends StatelessWidget {
+/// A compact grid tile for the Memories grid — a clean, Instagram-profile-
+/// style 2-up collage instead of the old full-width info cards. Tap opens
+/// the full Story viewer at exactly this memory; long-press deletes it
+/// right here without having to go in first. The bookmark in the top-left
+/// corner is tappable on its own to toggle Save to Timeline; everything
+/// else the old card showed (place/time, expiry countdown, screenshot
+/// count) either didn't fit a small tile cleanly or is still reachable
+/// from the Story viewer once you tap in.
+class _MemoryGridTile extends StatelessWidget {
   final Story story;
   final VoidCallback onTap;
-  const _ProfileMemoryCard({required this.story, required this.onTap});
+  const _MemoryGridTile({required this.story, required this.onTap});
 
   Future<void> _confirmDelete(BuildContext context) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -380,132 +409,95 @@ class _ProfileMemoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final dt = DateTime.fromMillisecondsSinceEpoch(story.t);
-    final timeLabel = TimeOfDay.fromDateTime(dt).format(context);
+    final hasVideo = story.videoPath != null || story.videoUrl != null;
     final daysLeft = memoryDaysLeft(story);
 
-    return InkWell(
+    Widget media;
+    if (hasVideo) {
+      media = VideoFrameThumbnail(path: story.videoPath, url: story.videoUrl);
+    } else if (story.imagePath != null) {
+      media = Image.file(File(story.imagePath!), fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+    } else if (story.imageUrl != null) {
+      // A Memory synced from another device you posted it on has no local
+      // file here — only the signed URL fetched from the real backend (see
+      // Story.imageUrl's doc comment in models.dart).
+      media = Image.network(story.imageUrl!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+    } else {
+      media = Container(
+        color: tokens.raised,
+        padding: const EdgeInsets.all(10),
+        alignment: Alignment.center,
+        child: Text(
+          story.text?.isNotEmpty == true ? story.text! : 'Text story',
+          maxLines: 5,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13),
+        ),
+      );
+    }
+
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: FunkyCard(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.place, size: 13, color: tokens.mute),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  story.placeName ?? 'Area-wide',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w600),
+      onLongPress: () => _confirmDelete(context),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            media,
+            // Bottom gradient scrim carrying the view count (left) and a
+            // days-left countdown (right) — only shown once it's saved
+            // doesn't need one, same rule as the old card's expiry row.
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.remove_red_eye, size: 12, color: Colors.white),
+                    const SizedBox(width: 3),
+                    Text('${story.views.length}', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    if (!story.savedToTimeline)
+                      Text(
+                        daysLeft <= 0 ? 'today' : '${daysLeft}d',
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                      ),
+                  ],
                 ),
               ),
-              Text(timeLabel, style: TextStyle(color: tokens.mute, fontSize: 12)),
-              const SizedBox(width: 8),
-              GestureDetector(
+            ),
+            if (hasVideo)
+              const Positioned(
+                top: 6,
+                right: 6,
+                child: Icon(Icons.videocam, color: Colors.white, size: 16, shadows: [Shadow(blurRadius: 4, color: Colors.black54)]),
+              ),
+            Positioned(
+              top: 4,
+              left: 4,
+              child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () => _toggleTimeline(context),
-                child: Icon(
-                  story.savedToTimeline ? Icons.bookmark : Icons.bookmark_outline,
-                  size: 16,
-                  color: story.savedToTimeline ? tokens.brand : tokens.mute,
-                ),
-              ),
-              const SizedBox(width: 10),
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => _confirmDelete(context),
-                child: Icon(Icons.delete_outline, size: 16, color: tokens.mute),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          // Every Memory counts down to auto-delete unless it's been pinned
-          // to the Timeline — see AppStore._purgeExpiredMemories.
-          Row(
-            children: [
-              Icon(
-                story.savedToTimeline ? Icons.bookmark : Icons.schedule,
-                size: 12,
-                color: story.savedToTimeline ? tokens.brand : tokens.mute,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                story.savedToTimeline
-                    ? 'Saved to Timeline'
-                    : (daysLeft <= 0 ? 'Expires today' : 'Expires in $daysLeft day${daysLeft == 1 ? '' : 's'}'),
-                style: TextStyle(
-                  color: story.savedToTimeline ? tokens.brand : tokens.mute,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          if (story.videoPath != null || story.videoUrl != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Stack(
-                alignment: Alignment.bottomLeft,
-                children: [
-                  Container(height: 140, width: double.infinity, color: Colors.black),
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.videocam, color: Colors.white, size: 16),
-                        const SizedBox(width: 4),
-                        const Text('Video Story', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                      ],
-                    ),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    story.savedToTimeline ? Icons.bookmark : Icons.bookmark_outline,
+                    size: 18,
+                    color: story.savedToTimeline ? tokens.brand : Colors.white,
+                    shadows: const [Shadow(blurRadius: 4, color: Colors.black45)],
                   ),
-                ],
-              ),
-            )
-          else if (story.imagePath != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.file(File(story.imagePath!), height: 140, width: double.infinity, fit: BoxFit.cover),
-            )
-          // A Memory synced from another device you posted it on has no
-          // local file here — only the signed URL fetched from the real
-          // backend (see Story.imageUrl's doc comment in models.dart).
-          else if (story.imageUrl != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.network(story.imageUrl!, height: 140, width: double.infinity, fit: BoxFit.cover),
-            ),
-          if (story.videoPath != null || story.imagePath != null || story.videoUrl != null || story.imageUrl != null)
-            const SizedBox(height: 8),
-          if (story.text != null && story.text!.isNotEmpty)
-            Text(story.text!, style: TextStyle(color: tokens.ink))
-          else if (story.videoPath == null && story.imagePath == null && story.videoUrl == null && story.imageUrl == null)
-            Text('Text story', style: TextStyle(color: tokens.mute)),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Icon(Icons.remove_red_eye_outlined, size: 14, color: tokens.mute),
-              const SizedBox(width: 4),
-              Text('${story.views.length} view${story.views.length == 1 ? '' : 's'}', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
-              if (story.screenshotBy.isNotEmpty) ...[
-                const SizedBox(width: 14),
-                Icon(Icons.camera_alt_outlined, size: 14, color: tokens.orange),
-                const SizedBox(width: 4),
-                Text(
-                  '${story.screenshotBy.length} screenshotted',
-                  style: TextStyle(color: tokens.orange, fontSize: 12.5, fontWeight: FontWeight.w700),
                 ),
-              ],
-            ],
-          ),
-        ],
-      ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

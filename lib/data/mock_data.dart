@@ -10,21 +10,6 @@ import 'session.dart';
 
 const defaultLocation = LatLng(39.7052, -75.114); // Glassboro, NJ
 
-class Town {
-  final String label;
-  final double lat;
-  final double lng;
-  const Town(this.label, this.lat, this.lng);
-}
-
-const towns = [
-  Town('Glassboro, NJ', 39.7052, -75.114),
-  Town('Philadelphia, PA', 39.9526, -75.1652),
-  Town('Atlantic City, NJ', 39.3625, -74.425),
-  Town('Ocean City, NJ', 39.2776, -74.5746),
-  Town('Hoboken, NJ', 40.744, -74.0324),
-];
-
 List<Place> sampleWithSession(String session) {
   final now = DateTime.now().millisecondsSinceEpoch;
   return [

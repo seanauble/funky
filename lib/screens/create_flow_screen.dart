@@ -227,8 +227,33 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   double _currentZoom = 1;
   double _baseZoom = 1;
 
+  // Swipe-to-change-filter — see _onZoomUpdate/_changeFilter. Resets to
+  // Normal (index 0) every time this screen is freshly opened for a new
+  // take, same as zoom resets on a lens flip.
+  int _filterIndex = 0;
+  double _filterSwipeAccum = 0;
+  static const double _filterSwipeThreshold = 50;
+  bool _showFilterLabel = false;
+  Timer? _filterLabelTimer;
+
   late final AnimationController _partyController =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1600))..repeat();
+
+  // The shutter "snap" — a quick button pulse plus a brief white screen
+  // flash the instant you tap to take a photo, so there's an obvious,
+  // satisfying "it took the shot" moment right away instead of the button
+  // just sitting there while takePicture()/the file copy run in the
+  // background (which together can take a noticeable beat). Played once
+  // per tap via _snapController.forward(from: 0) in _takePhoto.
+  late final AnimationController _snapController = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+  late final Animation<double> _snapScale = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.82).chain(CurveTween(curve: Curves.easeOut)), weight: 30),
+    TweenSequenceItem(tween: Tween(begin: 0.82, end: 1.0).chain(CurveTween(curve: Curves.elasticOut)), weight: 70),
+  ]).animate(_snapController);
+  late final Animation<double> _flashOpacity = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.75), weight: 12),
+    TweenSequenceItem(tween: Tween(begin: 0.75, end: 0.0), weight: 88),
+  ]).animate(CurvedAnimation(parent: _snapController, curve: Curves.easeOut));
 
   bool get _reviewing => _mediaFile != null;
 
@@ -329,10 +354,26 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   void _onZoomStart(ScaleStartDetails details) {
     if (_isRecording) return;
     _baseZoom = _currentZoom;
+    _filterSwipeAccum = 0;
   }
 
   void _onZoomUpdate(ScaleUpdateDetails details) {
     if (_isRecording) return;
+    // A single finger moving on the open preview was already an effective
+    // no-op for zoom (ScaleGestureDetector only reports a real `scale`
+    // once a second finger joins — with one finger it stays pinned at
+    // 1.0), so that's repurposed here as the swipe-to-change-filter
+    // gesture instead of adding a second GestureDetector that would just
+    // fight the existing one over the same pointer in the gesture arena.
+    // Two-plus fingers still falls through to pinch-zoom exactly as before.
+    if (details.pointerCount == 1) {
+      _filterSwipeAccum += details.focalPointDelta.dx;
+      if (_filterSwipeAccum.abs() >= _filterSwipeThreshold) {
+        _changeFilter(_filterSwipeAccum < 0 ? 1 : -1);
+        _filterSwipeAccum = 0;
+      }
+      return;
+    }
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
     final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
@@ -341,16 +382,31 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     controller.setZoomLevel(zoom);
   }
 
+  /// Swipe left/right on the open preview to cycle through cameraFilters
+  /// (see ui_widgets.dart) — [direction] is +1 for the next filter, -1 for
+  /// the previous. Shows the name briefly (Snapchat-style) rather than a
+  /// persistent chip, since the gesture itself is already the picker.
+  void _changeFilter(int direction) {
+    setState(() {
+      _filterIndex = (_filterIndex + direction) % cameraFilters.length;
+      if (_filterIndex < 0) _filterIndex += cameraFilters.length;
+      _showFilterLabel = true;
+    });
+    _filterLabelTimer?.cancel();
+    _filterLabelTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _showFilterLabel = false);
+    });
+  }
+
   /// Video's own zoom gesture — slide up/down from the shutter button while
   /// it's held, same feel as Snapchat/TikTok, instead of pinching. Dragging
-  /// the full finger's travel (~900px, well more than a full screen's
-  /// worth of drag on any phone) up sweeps from min to max zoom; down
-  /// sweeps back. _baseZoom is snapshotted in _startRecording, same pattern
-  /// as the pinch gesture's _onZoomStart. This used to be 220, which meant
-  /// well under half a screen's drag already hit max zoom — way too
-  /// sensitive, a small flinch of the finger would send it flying to the
-  /// end of the range.
-  static const double _dragZoomRange = 900;
+  /// the full finger's travel (~1800px — more than two full screens' worth
+  /// of drag on any phone) up sweeps from min to max zoom; down sweeps
+  /// back. _baseZoom is snapshotted in _startRecording, same pattern as the
+  /// pinch gesture's _onZoomStart. This was 220 originally (way too
+  /// sensitive — well under half a screen's drag hit max zoom), then 900
+  /// (still too fast), now doubled again to 1800.
+  static const double _dragZoomRange = 1800;
 
   void _onRecordDragUpdate(LongPressMoveUpdateDetails details) {
     if (!_isRecording) return;
@@ -380,7 +436,9 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _recordTicker?.cancel();
+    _filterLabelTimer?.cancel();
     _partyController.dispose();
+    _snapController.dispose();
     _controller?.dispose();
     _videoController?.dispose();
     super.dispose();
@@ -396,12 +454,26 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   Future<void> _takePhoto() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
+    _snapController.forward(from: 0);
     setState(() => _busy = true);
     try {
       final shot = await controller.takePicture();
       final dir = await _storiesDir();
-      final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedFile = await File(shot.path).copy(dest);
+      final filter = cameraFilters[_filterIndex];
+      File savedFile;
+      if (filter.colorFilter == null) {
+        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        savedFile = await File(shot.path).copy(dest);
+      } else {
+        // Bake the filter into the actual saved file — the live preview's
+        // ColorFiltered only ever affected what was on screen while
+        // framing the shot. dart:ui can only re-encode to PNG, hence the
+        // different extension here (see applyCameraFilterToImageBytes).
+        final rawBytes = await File(shot.path).readAsBytes();
+        final filteredBytes = await applyCameraFilterToImageBytes(rawBytes, filter);
+        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.png';
+        savedFile = await File(dest).writeAsBytes(filteredBytes);
+      }
       if (!mounted) return;
       setState(() {
         _mediaFile = savedFile;
@@ -712,7 +784,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     final size = MediaQuery.of(context).size;
     var scale = size.aspectRatio * controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
-    return ClipRect(
+    final preview = ClipRect(
       // The front and back lens usually report different native aspect
       // ratios, so this cover-scale genuinely is a different number on
       // each one — that's what read as "zooms in" on a flip (including
@@ -728,6 +800,12 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         child: Center(child: CameraPreview(controller)),
       ),
     );
+    // Live while framing AND live while actually recording — a filtered
+    // video shows the filter the whole time, it just isn't baked into the
+    // saved file (see applyCameraFilterToImageBytes's doc comment; only
+    // photos get that treatment, in _takePhoto below).
+    final filter = cameraFilters[_filterIndex].colorFilter;
+    return filter == null ? preview : ColorFiltered(colorFilter: filter, child: preview);
   }
 
   Widget _buildCamera(BuildContext context, ThemeTokens tokens) {
@@ -771,6 +849,40 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
               onScaleUpdate: _onZoomUpdate,
             ),
           ),
+
+          // The shutter flash itself — see _snapController's doc comment.
+          // Painted above the preview and everything else so it reads as a
+          // real screen flash, but IgnorePointer so it never blocks a
+          // rapid second tap.
+          AnimatedBuilder(
+            animation: _snapController,
+            builder: (context, _) => IgnorePointer(
+              child: Opacity(opacity: _flashOpacity.value, child: Container(color: Colors.white)),
+            ),
+          ),
+
+          // The current filter's name, shown briefly on every swipe —
+          // see _changeFilter. Skipped entirely for "Normal" so swiping
+          // back to no-filter doesn't flash a label reading "Normal" every
+          // single time you pass through it.
+          if (_showFilterLabel && cameraFilters[_filterIndex].name != 'Normal')
+            IgnorePointer(
+              child: Align(
+                alignment: const Alignment(0, -0.45),
+                child: AnimatedOpacity(
+                  opacity: _showFilterLabel ? 1 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      cameraFilters[_filterIndex].name,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // No AppBar on this tab anymore (see the comment where it's built
           // in CreateFlowScreen), so this is the only way out of the camera
@@ -845,10 +957,28 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                   onLongPressEnd: (_) => _cancelRecording(),
                   onLongPressCancel: _cancelRecording,
                   child: AnimatedBuilder(
-                    animation: _partyController,
-                    builder: (context, _) => CustomPaint(
-                      size: const Size(84, 84),
-                      painter: _CaptureButtonPainter(progress: _recordProgress, recording: _isRecording, partyT: _partyController.value),
+                    animation: Listenable.merge([_partyController, _snapController]),
+                    builder: (context, _) => Transform.scale(
+                      scale: _snapScale.value,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          CustomPaint(
+                            size: const Size(84, 84),
+                            painter: _CaptureButtonPainter(progress: _recordProgress, recording: _isRecording, partyT: _partyController.value),
+                          ),
+                          // A small spinner over the button while a photo's
+                          // being saved (or a video's finishing up) — _busy
+                          // used to be invisible, so the shutter looked
+                          // unresponsive for the beat it actually takes.
+                          if (_busy && !_isRecording)
+                            const SizedBox(
+                              width: 26,
+                              height: 26,
+                              child: CircularProgressIndicator(strokeWidth: 2.6, color: Colors.black54),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -868,11 +998,20 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   Widget _buildFullBleedReviewMedia() {
     if (_isVideo && _videoController != null && _videoController!.value.isInitialized) {
       final size = _videoController!.value.size;
-      return FittedBox(
+      final player = FittedBox(
         fit: BoxFit.cover,
         child: SizedBox(width: size.width, height: size.height, child: VideoPlayer(_videoController!)),
       );
+      // A video never gets its filter baked into the saved file (see
+      // applyCameraFilterToImageBytes's doc comment) — this is what makes
+      // good on "you'll still see it in review", using whichever filter
+      // was active when this take was shot (_filterIndex isn't reset
+      // between capture and review).
+      final filter = cameraFilters[_filterIndex].colorFilter;
+      return filter == null ? player : ColorFiltered(colorFilter: filter, child: player);
     }
+    // A photo's chosen filter is already baked into _mediaFile itself (see
+    // _takePhoto), so this just renders the file as-is.
     return Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
   }
 

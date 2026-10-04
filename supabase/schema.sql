@@ -9,6 +9,13 @@
 -- the points/badges/level-title system. Accounts, friends, Stories, and
 -- DMs are the pieces the app's local mock store can't fake across two
 -- different phones, so they come first.
+--
+-- A note on "safe to re-run": `alter publication ... add table` is NOT
+-- actually idempotent on its own in Postgres — running it twice for the
+-- same table throws "relation is already member of publication" and
+-- aborts whatever's left in the script. Every one of those statements
+-- below is wrapped in a do-block that checks pg_publication_tables first,
+-- which is what actually makes this file safe to paste and run again.
 
 -- ============================================================
 -- PROFILES — one row per real account, auto-created on sign-up
@@ -97,7 +104,15 @@ create policy "Either side can remove a friendship"
   to authenticated
   using (auth.uid() = requester_id or auth.uid() = addressee_id);
 
-alter publication supabase_realtime add table public.friendships;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'friendships'
+  ) then
+    alter publication supabase_realtime add table public.friendships;
+  end if;
+end $$;
 
 -- ============================================================
 -- STORIES — same privacy rule as the local app: your own always
@@ -190,7 +205,39 @@ drop policy if exists "Remove your own like" on public.story_likes;
 create policy "Remove your own like"
   on public.story_likes for delete to authenticated using (auth.uid() = liker_id);
 
-alter publication supabase_realtime add table public.stories;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'stories'
+  ) then
+    alter publication supabase_realtime add table public.stories;
+  end if;
+end $$;
+
+-- story_views/story_likes also need to be in the publication, same as
+-- stories itself — without this, a like/view still writes to the table
+-- fine, but no other open session ever hears about it over realtime; it
+-- only shows up the next time that device re-fetches (e.g. next sign-in).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'story_views'
+  ) then
+    alter publication supabase_realtime add table public.story_views;
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'story_likes'
+  ) then
+    alter publication supabase_realtime add table public.story_likes;
+  end if;
+end $$;
 
 -- Story photo/video storage. App uploads go under "<your-user-id>/...",
 -- which is what the policies below check against — see
@@ -261,4 +308,12 @@ create policy "Send a message as yourself"
   to authenticated
   with check (auth.uid() = sender_id);
 
-alter publication supabase_realtime add table public.messages;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table public.messages;
+  end if;
+end $$;
