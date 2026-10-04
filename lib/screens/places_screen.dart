@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,22 @@ import '../widgets/ui_widgets.dart';
 import 'place_detail_screen.dart';
 
 const _heatLabel = ['Quiet so far', 'Some activity', 'Active', 'Very active'];
+
+/// The little text box explaining what a verified checkmark on a place
+/// means — its own tap target, separate from the row/marker, which opens
+/// the place instead.
+void _showVerifiedExplainer(BuildContext context, {required bool isAdmin}) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        isAdmin
+            ? 'FUNKY Verified — confirmed legit by the FUNKY team.'
+            : 'FUNKY Verified — confirmed legit by the FUNKY community (15+ confirmations).',
+      ),
+      duration: const Duration(seconds: 3),
+    ),
+  );
+}
 
 class PlacesScreen extends StatelessWidget {
   const PlacesScreen({super.key});
@@ -29,7 +46,6 @@ class PlacesScreen extends StatelessWidget {
 
     final here = store.location!;
     final ranked = store.rankedPlaces;
-    final topPlaceId = ranked.isNotEmpty ? ranked.first.id : null;
     final maxScore = ranked.isEmpty ? 1 : ranked.map((p) => p.score).reduce((a, b) => a > b ? a : b).clamp(1, 999999);
 
     return Scaffold(
@@ -62,7 +78,7 @@ class PlacesScreen extends StatelessWidget {
                         markers: ranked.map((p) {
                           final intensity = (p.score / maxScore).clamp(0.08, 1.0);
                           final size = 60.0 + intensity * 90.0;
-                          final glowColor = p.id == topPlaceId ? tokens.brand : tokens.orange;
+                          final glowColor = tokens.orange;
                           return Marker(
                             point: ll.LatLng(p.place.lat, p.place.lng),
                             width: size,
@@ -101,8 +117,8 @@ class PlacesScreen extends StatelessWidget {
                           ),
                         ),
                         ...ranked.map((p) {
-                          final isTop = p.id == topPlaceId;
-                          final size = isTop ? 40.0 : 28.0;
+                          const size = 30.0;
+                          final cover = p.coverPhotoPath;
                           return Marker(
                             point: ll.LatLng(p.place.lat, p.place.lng),
                             width: size,
@@ -111,16 +127,28 @@ class PlacesScreen extends StatelessWidget {
                               onTap: () => _openPlace(context, p.id),
                               child: Container(
                                 decoration: BoxDecoration(
-                                  color: isTop ? tokens.brand : tokens.orange,
+                                  color: tokens.orange,
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: isTop ? 3 : 2),
-                                  boxShadow: isTop
-                                      ? [BoxShadow(color: tokens.brand.withValues(alpha: 0.6), blurRadius: 10, spreadRadius: 2)]
-                                      : null,
+                                  border: Border.all(color: Colors.white, width: 2),
                                 ),
                                 alignment: Alignment.center,
-                                child: isTop
-                                    ? const Text('👑', style: TextStyle(fontSize: 16))
+                                // The pin shows the place's own uploaded photo
+                                // once it has one, same source as the list/
+                                // detail thumbnails, instead of always just a
+                                // flat colored initial.
+                                child: cover != null
+                                    ? ClipOval(
+                                        child: Image.file(
+                                          File(cover),
+                                          width: size,
+                                          height: size,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => Text(
+                                            p.name.substring(0, 1),
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
+                                          ),
+                                        ),
+                                      )
                                     : Text(
                                         p.name.substring(0, 1),
                                         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
@@ -182,26 +210,14 @@ class PlacesScreen extends StatelessWidget {
                         decoration: BoxDecoration(border: Border(bottom: BorderSide(color: tokens.line))),
                         child: Row(
                           children: [
-                            // 👑 for tonight's busiest spot always wins over
-                            // the media preview — that crown is the more
-                            // useful signal in a one-line list row.
-                            if (p.id == topPlaceId)
-                              Container(
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: SizedBox(
                                 width: 44,
                                 height: 44,
-                                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-                                alignment: Alignment.center,
-                                child: const Text('👑', style: TextStyle(fontSize: 18)),
-                              )
-                            else
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: SizedBox(
-                                  width: 44,
-                                  height: 44,
-                                  child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
-                                ),
+                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
                               ),
+                            ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
@@ -220,11 +236,18 @@ class PlacesScreen extends StatelessWidget {
                                         // gold — a shield read as a
                                         // different kind of badge entirely
                                         // rather than a "more official"
-                                        // verified checkmark.
-                                        Icon(
-                                          Icons.verified,
-                                          size: 14,
-                                          color: store.isAdminVerified(p.id) ? tokens.brand : tokens.gold,
+                                        // verified checkmark. Its own tap
+                                        // target (separate from the row's,
+                                        // which opens the place) explains
+                                        // what the badge means.
+                                        GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onTap: () => _showVerifiedExplainer(context, isAdmin: store.isAdminVerified(p.id)),
+                                          child: Icon(
+                                            Icons.verified,
+                                            size: 14,
+                                            color: store.isAdminVerified(p.id) ? tokens.brand : tokens.gold,
+                                          ),
                                         ),
                                       ],
                                     ],

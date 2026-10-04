@@ -11,7 +11,7 @@ import '../widgets/ui_widgets.dart';
 // longer shown on this screen, which just says "Version 2" plainly instead
 // of "Version 1.0.0 (25)".
 const _appVersion = '2.0';
-const _appBuild = '31';
+const _appBuild = '36';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});

@@ -6,6 +6,23 @@ import '../data/models.dart';
 import '../widgets/ui_widgets.dart';
 import 'place_story_viewer_screen.dart';
 
+/// The little text box explaining what the verified checkmark (or the
+/// not-yet-verified "?") next to a place's name means — its own tap
+/// target, separate from the rest of the card.
+void _showVerifiedExplainer(BuildContext context, {required bool isAdmin, required bool verified}) {
+  final String message;
+  if (isAdmin) {
+    message = 'FUNKY Verified — confirmed legit by the FUNKY team.';
+  } else if (verified) {
+    message = 'FUNKY Verified — confirmed legit by the FUNKY community (15+ confirmations).';
+  } else {
+    message = "Not verified yet — tap Confirm below if you know this place is real and happening tonight.";
+  }
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+  );
+}
+
 class PlaceDetailScreen extends StatefulWidget {
   final String placeId;
   const PlaceDetailScreen({super.key, required this.placeId});
@@ -157,11 +174,16 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     // FUNKY Admin-verified gets the same checkmark as
                     // crowd-verified, just in the brand orange instead of
                     // gold, rather than a shield that read as a different
-                    // kind of badge entirely.
-                    Icon(
-                      venueVerified || venueAdminVerified ? Icons.verified : Icons.help_outline,
-                      color: venueAdminVerified ? tokens.brand : (venueVerified ? tokens.gold : tokens.mute),
-                      size: 22,
+                    // kind of badge entirely. Its own tap target explains
+                    // what the badge (or the not-yet-verified "?") means.
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _showVerifiedExplainer(context, isAdmin: venueAdminVerified, verified: venueVerified),
+                      child: Icon(
+                        venueVerified || venueAdminVerified ? Icons.verified : Icons.help_outline,
+                        color: venueAdminVerified ? tokens.brand : (venueVerified ? tokens.gold : tokens.mute),
+                        size: 22,
+                      ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(

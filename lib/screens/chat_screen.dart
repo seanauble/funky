@@ -200,16 +200,17 @@ class _LiveChat extends StatelessWidget {
         const SizedBox(height: 16),
         if (msgs.isEmpty) Text('Nobody has said anything here tonight. Start it off.', style: TextStyle(color: tokens.mute)),
         ...msgs.map((m) {
-          final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
+          final sender = m.uid == 'me' ? store.me : store.people[m.uid];
+          final handle = sender?.handle ?? m.uid;
           Widget nameLine;
           if (m.anon) {
             nameLine = Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12));
           } else if (m.uid == 'me') {
-            nameLine = FunkyHandle(handle: handle);
+            nameLine = FunkyHandle(handle: handle, person: sender);
           } else {
             nameLine = GestureDetector(
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: m.uid))),
-              child: FunkyHandle(handle: handle),
+              child: FunkyHandle(handle: handle, person: sender),
             );
           }
           return Padding(

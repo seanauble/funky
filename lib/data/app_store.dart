@@ -225,10 +225,54 @@ class AppStore extends ChangeNotifier {
   /// continuous between title tiers.
   int get level => levelFor(me.points);
 
-  /// The highest points-title tier you've reached (500 Reliable Source …
-  /// 10000 KING FUNKY), or null below 500. Purely cosmetic — separate from
+  /// The title tier you've chosen to show (see [setDisplayedTitle]) if
+  /// it's still one you've actually reached, otherwise the highest
+  /// points-title tier you've reached (500 Reliable Source … 10000 KING
+  /// FUNKY), or null below 500. Purely cosmetic — separate from
   /// report/venue verification.
-  LevelTitle? get myLevelTitle => levelTitleFor(me.points);
+  LevelTitle? get myLevelTitle {
+    final chosen = me.displayedTitleThreshold;
+    if (chosen != null) {
+      for (final t in levelTitles) {
+        if (t.threshold == chosen && me.points >= t.threshold) return t;
+      }
+    }
+    return levelTitleFor(me.points);
+  }
+
+  /// Every title tier reached so far, highest first — what the "pick which
+  /// badge to show" screen offers (see setDisplayedTitle).
+  List<LevelTitle> get myUnlockedTitles => levelTitlesFor(me.points);
+
+  /// Choose which earned title tier shows beside your name instead of
+  /// always defaulting to the highest one — pass null to go back to
+  /// "always show my highest". Silently ignored if you haven't actually
+  /// reached that tier (can't be unlocked through this).
+  void setDisplayedTitle(LevelTitle? title) {
+    if (title == null) {
+      me = me.copyWith(clearDisplayedTitleThreshold: true);
+    } else if (me.points >= title.threshold) {
+      me = me.copyWith(displayedTitleThreshold: title.threshold);
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  /// Flip any of the point-unlocked cosmetic name styles on or off — bold
+  /// at 500, italic at 1000, underline at 2000, a checkmark badge at 5000
+  /// (see canUseBoldName etc in models.dart). Every unlocked style you've
+  /// turned on applies at once; turning one on that isn't unlocked yet is
+  /// a no-op. Only null arguments are left unchanged.
+  void setNameStyle({bool? bold, bool? italic, bool? underline, bool? checkbox}) {
+    me = me.copyWith(
+      nameBold: bold == null ? null : (bold && canUseBoldName(me.points)),
+      nameItalic: italic == null ? null : (italic && canUseItalicName(me.points)),
+      nameUnderline: underline == null ? null : (underline && canUseUnderlineName(me.points)),
+      nameCheckbox: checkbox == null ? null : (checkbox && canUseCheckName(me.points)),
+    );
+    notifyListeners();
+    _persist();
+  }
 
   /// Earned by actually contributing and getting confirmed — see each
   /// threshold for exactly what it takes. A user can earn all of these;

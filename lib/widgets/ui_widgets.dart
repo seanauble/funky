@@ -152,6 +152,45 @@ class FunkyAvatar extends StatelessWidget {
       );
 }
 
+/// Renders a person's handle/name with whichever point-unlocked cosmetic
+/// styles they've turned on — bold (500 pts), italic (1000), underline
+/// (2000), and a trailing checkmark badge (5000). Every unlocked style
+/// that's switched on applies at the same time (see Person.nameBold etc
+/// and AppStore.setNameStyle/canUseBoldName in models.dart), not just one.
+/// Still gated by [canUseBoldName] etc here too, so a style that was turned
+/// on before points ever dropped (they currently never do, but just in
+/// case) can't render a style that isn't actually unlocked.
+class StyledName extends StatelessWidget {
+  final Person person;
+  final String text;
+  final TextStyle style;
+  const StyledName({super.key, required this.person, required this.text, required this.style});
+
+  @override
+  Widget build(BuildContext context) {
+    var effective = style;
+    if (person.nameBold && canUseBoldName(person.points)) {
+      effective = effective.copyWith(fontWeight: FontWeight.w900);
+    }
+    if (person.nameItalic && canUseItalicName(person.points)) {
+      effective = effective.copyWith(fontStyle: FontStyle.italic);
+    }
+    if (person.nameUnderline && canUseUnderlineName(person.points)) {
+      effective = effective.copyWith(decoration: TextDecoration.underline);
+    }
+    final showCheck = person.nameCheckbox && canUseCheckName(person.points);
+    if (!showCheck) return Text(text, style: effective);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(child: Text(text, style: effective, overflow: TextOverflow.ellipsis)),
+        const SizedBox(width: 3),
+        Icon(Icons.check_box, size: (effective.fontSize ?? 14) * 0.85, color: effective.color ?? Colors.white),
+      ],
+    );
+  }
+}
+
 /// What a place's thumbnail/banner shows: the newest Story posted there
 /// that actually has a photo or video, looping and muted if it's a video —
 /// falling back to whoever added the place's own cover photo (if they took
@@ -262,12 +301,20 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
 
 class FunkyHandle extends StatelessWidget {
   final String handle;
-  const FunkyHandle({super.key, required this.handle});
+  // Optional — when the full Person is on hand, their point-unlocked
+  // cosmetic name styling (bold/italic/underline/checkmark, see
+  // StyledName) renders too. Callers that only have a bare handle string
+  // (no Person loaded) just get the plain colored handle, same as before.
+  final Person? person;
+  const FunkyHandle({super.key, required this.handle, this.person});
 
   @override
   Widget build(BuildContext context) {
     final color = hueOf(handle);
-    return Text('@$handle', style: TextStyle(color: color, fontWeight: FontWeight.w700));
+    final style = TextStyle(color: color, fontWeight: FontWeight.w700);
+    final p = person;
+    if (p == null) return Text('@$handle', style: style);
+    return StyledName(person: p, text: '@$handle', style: style);
   }
 }
 

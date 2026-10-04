@@ -38,6 +38,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   // only ever closing via the X button or tapping through to the end.
   double _dragDy = 0;
 
+  // Which way the most recent story change went — true for "forward" (next
+  // story/person, tap-right or swipe-left), false for "back" (tap-left or
+  // swipe-right). Read by the content AnimatedSwitcher below to slide the
+  // new story in from the correct side and push the old one out the other
+  // way, instead of just cutting straight to it.
+  bool _forward = true;
+
   @override
   void initState() {
     super.initState();
@@ -101,6 +108,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
         if (!mounted) return;
         if (_personIndex < widget.personIds.length - 1) {
           setState(() {
+            _forward = true;
             _personIndex++;
             _i = 0;
           });
@@ -130,6 +138,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     void nextPerson() {
       if (_personIndex < widget.personIds.length - 1) {
         setState(() {
+          _forward = true;
           _personIndex++;
           _i = 0;
         });
@@ -141,6 +150,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     void previousPerson() {
       if (_personIndex > 0) {
         setState(() {
+          _forward = false;
           _personIndex--;
           _i = 0;
         });
@@ -149,7 +159,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
 
     void advance() {
       if (_i < stories.length - 1) {
-        setState(() => _i++);
+        setState(() {
+          _forward = true;
+          _i++;
+        });
       } else {
         // Ran out of this person's stories by tapping through them one at a
         // time — used to just close the whole viewer here; now it flows
@@ -159,7 +172,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     }
 
     void back() {
-      if (_i > 0) setState(() => _i--);
+      if (_i > 0) {
+        setState(() {
+          _forward = false;
+          _i--;
+        });
+      }
     }
 
     _ensureVideoFor(story, advance);
@@ -194,31 +212,58 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               opacity: 1 - (_dragDy / 400).clamp(0.0, 0.6),
               child: Stack(
           children: [
-            // Content
-            if (story.videoPath != null)
-              Center(
-                child: _videoController != null && _videoController!.value.isInitialized
-                    ? AspectRatio(
-                        aspectRatio: _videoController!.value.aspectRatio,
-                        child: VideoPlayer(_videoController!),
+            // Content — slides in from the direction you came from (right
+            // for next/swipe-left, left for back/swipe-right) while the
+            // previous story slides out the opposite way, instead of just
+            // cutting straight to the next image/video/text. Keyed by
+            // story id, not by loading state, so a video finishing its
+            // spinner-to-playback switch never re-triggers this transition
+            // — only an actual story change does.
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 260),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) {
+                final dir = _forward ? 1.0 : -1.0;
+                final isExiting = animation.status == AnimationStatus.reverse;
+                final offsetTween = Tween<Offset>(
+                  begin: Offset(isExiting ? -dir : dir, 0),
+                  end: Offset.zero,
+                );
+                return ClipRect(
+                  child: SlideTransition(
+                    position: offsetTween.animate(animation),
+                    child: FadeTransition(opacity: animation, child: child),
+                  ),
+                );
+              },
+              child: KeyedSubtree(
+                key: ValueKey(story.id),
+                child: story.videoPath != null
+                    ? Center(
+                        child: _videoController != null && _videoController!.value.isInitialized
+                            ? AspectRatio(
+                                aspectRatio: _videoController!.value.aspectRatio,
+                                child: VideoPlayer(_videoController!),
+                              )
+                            : const CircularProgressIndicator(color: Colors.white),
                       )
-                    : const CircularProgressIndicator(color: Colors.white),
-              )
-            else if (story.imagePath != null)
-              Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
-            else
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 28),
-                  child: story.text != null && story.text!.isNotEmpty
-                      ? Text(
-                          story.text!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
-                        )
-                      : const Text('📸', style: TextStyle(fontSize: 48)),
-                ),
+                    : story.imagePath != null
+                        ? Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
+                        : Center(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 28),
+                              child: story.text != null && story.text!.isNotEmpty
+                                  ? Text(
+                                      story.text!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
+                                    )
+                                  : const Text('📸', style: TextStyle(fontSize: 48)),
+                            ),
+                          ),
               ),
+            ),
             // A photo/video Story can still carry a caption — show it near
             // the bottom so it doesn't compete with the media itself.
             if ((story.imagePath != null || story.videoPath != null) && story.text != null && story.text!.isNotEmpty)
@@ -269,10 +314,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                   FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: Text(
-                      story.anon ? 'anonymous' : '@${person.handle}',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
-                    ),
+                    child: story.anon
+                        ? const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800))
+                        : StyledName(
+                            person: person,
+                            text: '@${person.handle}',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                          ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),

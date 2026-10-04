@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
+import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
 
 class _PointRule {
@@ -88,6 +89,89 @@ class PointsInfoScreen extends StatelessWidget {
                   .toList(),
             ),
           const SizedBox(height: 22),
+          Text('Customize your name', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          Text(
+            'Everything below is unlocked by points and stays unlocked forever — mix and match whatever you\'ve got.',
+            style: TextStyle(color: tokens.mute, fontSize: 12.5),
+          ),
+          const SizedBox(height: 10),
+          FunkyCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Which title shows next to your name', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _TitleChip(
+                      label: 'Auto (highest)',
+                      selected: store.me.displayedTitleThreshold == null,
+                      onTap: () => store.setDisplayedTitle(null),
+                      tokens: tokens,
+                    ),
+                    ...store.myUnlockedTitles.map((t) => _TitleChip(
+                          label: '${t.emoji} ${t.title}',
+                          selected: store.me.displayedTitleThreshold == t.threshold,
+                          onTap: () => store.setDisplayedTitle(t),
+                          tokens: tokens,
+                        )),
+                  ],
+                ),
+                if (store.myUnlockedTitles.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('Earn 500 points to pick your first title.', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                  ),
+                const Divider(height: 26),
+                Text('Name styling', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                const SizedBox(height: 2),
+                _NameStyleRow(
+                  label: 'Bold name',
+                  requiredPoints: 500,
+                  unlocked: canUseBoldName(store.me.points),
+                  value: store.me.nameBold,
+                  onChanged: (v) => store.setNameStyle(bold: v),
+                  tokens: tokens,
+                ),
+                _NameStyleRow(
+                  label: 'Italic name',
+                  requiredPoints: 1000,
+                  unlocked: canUseItalicName(store.me.points),
+                  value: store.me.nameItalic,
+                  onChanged: (v) => store.setNameStyle(italic: v),
+                  tokens: tokens,
+                ),
+                _NameStyleRow(
+                  label: 'Underlined name',
+                  requiredPoints: 2000,
+                  unlocked: canUseUnderlineName(store.me.points),
+                  value: store.me.nameUnderline,
+                  onChanged: (v) => store.setNameStyle(underline: v),
+                  tokens: tokens,
+                ),
+                _NameStyleRow(
+                  label: 'Checkmark badge',
+                  requiredPoints: 5000,
+                  unlocked: canUseCheckName(store.me.points),
+                  value: store.me.nameCheckbox,
+                  onChanged: (v) => store.setNameStyle(checkbox: v),
+                  tokens: tokens,
+                ),
+                const SizedBox(height: 14),
+                Text('Preview', style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                StyledName(
+                  person: store.me,
+                  text: '@${store.me.handle.isNotEmpty ? store.me.handle : 'you'}',
+                  style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 17),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 22),
           Text('Level titles', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
           Text('Purely cosmetic status — separate from report and venue verification.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
@@ -137,6 +221,74 @@ class PointsInfoScreen extends StatelessWidget {
               }).toList(),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One selectable pill in the "which title shows next to your name" picker.
+class _TitleChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final ThemeTokens tokens;
+  const _TitleChip({required this.label, required this.selected, required this.onTap, required this.tokens});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? tokens.brand : tokens.raised,
+          borderRadius: BorderRadius.circular(999),
+          border: selected ? null : Border.all(color: tokens.line),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(color: selected ? tokens.onOrange : tokens.ink, fontWeight: FontWeight.w700, fontSize: 13),
+        ),
+      ),
+    );
+  }
+}
+
+/// One row of the name-styling toggles — greyed out and locked until
+/// [requiredPoints], then a plain on/off switch once unlocked.
+class _NameStyleRow extends StatelessWidget {
+  final String label;
+  final int requiredPoints;
+  final bool unlocked;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final ThemeTokens tokens;
+  const _NameStyleRow({
+    required this.label,
+    required this.requiredPoints,
+    required this.unlocked,
+    required this.value,
+    required this.onChanged,
+    required this.tokens,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              unlocked ? label : '$label — needs $requiredPoints pts',
+              style: TextStyle(color: unlocked ? tokens.ink : tokens.mute, fontWeight: unlocked ? FontWeight.w600 : FontWeight.w500),
+            ),
+          ),
+          if (unlocked)
+            Switch(value: value, onChanged: onChanged, activeColor: tokens.brand)
+          else
+            Icon(Icons.lock_outline, size: 18, color: tokens.mute),
         ],
       ),
     );

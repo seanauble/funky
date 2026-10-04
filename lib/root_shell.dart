@@ -165,7 +165,12 @@ class _TabBar extends StatelessWidget {
                     border: Border.all(color: tokens.glass, width: 4),
                     boxShadow: [BoxShadow(color: tokens.brand.withValues(alpha: 0.5), blurRadius: 14, offset: const Offset(0, 5))],
                   ),
-                  child: const Icon(Icons.camera_alt, color: Colors.white, size: 30),
+                  // A plus instead of a camera — the camera icon made this
+                  // button read as "take a photo" specifically, when it
+                  // actually opens the full create flow (camera Story,
+                  // text Story, poll, or place). A generic "add" symbol
+                  // doesn't bias toward any one of those.
+                  child: const Icon(Icons.add, color: Colors.white, size: 32),
                 ),
               ),
             ),

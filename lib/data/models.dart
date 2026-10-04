@@ -418,6 +418,24 @@ class Person {
   // never has. Drives the 15-day change cooldown in AppStore.setHandle.
   final int? lastHandleChangeAt;
 
+  // Which points-level title to actually show beside your name — you keep
+  // every title you've ever reached (see levelTitles) and get to pick
+  // which one to display instead of it always being the highest, e.g.
+  // someone past KING FUNKY can still choose to show off 'Party Animal'.
+  // Null means "just show the highest one I've reached" (the old default).
+  final int? displayedTitleThreshold;
+
+  // Cosmetic name styling unlocked by points, same spirit as the level
+  // titles — each one togglable independently once unlocked (500 bold,
+  // 1000 italic, 2000 underline, 5000 a checkmark badge after your name),
+  // and every unlocked style you've turned on applies at once. See
+  // canUseBoldName/canUseItalicName/canUseUnderlineName/canUseCheckName
+  // below for the thresholds and AppStore.setNameStyle for how these flip.
+  final bool nameBold;
+  final bool nameItalic;
+  final bool nameUnderline;
+  final bool nameCheckbox;
+
   const Person({
     required this.id,
     required this.handle,
@@ -440,6 +458,11 @@ class Person {
     this.placesVisited = const [],
     this.photoPath,
     this.lastHandleChangeAt,
+    this.displayedTitleThreshold,
+    this.nameBold = false,
+    this.nameItalic = false,
+    this.nameUnderline = false,
+    this.nameCheckbox = false,
   });
 
   Person copyWith({
@@ -458,6 +481,12 @@ class Person {
     List<String>? placesVisited,
     String? photoPath,
     int? lastHandleChangeAt,
+    int? displayedTitleThreshold,
+    bool clearDisplayedTitleThreshold = false,
+    bool? nameBold,
+    bool? nameItalic,
+    bool? nameUnderline,
+    bool? nameCheckbox,
   }) =>
       Person(
         id: id,
@@ -481,6 +510,11 @@ class Person {
         placesVisited: placesVisited ?? this.placesVisited,
         photoPath: photoPath ?? this.photoPath,
         lastHandleChangeAt: lastHandleChangeAt ?? this.lastHandleChangeAt,
+        displayedTitleThreshold: clearDisplayedTitleThreshold ? null : (displayedTitleThreshold ?? this.displayedTitleThreshold),
+        nameBold: nameBold ?? this.nameBold,
+        nameItalic: nameItalic ?? this.nameItalic,
+        nameUnderline: nameUnderline ?? this.nameUnderline,
+        nameCheckbox: nameCheckbox ?? this.nameCheckbox,
       );
 
   Map<String, dynamic> toJson() => {
@@ -505,6 +539,11 @@ class Person {
         'placesVisited': placesVisited,
         'photoPath': photoPath,
         'lastHandleChangeAt': lastHandleChangeAt,
+        'displayedTitleThreshold': displayedTitleThreshold,
+        'nameBold': nameBold,
+        'nameItalic': nameItalic,
+        'nameUnderline': nameUnderline,
+        'nameCheckbox': nameCheckbox,
       };
 
   factory Person.fromJson(Map<String, dynamic> json) => Person(
@@ -529,6 +568,11 @@ class Person {
         activeNights: ((json['activeNights'] as List?) ?? const []).map((e) => e as String).toList(),
         streak: json['streak'] as int? ?? 0,
         placesVisited: ((json['placesVisited'] as List?) ?? const []).map((e) => e as String).toList(),
+        displayedTitleThreshold: json['displayedTitleThreshold'] as int?,
+        nameBold: json['nameBold'] as bool? ?? false,
+        nameItalic: json['nameItalic'] as bool? ?? false,
+        nameUnderline: json['nameUnderline'] as bool? ?? false,
+        nameCheckbox: json['nameCheckbox'] as bool? ?? false,
       );
 }
 
@@ -554,7 +598,7 @@ class LevelTitle {
 }
 
 const levelTitles = [
-  LevelTitle(10000, 'KING FUNKY', '👊'),
+  LevelTitle(10000, 'KING FUNKY', '🦁'),
   LevelTitle(9000, 'FUNKY Hall of Fame', '💎👑'),
   LevelTitle(8000, 'Nightlife Legend', '🏆👑'),
   LevelTitle(7000, 'FUNKY Royalty', '👑🔥'),
@@ -581,3 +625,17 @@ LevelTitle? levelTitleFor(int points) {
 /// title so progress still feels continuous between title tiers (every 250
 /// points is another level; 2,840 points is "Level 12").
 int levelFor(int points) => (points ~/ 250) + 1;
+
+/// Every title tier a point total has reached, highest first — unlike
+/// [levelTitleFor] (just the top one), this is the full list a profile-
+/// customization picker needs so someone past KING FUNKY can still choose
+/// to show off an earlier title like 'Party Animal'.
+List<LevelTitle> levelTitlesFor(int points) => levelTitles.where((t) => points >= t.threshold).toList(growable: false);
+
+// Cosmetic name-styling unlocks — separate from the level titles above,
+// each one togglable on its own once unlocked, and every unlocked style
+// you've turned on stacks (see AppStore.setNameStyle / Person.nameBold etc).
+bool canUseBoldName(int points) => points >= 500;
+bool canUseItalicName(int points) => points >= 1000;
+bool canUseUnderlineName(int points) => points >= 2000;
+bool canUseCheckName(int points) => points >= 5000;

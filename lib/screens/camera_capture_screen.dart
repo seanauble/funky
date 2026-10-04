@@ -96,31 +96,59 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         await controller.dispose();
         return;
       }
-      var minZoom = 1.0;
-      var maxZoom = 1.0;
-      try {
-        minZoom = await controller.getMinZoomLevel();
-        maxZoom = await controller.getMaxZoomLevel();
-      } catch (_) {
-        // Zoom queries aren't supported on every device — fall back to a
-        // fixed 1x rather than crash.
-      }
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
+      // Show the new lens's live feed the instant it's ready — the zoom
+      // range/reset below is its own async step now (see _primeZoom) so a
+      // flip doesn't also sit through those extra plugin round-trips before
+      // you see anything.
       setState(() {
         _controller = controller;
         _cameraIndex = index;
         _ready = true;
         _error = null;
-        _minZoom = minZoom;
-        _maxZoom = maxZoom;
-        _currentZoom = minZoom;
+        _minZoom = 1;
+        _maxZoom = 1;
+        _currentZoom = 1;
       });
+      unawaited(_primeZoom(controller));
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
+  }
+
+  /// Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
+  /// camera phones report different ranges), so these get refreshed on
+  /// every open, including camera flips — and the lens is reset to 1x each
+  /// time, matching how the stock camera app behaves on a lens switch. Run
+  /// after the preview is already on screen (see _openCamera) rather than
+  /// before, so a flip isn't gated on these extra round-trips too.
+  Future<void> _primeZoom(CameraController controller) async {
+    var minZoom = 1.0;
+    var maxZoom = 1.0;
+    try {
+      minZoom = await controller.getMinZoomLevel();
+      maxZoom = await controller.getMaxZoomLevel();
+    } catch (_) {
+      // Zoom queries aren't supported on every device — fall back to a
+      // fixed 1x rather than crash.
+    }
+    // Actually COMMAND the lens to sit at 1x, not just reset our own
+    // _currentZoom tracking variable — without this, a lens that doesn't
+    // reset its own zoom on a new capture session (several Android devices
+    // don't) stays at whatever zoom the *previous* lens was left at, and
+    // front/back cameras often report different native zoom ranges, so
+    // that stale level reads as a sudden zoom-in on whichever lens you
+    // land on. This is what actually fixes the flip — not awaited against
+    // the UI, it can finish a beat after the preview's already showing.
+    unawaited(controller.setZoomLevel(minZoom).catchError((_) {}));
+    // A later flip may have already moved on to a different controller by
+    // the time these round-trips come back — don't let a stale result
+    // clobber whatever lens is actually current now.
+    if (!mounted || _controller != controller) return;
+    setState(() {
+      _minZoom = minZoom;
+      _maxZoom = maxZoom;
+      _currentZoom = minZoom;
+    });
   }
 
   void _onZoomStart(ScaleStartDetails details) {
@@ -259,8 +287,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     var scale = size.aspectRatio * controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
     return ClipRect(
-      child: Transform.scale(
+      // The front and back lens usually report different native aspect
+      // ratios, so this cover-scale genuinely is a different number on
+      // each one — that's what read as "zooms in" on a flip. AnimatedScale
+      // (instead of a plain Transform.scale) eases between the two values
+      // instead of snapping, so the flip looks like an intentional push-in
+      // rather than a jarring pop.
+      child: AnimatedScale(
         scale: scale,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
         alignment: Alignment.center,
         child: Center(child: CameraPreview(controller)),
       ),

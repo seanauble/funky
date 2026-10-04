@@ -44,7 +44,7 @@ class PersonProfileScreen extends StatelessWidget {
               children: [
                 FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 84, photoPath: person.photoPath),
                 const SizedBox(height: 10),
-                FunkyHandle(handle: person.handle),
+                FunkyHandle(handle: person.handle, person: person),
                 if (person.bio.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute)),

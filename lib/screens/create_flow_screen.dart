@@ -263,45 +263,92 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         await controller.dispose();
         return;
       }
-      // Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
-      // camera phones report different ranges), so these get refreshed on
-      // every open, including camera flips — and reset to 1x each time,
-      // matching how the stock camera app behaves on a lens switch.
-      var minZoom = 1.0;
-      var maxZoom = 1.0;
-      try {
-        minZoom = await controller.getMinZoomLevel();
-        maxZoom = await controller.getMaxZoomLevel();
-      } catch (_) {
-        // Some devices/plugin versions don't support zoom queries — fall
-        // back to a fixed 1x (pinch becomes a no-op rather than crashing).
-      }
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
+      // Show the new lens's live feed the instant it's ready — the zoom
+      // range/reset below is its own async step now (see _primeZoom) so a
+      // flip doesn't also sit through those extra plugin round-trips before
+      // you see anything.
       setState(() {
         _controller = controller;
         _cameraIndex = index;
         _ready = true;
         _error = null;
-        _minZoom = minZoom;
-        _maxZoom = maxZoom;
-        _currentZoom = minZoom;
+        _minZoom = 1;
+        _maxZoom = 1;
+        _currentZoom = 1;
       });
+      unawaited(_primeZoom(controller));
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
   }
 
+  /// Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
+  /// camera phones report different ranges), so these get refreshed on
+  /// every open, including camera flips — and the lens is reset to 1x each
+  /// time, matching how the stock camera app behaves on a lens switch. Run
+  /// after the preview is already on screen (see _openCamera) rather than
+  /// before, so a flip isn't gated on these extra round-trips too.
+  Future<void> _primeZoom(CameraController controller) async {
+    var minZoom = 1.0;
+    var maxZoom = 1.0;
+    try {
+      minZoom = await controller.getMinZoomLevel();
+      maxZoom = await controller.getMaxZoomLevel();
+    } catch (_) {
+      // Some devices/plugin versions don't support zoom queries — fall
+      // back to a fixed 1x (pinch becomes a no-op rather than crashing).
+    }
+    // Actually COMMAND the lens to sit at 1x, not just reset our own
+    // _currentZoom tracking variable — without this, a lens that doesn't
+    // reset its own zoom on a new capture session (several Android devices
+    // don't) stays at whatever zoom the *previous* lens was left at, and
+    // front/back cameras often report different native zoom ranges, so
+    // that stale level reads as a sudden zoom-in on whichever lens you
+    // land on. This is what actually fixes the flip — not awaited against
+    // the UI, it can finish a beat after the preview's already showing.
+    unawaited(controller.setZoomLevel(minZoom).catchError((_) {}));
+    // A later flip may have already moved on to a different controller by
+    // the time these round-trips come back — don't let a stale result
+    // clobber whatever lens is actually current now.
+    if (!mounted || _controller != controller) return;
+    setState(() {
+      _minZoom = minZoom;
+      _maxZoom = maxZoom;
+      _currentZoom = minZoom;
+    });
+  }
+
+  // Pinch is only the photo/live-preview zoom gesture now — while actually
+  // recording, zoom is the vertical drag on the shutter button instead (see
+  // _onRecordDragUpdate), so these two can't fight over the same lens.
   void _onZoomStart(ScaleStartDetails details) {
+    if (_isRecording) return;
     _baseZoom = _currentZoom;
   }
 
   void _onZoomUpdate(ScaleUpdateDetails details) {
+    if (_isRecording) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
     final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
+    if (zoom == _currentZoom) return;
+    _currentZoom = zoom;
+    controller.setZoomLevel(zoom);
+  }
+
+  /// Video's own zoom gesture — slide up/down from the shutter button while
+  /// it's held, same feel as Snapchat/TikTok, instead of pinching. Dragging
+  /// the full finger's travel (~220px) up sweeps from min to max zoom;
+  /// down sweeps back. _baseZoom is snapshotted in _startRecording, same
+  /// pattern as the pinch gesture's _onZoomStart.
+  static const double _dragZoomRange = 220;
+
+  void _onRecordDragUpdate(LongPressMoveUpdateDetails details) {
+    if (!_isRecording) return;
+    final controller = _controller;
+    if (controller == null || _maxZoom <= _minZoom) return;
+    final dy = details.offsetFromOrigin.dy; // negative = finger moved up
+    final zoom = (_baseZoom - (dy / _dragZoomRange) * (_maxZoom - _minZoom)).clamp(_minZoom, _maxZoom);
     if (zoom == _currentZoom) return;
     _currentZoom = zoom;
     controller.setZoomLevel(zoom);
@@ -368,6 +415,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   Future<void> _beginSegmentRecording(CameraController controller) async {
     await controller.startVideoRecording();
     _recordStart = DateTime.now();
+    // The lens (and its zoom range) just changed — if you're still holding
+    // and dragging through the flip, the drag-to-zoom baseline needs to
+    // follow the fresh lens's own zoom, not whatever the old one was at.
+    _baseZoom = _currentZoom;
     if (mounted) setState(() => _isRecording = true);
   }
 
@@ -376,6 +427,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
     _segmentPaths.clear();
     _elapsedBeforeCurrentSegmentMs = 0;
+    // Baseline for the shutter-button drag-to-zoom gesture (see
+    // _onRecordDragUpdate) — whatever zoom the live preview is already
+    // sitting at when you start holding is where the drag starts from.
+    _baseZoom = _currentZoom;
     // Flip the button red and start the progress ring right away, instead
     // of waiting on controller.startVideoRecording() below to finish first
     // — that's a real round trip to the camera hardware and can take a
@@ -608,8 +663,17 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     var scale = size.aspectRatio * controller.value.aspectRatio;
     if (scale < 1) scale = 1 / scale;
     return ClipRect(
-      child: Transform.scale(
+      // The front and back lens usually report different native aspect
+      // ratios, so this cover-scale genuinely is a different number on
+      // each one — that's what read as "zooms in" on a flip (including
+      // the mid-recording one). AnimatedScale (instead of a plain
+      // Transform.scale) eases between the two values instead of
+      // snapping, so the flip looks like an intentional push-in rather
+      // than a jarring pop.
+      child: AnimatedScale(
         scale: scale,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
         alignment: Alignment.center,
         child: Center(child: CameraPreview(controller)),
       ),
@@ -727,6 +791,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                 GestureDetector(
                   onTap: _takePhoto,
                   onLongPressStart: (_) => _startRecording(),
+                  onLongPressMoveUpdate: _onRecordDragUpdate,
                   onLongPressEnd: (_) => _cancelRecording(),
                   onLongPressCancel: _cancelRecording,
                   child: AnimatedBuilder(
@@ -788,8 +853,6 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
               ),
             ),
           ),
-          if (_isVideo) const Positioned(left: 8, top: 8, child: SafeArea(bottom: false, child: _VideoBadge())),
-
           // Post-to / anonymous / Retake-Post controls, overlaid on a
           // bottom gradient so the full-bleed media underneath stays
           // uncropped by an opaque panel.
@@ -976,26 +1039,6 @@ class _PartyBorderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _PartyBorderPainter oldDelegate) => oldDelegate.t != t;
-}
-
-class _VideoBadge extends StatelessWidget {
-  const _VideoBadge();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.videocam, color: Colors.white, size: 14),
-          SizedBox(width: 4),
-          Text('Video', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
-        ],
-      ),
-    );
-  }
 }
 
 /// Page 1 — a text-only Story. Media Stories go through the camera tab
