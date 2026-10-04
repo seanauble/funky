@@ -42,11 +42,17 @@ flutter:
   # This is required for using `dart:ffi`.
   # All these are used by the tooling to maintain consistency when
   # adding or updating assets for this project.
+  #
+  # Locally patched copy (see PATCH_NOTES.md): the `android` platform entry
+  # that the real published package declares here was deliberately removed.
+  # This vendored copy only includes `ios/` (this app is iOS-only via
+  # Codemagic) — `android/` was never copied in. Leaving the `android` entry
+  # declared with no matching source makes Flutter's plugin tooling fail the
+  # build looking for a main class that doesn't exist in this tree. If this
+  # project ever adds an Android build, re-vendor the real `android/` folder
+  # from the unpatched package and restore this entry.
   plugin:
     platforms:
-      android:
-        package: com.example.easy_video_editor
-        pluginClass: EasyVideoEditorPlugin
       ios:
         pluginClass: EasyVideoEditorPlugin
 
