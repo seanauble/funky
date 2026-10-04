@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../widgets/ui_widgets.dart';
+import 'dm_thread_screen.dart';
 
 /// The public profile of someone else — reached by tapping their handle in
 /// chat. Old Story posts only show up here once you're mutual friends;
@@ -52,7 +53,23 @@ class PersonProfileScreen extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
+          // Anyone can message anyone on FUNKY — being friends only gates
+          // seeing each other's old Stories (below), not DMs.
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: personId))),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                side: BorderSide(color: tokens.line),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: Icon(Icons.chat_bubble_outline, size: 18, color: tokens.ink),
+              label: Text('Message', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+            ),
+          ),
+          const SizedBox(height: 10),
           _FriendAction(
             isFriend: isFriend,
             requestSent: requestSent,

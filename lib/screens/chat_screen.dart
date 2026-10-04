@@ -5,6 +5,7 @@ import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'dm_thread_screen.dart';
 import 'person_profile_screen.dart';
 
 // The hold-to-react picker's fixed set — "custom" in the sense that it's
@@ -84,13 +85,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             Expanded(
               child: _segment == 1
-                  ? ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: const [
-                        EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
-                        FootNote(text: 'Private messages and friends stay. Everything else is wiped at 2 PM.'),
-                      ],
-                    )
+                  ? _MessagesList(store: store)
                   : store.location == null
                       ? const LocationGate()
                       : const _LiveChat(),
@@ -169,6 +164,60 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The "Messages" segment — every DM thread 'me' has going, most recently
+/// active first. NOTE: this only ever reflects DMs sent from this one
+/// device (see the comment on AppStore.dmConversations) — there's no
+/// backend yet to actually deliver a message to someone else's phone.
+class _MessagesList extends StatelessWidget {
+  final AppStore store;
+  const _MessagesList({required this.store});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final conversations = store.dmConversations;
+
+    if (conversations.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: const [
+          EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
+          FootNote(text: 'Private messages and friends stay. Everything else is wiped at 2 PM.'),
+        ],
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: conversations.length,
+      itemBuilder: (context, i) {
+        final person = conversations[i];
+        final isFriend = store.isFriendsWith(person.id);
+        final room = dmRoomId('me', person.id);
+        final msgs = store.messagesFor(room);
+        final last = msgs.isNotEmpty ? msgs.last : null;
+        return ListTile(
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id))),
+          leading: Container(
+            padding: EdgeInsets.all(isFriend ? 2 : 0),
+            decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 2)) : null,
+            child: FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 44, photoPath: person.photoPath),
+          ),
+          title: StyledName(person: person, text: '@${person.handle}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+          subtitle: last == null
+              ? null
+              : Text(
+                  last.uid == 'me' ? 'You: ${last.text}' : last.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: tokens.mute),
+                ),
+        );
+      },
     );
   }
 }

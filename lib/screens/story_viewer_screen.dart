@@ -7,6 +7,7 @@ import '../data/app_store.dart';
 import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/ui_widgets.dart';
+import 'dm_thread_screen.dart';
 
 /// Full-screen Story playback — tap the right half to advance, the left
 /// half to go back, down-arrow/back button to close, and swipe left/right
@@ -18,7 +19,12 @@ class StoryViewerScreen extends StatefulWidget {
   // list Home built its rings from — and which one to open on first.
   final List<String> personIds;
   final int initialIndex;
-  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0});
+  // Which of that one person's own stories to open on (0 = their oldest,
+  // matching the oldest-first order this viewer plays in) — lets a tap on
+  // a specific memory on the Profile page jump straight to that memory
+  // instead of always starting from the very first one.
+  final int initialStoryIndex;
+  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0, this.initialStoryIndex = 0});
 
   @override
   State<StoryViewerScreen> createState() => _StoryViewerScreenState();
@@ -26,7 +32,7 @@ class StoryViewerScreen extends StatefulWidget {
 
 class _StoryViewerScreenState extends State<StoryViewerScreen> {
   late int _personIndex = widget.initialIndex.clamp(0, widget.personIds.length - 1);
-  int _i = 0;
+  late int _i = widget.initialStoryIndex < 0 ? 0 : widget.initialStoryIndex;
   String? _lastRecordedView;
   String? _currentStoryId;
 
@@ -96,8 +102,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     final store = context.watch<AppStore>();
     final personId = widget.personIds[_personIndex];
     final person = store.personById(personId);
-    // Oldest first, like watching through the night in order.
-    final stories = store.storiesByUser(personId).reversed.toList(growable: false);
+    // Oldest first, like watching through the night in order. Non-friends
+    // only ever get tonight's — memories are friends-only (visibleStoriesByUser).
+    final stories = store.visibleStoriesByUser(personId).reversed.toList(growable: false);
 
     if (person == null || stories.isEmpty) {
       // Nothing left to show for THIS person (they deleted it, or the 2 PM
@@ -180,6 +187,125 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       }
     }
 
+    // Swipe up on your OWN story — a bottom sheet with its view count and a
+    // delete option. Deleting just lets the next build naturally show
+    // whatever's now at this same index (or fall through to the "ran out of
+    // stories" / next-person logic above if that was the last one) rather
+    // than this code having to special-case what comes next itself.
+    void showOwnStorySheet() {
+      showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: const Color(0xFF1C1C1E),
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+        builder: (sheetContext) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.remove_red_eye_outlined, color: Colors.white70, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${story.views.length} view${story.views.length == 1 ? '' : 's'}',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16),
+                    ),
+                  ],
+                ),
+                if (story.screenshotBy.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.camera_alt_outlined, color: Colors.orangeAccent, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${story.screenshotBy.length} screenshotted',
+                        style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 20),
+                // Memories auto-delete memoryRetentionDays after posting —
+                // this is the other place (besides the bookmark on the
+                // Memory card itself) to pin one to the Timeline forever.
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      final store = context.read<AppStore>();
+                      if (story.savedToTimeline) {
+                        store.removeFromTimeline(story.id);
+                      } else {
+                        store.saveToTimeline(story.id);
+                      }
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: BorderSide(color: story.savedToTimeline ? Colors.white54 : Colors.amberAccent),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: Icon(
+                      story.savedToTimeline ? Icons.bookmark_remove_outlined : Icons.bookmark_add_outlined,
+                      color: story.savedToTimeline ? Colors.white70 : Colors.amberAccent,
+                    ),
+                    label: Text(
+                      story.savedToTimeline ? 'Remove from Timeline' : 'Save to Timeline',
+                      style: TextStyle(
+                        color: story.savedToTimeline ? Colors.white70 : Colors.amberAccent,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  story.savedToTimeline
+                      ? 'This memory is saved forever.'
+                      : 'Memories auto-delete $memoryRetentionDays days after posting unless saved.',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11.5),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      context.read<AppStore>().deleteStory(story.id);
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: const BorderSide(color: Colors.redAccent),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    label: const Text('Delete this Story', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Swipe up on someone ELSE's story opens a DM with them — "anyone can
+    // message anyone" straight from what they just posted, Snapchat-style.
+    void messageFromStory() {
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id)));
+    }
+
+    void handleSwipeUp() {
+      if (story.uid == 'me') {
+        showOwnStorySheet();
+      } else {
+        messageFromStory();
+      }
+    }
+
     _ensureVideoFor(story, advance);
 
     return Scaffold(
@@ -188,8 +314,14 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
         child: GestureDetector(
           onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
           onVerticalDragEnd: (details) {
-            if (_dragDy > 90 || (details.primaryVelocity ?? 0) > 700) {
+            final velocity = details.primaryVelocity ?? 0;
+            if (_dragDy > 90 || velocity > 700) {
               Navigator.of(context).pop();
+            } else if (_dragDy == 0 && velocity < -500) {
+              // Only counts as the swipe-up gesture if you weren't already
+              // mid-way through a downward drag-to-dismiss (_dragDy == 0) —
+              // keeps the two gestures from fighting over the same flick.
+              handleSwipeUp();
             } else {
               setState(() => _dragDy = 0);
             }
@@ -336,6 +468,26 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               child: IconButton(
                 onPressed: () => store.likeStory(story.id),
                 icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.redAccent : Colors.white, size: 30),
+              ),
+            ),
+            // A quiet hint that the swipe-up gesture exists at all — it has
+            // no tap target of its own (the whole-screen GestureDetector
+            // above already handles the real gesture), just a nudge.
+            Positioned(
+              bottom: 28,
+              left: 0,
+              right: 70,
+              child: IgnorePointer(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.keyboard_arrow_up, color: Colors.white70, size: 20),
+                    Text(
+                      story.uid == 'me' ? 'Swipe up for views & delete' : 'Swipe up to message',
+                      style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
               ),
             ),
           ],

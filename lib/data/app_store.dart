@@ -64,6 +64,15 @@ class RankedPlace {
   String? get coverPhotoPath => place.coverPhotoPath;
 }
 
+/// The canonical chat "room" key for a DM thread between two people — the
+/// ids get sorted first so (me, p1) and (p1, me) always land on the exact
+/// same room no matter who opened the thread, reusing the same
+/// ChatMessage/room plumbing the area live chat already runs on.
+String dmRoomId(String a, String b) {
+  final ids = [a, b]..sort();
+  return 'dm_${ids[0]}_${ids[1]}';
+}
+
 List<T> _dedupeById<T>(List<T> items, String Function(T) idOf) {
   final seen = <String>{};
   final out = <T>[];
@@ -469,8 +478,16 @@ class AppStore extends ChangeNotifier {
     } catch (_) {
       // Corrupt or missing storage — just start fresh, same as a new install.
     } finally {
+      // Age out old Memories before anyone ever sees them — otherwise the
+      // very first frame could flash a Memory that's about to disappear.
+      _purgeExpiredMemories();
       loaded = true;
       notifyListeners();
+      // Flush the purge immediately so a Memory that expired while the app
+      // was closed doesn't get silently re-merged back in from storage on
+      // the next launch (load() above always merges whatever's still on
+      // disk; only _persist() ever rewrites it).
+      _persist();
     }
   }
 
@@ -645,6 +662,19 @@ class AppStore extends ChangeNotifier {
   /// Friends-only gate for "old Stories" on someone's profile (your own
   /// profile is always visible to you).
   bool canSeeStoriesOf(String personId) => isFriendsWith(personId);
+
+  /// What the Story viewer actually shows for a tap on someone's ring —
+  /// everyone can see what you post tonight (that's the whole point of a
+  /// ring), but your older Stories are "memories," and memories are
+  /// friends-only, same gate as the profile page (canSeeStoriesOf). A
+  /// non-friend who keeps tapping through your ring stops at the edge of
+  /// tonight instead of being able to page back through your whole archive.
+  List<Story> visibleStoriesByUser(String uid) {
+    final theirs = storiesByUser(uid);
+    if (canSeeStoriesOf(uid)) return theirs;
+    final today = sessionKey();
+    return theirs.where((s) => s.session == today).toList();
+  }
 
   List<Person> get incomingFriendRequests =>
       me.friendRequestsReceived.map(personById).whereType<Person>().toList();
@@ -908,6 +938,34 @@ class AppStore extends ChangeNotifier {
     return null;
   }
 
+  /// A DM to one specific person instead of the shared area chat — same
+  /// message plumbing (ChatMessage/sendMessage), just addressed to a
+  /// per-pair room (see dmRoomId) instead of 'main'. Always sent under your
+  /// real handle; ghost mode is an area-chat-only thing. Returns null on
+  /// success, same contract as sendMessage.
+  String? sendDirectMessage(String toPersonId, String text) => sendMessage(dmRoomId('me', toPersonId), text, false);
+
+  /// Everyone 'me' has a DM thread with, most-recently-active first — what
+  /// the Messages segment of Chat lists. NOTE: since FUNKY has no backend
+  /// (see the comment at the top of this file), this only ever reflects
+  /// messages sent *from this device* — there's nothing here yet that lets
+  /// two different phones actually exchange a DM.
+  List<Person> get dmConversations {
+    final lastByPartner = <String, int>{};
+    for (final m in messages) {
+      if (!m.room.startsWith('dm_')) continue;
+      final ids = m.room.substring(3).split('_');
+      if (ids.length != 2) continue;
+      final other = ids[0] == 'me' ? ids[1] : (ids[1] == 'me' ? ids[0] : null);
+      if (other == null) continue;
+      final existing = lastByPartner[other];
+      if (existing == null || m.t > existing) lastByPartner[other] = m.t;
+    }
+    final partners = lastByPartner.keys.map(personById).whereType<Person>().toList();
+    partners.sort((a, b) => lastByPartner[b.id]!.compareTo(lastByPartner[a.id]!));
+    return partners;
+  }
+
   void addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) {
     // A snapshot of the place's name right now — Places are tonight-only
     // and get wiped at 2 PM, but a Story's entry in Memories is permanent,
@@ -968,6 +1026,52 @@ class AppStore extends ChangeNotifier {
     messages = [...messages]..[i] = messages[i].copyWith(reactions: next);
     notifyListeners();
     _persist();
+  }
+
+  /// Deletes one of your own Stories — from a memory card on your profile,
+  /// or the swipe-up "delete" option in the Story viewer on your own
+  /// story. Only ever removes a Story that's actually yours; a stray call
+  /// with someone else's id (or a stale/duplicate tap) just no-ops rather
+  /// than touching anyone else's post.
+  void deleteStory(String storyId) {
+    final i = stories.indexWhere((s) => s.id == storyId && s.uid == 'me');
+    if (i == -1) return;
+    stories = [...stories]..removeAt(i);
+    notifyListeners();
+    _persist();
+  }
+
+  /// Pins a Memory so it never auto-deletes — the bookmark action on a
+  /// Memory card, or "Save to Timeline" in the own-story swipe-up sheet.
+  void saveToTimeline(String storyId) {
+    final i = stories.indexWhere((s) => s.id == storyId && s.uid == 'me');
+    if (i == -1) return;
+    final updated = [...stories];
+    updated[i] = updated[i].copyWith(savedToTimeline: true);
+    stories = updated;
+    notifyListeners();
+    _persist();
+  }
+
+  /// Un-pins a Memory, putting it back on the normal memoryRetentionDays
+  /// countdown (see _purgeExpiredMemories).
+  void removeFromTimeline(String storyId) {
+    final i = stories.indexWhere((s) => s.id == storyId && s.uid == 'me');
+    if (i == -1) return;
+    final updated = [...stories];
+    updated[i] = updated[i].copyWith(savedToTimeline: false);
+    stories = updated;
+    notifyListeners();
+    _persist();
+  }
+
+  /// Drops your own Stories once they're older than memoryRetentionDays,
+  /// unless they've been explicitly saved to your Timeline. Run once per
+  /// load() — everyone else's Stories are already handled by the normal
+  /// 2 PM session reset elsewhere, so this only ever looks at 'me'.
+  void _purgeExpiredMemories() {
+    final cutoff = DateTime.now().subtract(const Duration(days: memoryRetentionDays)).millisecondsSinceEpoch;
+    stories = stories.where((s) => s.uid != 'me' || s.savedToTimeline || s.t >= cutoff).toList();
   }
 
   void likeStory(String id) {

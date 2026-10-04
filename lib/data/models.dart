@@ -305,6 +305,12 @@ class Story {
   // this is what lets Memories still say "Posted at Sigma Chi" anyway.
   // Null for a general/"main" Story.
   final String? placeName;
+  // Your own Memories auto-delete memoryRetentionDays after posting unless
+  // this is true — "Save to Timeline" (the bookmark action on a Memory, or
+  // the swipe-up sheet on your own Story) sets it, and that's the only way
+  // to keep one around forever. Always false for anyone but 'me' in
+  // practice, since only your own Stories are ever kept as Memories at all.
+  final bool savedToTimeline;
 
   const Story({
     required this.id,
@@ -320,9 +326,10 @@ class Story {
     this.imagePath,
     this.videoPath,
     this.placeName,
+    this.savedToTimeline = false,
   });
 
-  Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy}) => Story(
+  Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy, bool? savedToTimeline}) => Story(
         id: id,
         t: t,
         uid: uid,
@@ -336,6 +343,7 @@ class Story {
         imagePath: imagePath,
         videoPath: videoPath,
         placeName: placeName,
+        savedToTimeline: savedToTimeline ?? this.savedToTimeline,
       );
 
   Map<String, dynamic> toJson() => {
@@ -352,6 +360,7 @@ class Story {
         'imagePath': imagePath,
         'videoPath': videoPath,
         'placeName': placeName,
+        'savedToTimeline': savedToTimeline,
       };
 
   factory Story.fromJson(Map<String, dynamic> json) => Story(
@@ -368,7 +377,22 @@ class Story {
         imagePath: json['imagePath'] as String?,
         videoPath: json['videoPath'] as String?,
         placeName: json['placeName'] as String?,
+        savedToTimeline: json['savedToTimeline'] as bool? ?? false,
       );
+}
+
+// Memories auto-delete this many days after posting unless explicitly
+// saved to your Timeline (Story.savedToTimeline) — see
+// AppStore._purgeExpiredMemories and the save/removeFromTimeline actions.
+const memoryRetentionDays = 7;
+
+/// Days left before [story] auto-deletes, clamped to 0 ("expiring today").
+/// Meaningless (and never shown) once savedToTimeline is true.
+int memoryDaysLeft(Story story) {
+  final elapsedMs = DateTime.now().millisecondsSinceEpoch - story.t;
+  final elapsedDays = (elapsedMs / (1000 * 60 * 60 * 24)).floor();
+  final left = memoryRetentionDays - elapsedDays;
+  return left < 0 ? 0 : left;
 }
 
 class Person {

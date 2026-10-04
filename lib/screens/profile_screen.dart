@@ -10,6 +10,7 @@ import '../widgets/ui_widgets.dart';
 import 'camera_capture_screen.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
+import 'story_viewer_screen.dart';
 
 enum _PhotoSource { camera, library }
 
@@ -257,14 +258,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           const SectionHeader(title: 'Memories'),
           if (myStories.isEmpty)
-            const FunkyCard(child: EmptyNote(text: "Nothing saved yet. Post a Story and it'll stay here forever, even after tonight resets."))
+            const FunkyCard(
+              child: EmptyNote(
+                text: "Nothing saved yet. Post a Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on "
+                    "one to keep it on your Timeline forever.",
+              ),
+            )
           else
             ...memoriesByDay.entries.expand((entry) => <Widget>[
                   Padding(
                     padding: const EdgeInsets.only(top: 6, bottom: 8),
                     child: Text(entry.key, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
                   ),
-                  ...entry.value.map((s) => _ProfileMemoryCard(story: s)),
+                  ...entry.value.map((s) {
+                    // myStories is newest-first; the Story viewer always
+                    // plays oldest-first, so this story's position there is
+                    // counted back from the end rather than reusing its
+                    // position here directly.
+                    final viewerIndex = myStories.length - 1 - myStories.indexOf(s);
+                    return _ProfileMemoryCard(
+                      story: s,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: const ['me'], initialStoryIndex: viewerIndex)),
+                      ),
+                    );
+                  }),
                 ]),
           const SectionHeader(title: 'Privacy'),
           FunkyCard(
@@ -324,17 +342,52 @@ class _PhotoSourceSheet extends StatelessWidget {
 
 /// Same card as the old standalone Memories screen used — duplicated here
 /// (rather than imported) since memories now render directly on this page.
+/// Tapping it opens the full Story viewer at exactly this memory; the trash
+/// icon deletes it right here without having to go in first.
 class _ProfileMemoryCard extends StatelessWidget {
   final Story story;
-  const _ProfileMemoryCard({required this.story});
+  final VoidCallback onTap;
+  const _ProfileMemoryCard({required this.story, required this.onTap});
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: tokens.surface,
+        title: Text('Delete this memory?', style: TextStyle(color: tokens.ink)),
+        content: Text('This removes it for good — it can\'t be undone.', style: TextStyle(color: tokens.mute)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: Text('Delete', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      context.read<AppStore>().deleteStory(story.id);
+    }
+  }
+
+  void _toggleTimeline(BuildContext context) {
+    final store = context.read<AppStore>();
+    if (story.savedToTimeline) {
+      store.removeFromTimeline(story.id);
+    } else {
+      store.saveToTimeline(story.id);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final dt = DateTime.fromMillisecondsSinceEpoch(story.t);
     final timeLabel = TimeOfDay.fromDateTime(dt).format(context);
+    final daysLeft = memoryDaysLeft(story);
 
-    return FunkyCard(
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: FunkyCard(
       margin: const EdgeInsets.only(bottom: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -352,6 +405,45 @@ class _ProfileMemoryCard extends StatelessWidget {
                 ),
               ),
               Text(timeLabel, style: TextStyle(color: tokens.mute, fontSize: 12)),
+              const SizedBox(width: 8),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _toggleTimeline(context),
+                child: Icon(
+                  story.savedToTimeline ? Icons.bookmark : Icons.bookmark_outline,
+                  size: 16,
+                  color: story.savedToTimeline ? tokens.brand : tokens.mute,
+                ),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _confirmDelete(context),
+                child: Icon(Icons.delete_outline, size: 16, color: tokens.mute),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          // Every Memory counts down to auto-delete unless it's been pinned
+          // to the Timeline — see AppStore._purgeExpiredMemories.
+          Row(
+            children: [
+              Icon(
+                story.savedToTimeline ? Icons.bookmark : Icons.schedule,
+                size: 12,
+                color: story.savedToTimeline ? tokens.brand : tokens.mute,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                story.savedToTimeline
+                    ? 'Saved to Timeline'
+                    : (daysLeft <= 0 ? 'Expires today' : 'Expires in $daysLeft day${daysLeft == 1 ? '' : 's'}'),
+                style: TextStyle(
+                  color: story.savedToTimeline ? tokens.brand : tokens.mute,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 6),
@@ -404,6 +496,7 @@ class _ProfileMemoryCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
       ),
     );
   }

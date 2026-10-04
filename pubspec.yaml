@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.0.0+36
+version: 2.0.0+38
 
 environment:
   sdk: ^3.13.3
@@ -70,6 +70,12 @@ dependencies:
   # the in-app camera — Stories stay camera-only (see CameraCaptureScreen),
   # this is only for the profile photo picker. Official flutter.dev package.
   image_picker: ^1.2.3
+  # Lets the Story review screen's Save button export a copy of exactly
+  # what you just captured straight to the phone's own Camera Roll —
+  # separate from posting it as a Story, and separate from the in-app
+  # Memories/Timeline archive too. Only needs the NSPhotoLibraryAddUsage/
+  # NSPhotoLibraryUsage keys already declared in Info.plist.
+  gal: ^2.3.1
 
 dev_dependencies:
   flutter_test:

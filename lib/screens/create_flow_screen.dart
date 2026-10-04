@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:easy_video_editor/easy_video_editor.dart';
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -208,6 +209,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   File? _mediaFile;
   bool _isVideo = false;
   VideoPlayerController? _videoController;
+  // Drives the little spinner on the review screen's Save-to-camera-roll
+  // button — also doubles as a guard against double-taps starting a
+  // second save while the first is still running.
+  bool _savingToGallery = false;
 
   bool _anon = false;
   String _place = 'main';
@@ -636,6 +641,44 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     Navigator.of(context).pop();
   }
 
+  /// "Save" on the review screen — a plain copy of exactly what you just
+  /// captured, straight to the phone's own Camera Roll. Deliberately
+  /// separate from both posting (_post, below) and the in-app Memories/
+  /// Timeline archive (AppStore.saveToTimeline) — this one leaves the app
+  /// entirely and has nothing to do with whether you ever post it at all.
+  Future<void> _saveToCameraRoll() async {
+    if (_mediaFile == null || _savingToGallery) return;
+    setState(() => _savingToGallery = true);
+    try {
+      var hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        hasAccess = await Gal.requestAccess();
+      }
+      if (!hasAccess) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Couldn't save — FUNKY needs photo library access.")),
+          );
+        }
+        return;
+      }
+      if (_isVideo) {
+        await Gal.putVideo(_mediaFile!.path);
+      } else {
+        await Gal.putImage(_mediaFile!.path);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to your camera roll.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't save: $e")));
+      }
+    } finally {
+      if (mounted) setState(() => _savingToGallery = false);
+    }
+  }
+
   void _post(AppStore store) {
     store.addStory(
       imagePath: _isVideo ? null : _mediaFile!.path,
@@ -849,6 +892,31 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                   height: 32,
                   decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
                   child: const Icon(Icons.close, color: Colors.white, size: 18),
+                ),
+              ),
+            ),
+          ),
+          // Saves a copy of exactly what you captured straight to the
+          // phone's own Camera Roll — nothing to do with posting it, or
+          // with the in-app Memories/Timeline archive.
+          Positioned(
+            top: 8,
+            left: 8,
+            child: SafeArea(
+              bottom: false,
+              child: InkWell(
+                onTap: _savingToGallery ? null : _saveToCameraRoll,
+                customBorder: const CircleBorder(),
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                  child: _savingToGallery
+                      ? const Padding(
+                          padding: EdgeInsets.all(8),
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.download_outlined, color: Colors.white, size: 18),
                 ),
               ),
             ),
