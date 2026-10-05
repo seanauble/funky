@@ -3,7 +3,9 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
+import '../data/app_store.dart';
 import '../theme/colors.dart';
 import '../data/models.dart';
 
@@ -181,13 +183,33 @@ class StyledName extends StatelessWidget {
       effective = effective.copyWith(decoration: TextDecoration.underline);
     }
     final showCheck = person.nameCheckbox && canUseCheckName(person.points);
-    if (!showCheck) return Text(text, style: effective);
+    // The one hardcoded FUNKY Admin account (AppStore.isAdmin) gets its own
+    // gold verified badge next to its name everywhere this renders — your
+    // own profile, your own chat/area messages, your own Stories. Distinct
+    // from the orange points-unlocked checkmark above, and not something
+    // any points total can earn. Only ever true for 'me' — your own local
+    // Person record always uses that fixed id (see freshMe()) — since
+    // there's no backend "is this OTHER account the admin" check that
+    // would let this show correctly on anyone else's device looking at
+    // this same profile.
+    final isAdmin = person.id == 'me' && context.watch<AppStore>().isAdmin;
+    if (!showCheck && !isAdmin) return Text(text, style: effective);
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Flexible(child: Text(text, style: effective, overflow: TextOverflow.ellipsis)),
-        const SizedBox(width: 3),
-        Icon(Icons.check_box, size: (effective.fontSize ?? 14) * 0.85, color: effective.color ?? Colors.white),
+        if (showCheck) ...[
+          const SizedBox(width: 3),
+          Icon(Icons.check_box, size: (effective.fontSize ?? 14) * 0.85, color: effective.color ?? Colors.white),
+        ],
+        if (isAdmin) ...[
+          const SizedBox(width: 3),
+          Tooltip(
+            message: 'FUNKY Admin',
+            child: Icon(Icons.verified, size: (effective.fontSize ?? 14) * 0.9, color: tokens.gold),
+          ),
+        ],
       ],
     );
   }

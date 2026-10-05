@@ -708,11 +708,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     widget.onBusyChanged?.call(false);
   }
 
-  /// Discards this capture and leaves the whole create flow — distinct
-  /// from Retake (which stays here and reopens the camera). The small X in
-  /// the corner used to just call _retake, which read as "close" but
-  /// actually meant "try again"; now the corner X really does close, and
-  /// Retake is its own clearly-separate button in the action row below.
+  /// Discards this capture and leaves the whole create flow entirely —
+  /// still used by the live camera screen's own X (there's nothing to
+  /// retake before you've shot anything). The review screen's X below
+  /// calls _retake instead, not this.
   void _close() {
     Navigator.of(context).pop();
   }
@@ -1023,8 +1022,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         children: [
           ClipRect(child: SizedBox.expand(child: _buildFullBleedReviewMedia())),
 
-          // Closes the whole create flow — separate from Retake (the
-          // button below), which stays here and reopens the camera.
+          // Back to the live camera for another take — there's no separate
+          // Retake button anymore, this corner X is the only way back.
           Positioned(
             top: 8,
             left: 8,
@@ -1032,7 +1031,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
               bottom: false,
               right: false,
               child: InkWell(
-                onTap: _close,
+                onTap: _retake,
                 customBorder: const CircleBorder(),
                 child: Container(
                   width: 32,
@@ -1122,33 +1121,20 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                         ),
                       ),
                       const SizedBox(height: 18),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: _retake,
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.white,
-                                side: const BorderSide(color: Colors.white70),
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              child: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700)),
-                            ),
+                      // No separate Retake button anymore — the corner X
+                      // above does that now, so Post Story is the only
+                      // action down here and gets the full width.
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () => requireAccountThen(context, store, () => _post(store)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: tokens.brand,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: () => requireAccountThen(context, store, () => _post(store)),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: tokens.brand,
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              child: Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-                            ),
-                          ),
-                        ],
+                          child: Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                        ),
                       ),
                     ],
                   ),

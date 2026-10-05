@@ -211,6 +211,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           icon: Icon(Icons.check_circle_outline, color: tokens.brand, size: 20),
                         ),
                         if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
+                        // Same gold FUNKY Admin badge StyledName shows
+                        // everywhere else your name appears — this row is
+                        // a plain editable TextField rather than
+                        // StyledName while you're editing it, so it needs
+                        // its own copy of the same check.
+                        if (store.isAdmin)
+                          Tooltip(
+                            message: 'FUNKY Admin',
+                            child: Icon(Icons.verified, color: tokens.gold, size: 20),
+                          ),
                       ],
                     ),
                   ),
