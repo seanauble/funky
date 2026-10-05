@@ -1,78 +1,16 @@
-/// Seed data for the mock store — lifted directly from the web prototype's
-/// own `FALLBACK` block (the "three sample places near Glassboro, NJ" mode
-/// HANDOFF.md describes) so the native app starts from the exact same
-/// sample night instead of inventing new placeholder content.
+/// What's left of the old demo-seed file now that FUNKY is live: the sample
+/// people, places, polls, chat, and Stories that used to live here are gone
+/// on purpose — everything in the app now comes from real accounts. All
+/// that's still needed is a fallback map center and a blank starting
+/// profile.
 library;
 
-import 'dart:math';
 import 'models.dart';
 import 'session.dart';
 
+// Only used as a map/ranking center until the phone's real location comes
+// in (the app itself gates on real location — see LocationGate).
 const defaultLocation = LatLng(39.7052, -75.114); // Glassboro, NJ
-
-List<Place> sampleWithSession(String session) {
-  final now = DateTime.now().millisecondsSinceEpoch;
-  return [
-    Place(id: 'sigchi', name: 'Sigma Chi', kind: PlaceKind.frat, lat: 39.7075, lng: -75.1235, address: '214 Mullica Hill Rd', by: 'demo', t: now, session: session),
-    Place(id: 'pike', name: 'Pike', kind: PlaceKind.frat, lat: 39.7135, lng: -75.115, address: '301 Whitney Ave', by: 'demo', t: now, session: session),
-    Place(id: 'downtown', name: 'Downtown', kind: PlaceKind.area, lat: 39.7045, lng: -75.1125, address: 'High St & Delsea Dr', by: 'demo', t: now, session: session),
-    Place(id: 'hq', name: 'HQ Nightclub', kind: PlaceKind.club, lat: 39.362, lng: -74.413, address: 'Atlantic City, NJ', by: 'demo', t: now, session: session),
-    Place(id: 'point', name: 'The Point', kind: PlaceKind.bar, lat: 39.308, lng: -74.595, address: 'Ocean City, NJ', by: 'demo', t: now, session: session),
-  ];
-}
-
-List<Poll> samplePolls(String session) {
-  final now = DateTime.now().millisecondsSinceEpoch;
-  return [
-    Poll(id: 'rowan-out', q: 'Going out tonight?', options: const ['Obviously', 'Maybe', 'Staying in'], lat: 39.7102, lng: -75.1196, by: 'demo', t: now, session: session),
-    Poll(id: 'ac-best', q: 'Best bar tonight?', options: const ['The Point', 'HQ Nightclub', 'Somewhere else'], lat: 39.3643, lng: -74.4229, by: 'demo', t: now, session: session),
-  ];
-}
-
-Person _mkDemo(String id, String handle, String bio, String move, String session) {
-  final rnd = Random();
-  return Person(
-    id: id,
-    handle: handle,
-    bio: bio,
-    since: 2026,
-    points: 20 + rnd.nextInt(180),
-    friends: const [],
-    friendRequestsSent: const [],
-    friendRequestsReceived: const [],
-    muted: const [],
-    anon: false,
-    demo: true,
-    session: session,
-    move: move,
-    votes: const {},
-    seen: const [],
-    likes: const [],
-  );
-}
-
-List<Person> samplePeople(String session) => [
-      _mkDemo('p1', 'wildcard92', 'here for the pregame', 'sigchi', session),
-      _mkDemo('p2', 'shortkingjames', "rowan '27", 'downtown', session),
-      _mkDemo('p3', 'beachbum', 'AC this weekend', 'point', session),
-    ];
-
-List<ChatMessage> sampleMessages() {
-  final now = DateTime.now().millisecondsSinceEpoch;
-  return [
-    ChatMessage(id: 'm1', t: now - 1000 * 60 * 42, room: 'main', uid: 'p1', text: "who's actually going out tonight", anon: false),
-    ChatMessage(id: 'm2', t: now - 1000 * 60 * 35, room: 'main', uid: 'p2', text: 'sig chi is giving pregame energy rn', anon: false),
-    ChatMessage(id: 'm3', t: now - 1000 * 60 * 12, room: 'main', uid: 'p1', text: 'line is already out the door 💀', anon: false),
-  ];
-}
-
-List<Story> sampleStories(String session) {
-  final now = DateTime.now().millisecondsSinceEpoch;
-  return [
-    Story(id: 's1', t: now - 1000 * 60 * 50, uid: 'p1', text: 'pregame loading', place: 'sigchi', anon: false, session: session, views: const [], likes: const ['p2']),
-    Story(id: 's2', t: now - 1000 * 60 * 20, uid: 'p3', text: 'boardwalk before the bars', place: 'point', anon: false, session: session, views: const [], likes: const []),
-  ];
-}
 
 Person freshMe() => Person(
       id: 'me',

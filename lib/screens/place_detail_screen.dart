@@ -4,6 +4,7 @@ import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../data/models.dart';
 import '../widgets/ui_widgets.dart';
+import 'account_screen.dart';
 import 'place_story_viewer_screen.dart';
 
 /// The little text box explaining what the verified checkmark (or the
@@ -41,6 +42,11 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   }
 
   void _submit(AppStore store, ReportKind kind, {String? detail}) {
+    final blocked = store.reportBlockReason();
+    if (blocked != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
+      return;
+    }
     store.submitReport(widget.placeId, kind, detail: detail);
   }
 
@@ -144,7 +150,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   // preview of the latest photo/video posted here the
                   // moment someone posts a Story at this place.
                   Positioned.fill(
-                    child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
+                    child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, coverUrl: place.coverUrl, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
                   ),
                   if (venueStories.isNotEmpty)
                     Positioned(
@@ -234,7 +240,12 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                       ),
                     ),
                     ElevatedButton(
-                      onPressed: iConfirmedVenue ? null : () => store.confirmPlace(place.id),
+                      onPressed: iConfirmedVenue
+                          ? null
+                          : () => requireAccountThen(context, store, () {
+                                final error = store.confirmPlace(place.id);
+                                if (error != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+                              }),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: iConfirmedVenue ? tokens.raised : tokens.brand,
                         disabledBackgroundColor: tokens.raised,

@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
+import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'camera_capture_screen.dart';
 import 'friend_requests_screen.dart';
@@ -143,12 +144,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Stack(
                 alignment: Alignment.bottomRight,
                 children: [
-                  FunkyAvatar(
-                    seed: store.me.id,
-                    label: store.me.handle.isNotEmpty ? store.me.handle : '?',
-                    size: 88,
-                    photoPath: store.me.photoPath,
-                  ),
+                  // Tap the picture itself for a big preview — the little
+                  // pencil badge below is what changes it.
+                  PersonAvatar(person: store.me, size: 88, viewProfile: false),
                   Positioned(
                     right: -2,
                     bottom: -2,
@@ -319,24 +317,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 8),
                 ]),
-          const SectionHeader(title: 'Privacy'),
-          FunkyCard(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Anonymous mode', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 2),
-                      Text('Hides your name and profile on chat and Stories.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
-                    ],
-                  ),
-                ),
-                Switch(value: store.me.anon, onChanged: store.setAnon, activeTrackColor: tokens.brand),
-              ],
-            ),
-          ),
         ],
       ),
     );

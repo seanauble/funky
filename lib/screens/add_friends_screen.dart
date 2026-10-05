@@ -121,7 +121,7 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
             child: Row(
               children: [
-                FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath, photoUrl: p.photoUrl),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(

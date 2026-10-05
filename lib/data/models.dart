@@ -4,6 +4,8 @@
 /// are.
 library;
 
+import 'session.dart';
+
 class LatLng {
   final double lat;
   final double lng;
@@ -132,6 +134,9 @@ class Place {
   // place added without one (the plain colored-letter box is the fallback
   // under that).
   final String? coverPhotoPath;
+  // The same photo as a public URL on the backend — what everyone ELSE sees
+  // (coverPhotoPath is only a file on the device that added the place).
+  final String? coverUrl;
 
   const Place({
     required this.id,
@@ -144,6 +149,7 @@ class Place {
     required this.t,
     required this.session,
     this.coverPhotoPath,
+    this.coverUrl,
   });
 
   Map<String, dynamic> toJson() => {
@@ -157,6 +163,7 @@ class Place {
         't': t,
         'session': session,
         'coverPhotoPath': coverPhotoPath,
+        'coverUrl': coverUrl,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -170,6 +177,7 @@ class Place {
         t: json['t'] as int,
         session: json['session'] as String,
         coverPhotoPath: json['coverPhotoPath'] as String?,
+        coverUrl: json['coverUrl'] as String?,
       );
 }
 
@@ -220,7 +228,7 @@ class Poll {
 class ChatMessage {
   final String id;
   final int t;
-  final String room; // "main" (area chat) or a place id
+  final String room; // "main" (area chat) or a DM room (see dmRoomId)
   final String uid;
   final String text;
   final bool anon;
@@ -229,6 +237,22 @@ class ChatMessage {
   // shape as Story views/likes — the sender only ever sees counts, never
   // who reacted, except for their own reaction reflecting back as active.
   final Map<String, List<String>> reactions;
+  // Delivery state of a message YOU sent: 'sending' (still on its way),
+  // 'sent'/'delivered' (the server has it), 'seen' (they opened the
+  // thread), or 'failed'. Everything received from someone else is just
+  // 'delivered'.
+  final String status;
+  // A photo or video attached to a DM ('image' or 'video'), or null for a
+  // plain text message. mediaPath is a file on THIS device (what you just
+  // sent); mediaUrl is a temporary signed download URL for the other
+  // person's media — never persisted, always re-resolved fresh.
+  final String? mediaType;
+  final String? mediaPath;
+  final String? mediaUrl;
+  // Where the sender was when they sent a Live Chat message — what lets
+  // "everyone within 25 miles" actually mean that. Null for DMs.
+  final double? lat;
+  final double? lng;
 
   const ChatMessage({
     required this.id,
@@ -238,16 +262,36 @@ class ChatMessage {
     required this.text,
     required this.anon,
     this.reactions = const {},
+    this.status = 'delivered',
+    this.mediaType,
+    this.mediaPath,
+    this.mediaUrl,
+    this.lat,
+    this.lng,
   });
 
-  ChatMessage copyWith({Map<String, List<String>>? reactions}) => ChatMessage(
-        id: id,
+  bool get hasMedia => mediaType != null && (mediaPath != null || mediaUrl != null);
+
+  ChatMessage copyWith({
+    String? id,
+    Map<String, List<String>>? reactions,
+    String? status,
+    String? mediaUrl,
+  }) =>
+      ChatMessage(
+        id: id ?? this.id,
         t: t,
         room: room,
         uid: uid,
         text: text,
         anon: anon,
         reactions: reactions ?? this.reactions,
+        status: status ?? this.status,
+        mediaType: mediaType,
+        mediaPath: mediaPath,
+        mediaUrl: mediaUrl ?? this.mediaUrl,
+        lat: lat,
+        lng: lng,
       );
 
   Map<String, dynamic> toJson() => {
@@ -258,6 +302,11 @@ class ChatMessage {
         'text': text,
         'anon': anon,
         'reactions': reactions.map((emoji, uids) => MapEntry(emoji, uids)),
+        'status': status,
+        'mediaType': mediaType,
+        'mediaPath': mediaPath,
+        'lat': lat,
+        'lng': lng,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -270,6 +319,11 @@ class ChatMessage {
         reactions: ((json['reactions'] as Map?) ?? const {}).map(
           (emoji, uids) => MapEntry(emoji as String, (uids as List).map((e) => e as String).toList()),
         ),
+        status: json['status'] as String? ?? 'delivered',
+        mediaType: json['mediaType'] as String?,
+        mediaPath: json['mediaPath'] as String?,
+        lat: (json['lat'] as num?)?.toDouble(),
+        lng: (json['lng'] as num?)?.toDouble(),
       );
 }
 
@@ -402,6 +456,19 @@ const memoryRetentionDays = 7;
 
 /// Days left before [story] auto-deletes, clamped to 0 ("expiring today").
 /// Meaningless (and never shown) once savedToTimeline is true.
+/// How long ago something was posted, for the Story header: "just now",
+/// "26m ago", then whole hours — "1hr ago", "2hr ago" (never "75m ago") —
+/// and, past a full day, "1d ago".
+String timeAgoLabel(int timestampMs) {
+  final diff = DateTime.now().millisecondsSinceEpoch - timestampMs;
+  final minutes = diff <= 0 ? 0 : diff ~/ 60000;
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return '${minutes}m ago';
+  final hours = minutes ~/ 60;
+  if (hours < 24) return '${hours}hr ago';
+  return '${hours ~/ 24}d ago';
+}
+
 int memoryDaysLeft(Story story) {
   final elapsedMs = DateTime.now().millisecondsSinceEpoch - story.t;
   final elapsedDays = (elapsedMs / (1000 * 60 * 60 * 24)).floor();
@@ -473,6 +540,31 @@ class Person {
   final bool nameItalic;
   final bool nameUnderline;
   final bool nameCheckbox;
+  // A custom name color (ARGB int, same as Color.value) picked with the
+  // color selector in Customize your name — unlocked by points like every
+  // other name style (see canUseNameColor). Null means "no custom color",
+  // i.e. whatever default color that surface already uses.
+  final int? nameColor;
+
+  // The "going" streak: how many days in a row this person has voted for a
+  // place they're going to (see AppStore.setMove). moveStreakDay is the
+  // session key (YYYY-MM-DD, same format as sessionKey()) of the last day
+  // that counted — use effectiveMoveStreak() rather than reading
+  // moveStreak directly, since a missed day silently kills the streak
+  // without anything ever having to rewrite this field.
+  final int moveStreak;
+  final String? moveStreakDay;
+
+  // A remote profile photo (a public URL from Supabase Storage) for real
+  // accounts other than your own — photoPath above is only ever a file on
+  // THIS device. FunkyAvatar prefers photoPath, then this, then the initial.
+  final String? photoUrl;
+
+  // True for the one real FUNKY Admin account as seen by everyone else
+  // (profiles.is_admin on the backend) — what lets the gold admin badge
+  // show on their name on EVERY device, not just their own. Your own
+  // record uses AppStore.isAdmin instead. Never persisted.
+  final bool isAdminUser;
 
   const Person({
     required this.id,
@@ -501,6 +593,11 @@ class Person {
     this.nameItalic = false,
     this.nameUnderline = false,
     this.nameCheckbox = false,
+    this.nameColor,
+    this.moveStreak = 0,
+    this.moveStreakDay,
+    this.photoUrl,
+    this.isAdminUser = false,
   });
 
   Person copyWith({
@@ -525,6 +622,15 @@ class Person {
     bool? nameItalic,
     bool? nameUnderline,
     bool? nameCheckbox,
+    int? nameColor,
+    bool clearNameColor = false,
+    int? moveStreak,
+    String? moveStreakDay,
+    String? photoUrl,
+    bool clearMove = false,
+    List<String>? seen,
+    List<String>? likes,
+    List<String>? muted,
   }) =>
       Person(
         id: id,
@@ -535,14 +641,14 @@ class Person {
         friends: friends ?? this.friends,
         friendRequestsSent: friendRequestsSent ?? this.friendRequestsSent,
         friendRequestsReceived: friendRequestsReceived ?? this.friendRequestsReceived,
-        muted: muted,
+        muted: muted ?? this.muted,
         anon: anon ?? this.anon,
         demo: demo,
         session: session ?? this.session,
-        move: move ?? this.move,
+        move: clearMove ? null : (move ?? this.move),
         votes: votes ?? this.votes,
-        seen: seen,
-        likes: likes,
+        seen: seen ?? this.seen,
+        likes: likes ?? this.likes,
         activeNights: activeNights ?? this.activeNights,
         streak: streak ?? this.streak,
         placesVisited: placesVisited ?? this.placesVisited,
@@ -553,6 +659,11 @@ class Person {
         nameItalic: nameItalic ?? this.nameItalic,
         nameUnderline: nameUnderline ?? this.nameUnderline,
         nameCheckbox: nameCheckbox ?? this.nameCheckbox,
+        nameColor: clearNameColor ? null : (nameColor ?? this.nameColor),
+        moveStreak: moveStreak ?? this.moveStreak,
+        moveStreakDay: moveStreakDay ?? this.moveStreakDay,
+        photoUrl: photoUrl ?? this.photoUrl,
+        isAdminUser: isAdminUser,
       );
 
   Map<String, dynamic> toJson() => {
@@ -582,6 +693,10 @@ class Person {
         'nameItalic': nameItalic,
         'nameUnderline': nameUnderline,
         'nameCheckbox': nameCheckbox,
+        'nameColor': nameColor,
+        'moveStreak': moveStreak,
+        'moveStreakDay': moveStreakDay,
+        'photoUrl': photoUrl,
       };
 
   factory Person.fromJson(Map<String, dynamic> json) => Person(
@@ -611,6 +726,10 @@ class Person {
         nameItalic: json['nameItalic'] as bool? ?? false,
         nameUnderline: json['nameUnderline'] as bool? ?? false,
         nameCheckbox: json['nameCheckbox'] as bool? ?? false,
+        nameColor: json['nameColor'] as int?,
+        moveStreak: json['moveStreak'] as int? ?? 0,
+        moveStreakDay: json['moveStreakDay'] as String?,
+        photoUrl: json['photoUrl'] as String?,
       );
 }
 
@@ -677,3 +796,25 @@ bool canUseBoldName(int points) => points >= 500;
 bool canUseItalicName(int points) => points >= 1000;
 bool canUseUnderlineName(int points) => points >= 2000;
 bool canUseCheckName(int points) => points >= 5000;
+// A custom name color is the cheapest cosmetic to unlock — it's the one
+// everybody wants first — but still points-gated like the rest.
+const int nameColorUnlockPoints = 250;
+bool canUseNameColor(int points) => points >= nameColorUnlockPoints;
+
+/// A person's "going" streak as it should be DISPLAYED right now: the
+/// stored count while it's still alive (they voted for a place today's
+/// session or yesterday's), and 0 once a whole day has gone by without a
+/// vote — that's how "miss a day and you lose it" works without anything
+/// having to wake up and reset the number at the 2 PM rollover.
+int effectiveMoveStreak(Person p) {
+  final day = p.moveStreakDay;
+  if (day == null || p.moveStreak <= 0) return 0;
+  try {
+    final last = DateTime.parse(day);
+    final today = DateTime.parse(sessionKey());
+    final gap = today.difference(last).inDays;
+    return gap <= 1 ? p.moveStreak : 0;
+  } catch (_) {
+    return 0;
+  }
+}

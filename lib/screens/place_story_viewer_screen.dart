@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../services/screenshot_detector.dart';
+import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 
 /// Full-screen Story playback for everything posted AT one venue tonight —
@@ -209,7 +210,10 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               right: 14,
               child: Row(
                 children: [
-                  FunkyAvatar(seed: story.uid, label: author?.handle.isNotEmpty == true ? author!.handle : '?', size: 32, photoPath: author?.photoPath),
+                  if (story.anon || author == null)
+                    const GhostAvatar(size: 32)
+                  else
+                    PersonAvatar(person: author, size: 32),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -220,7 +224,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                         ),
                         Text(
-                          widget.placeName,
+                          '${widget.placeName} · ${timeAgoLabel(story.t)}',
                           style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600),
                         ),
                       ],

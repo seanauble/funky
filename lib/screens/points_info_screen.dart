@@ -160,6 +160,10 @@ class PointsInfoScreen extends StatelessWidget {
                   onChanged: (v) => store.setNameStyle(checkbox: v),
                   tokens: tokens,
                 ),
+                const Divider(height: 26),
+                Text('Name color', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                const SizedBox(height: 6),
+                _NameColorPicker(tokens: tokens),
                 const SizedBox(height: 14),
                 Text('Preview', style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
@@ -291,6 +295,138 @@ class _NameStyleRow extends StatelessWidget {
             Icon(Icons.lock_outline, size: 18, color: tokens.mute),
         ],
       ),
+    );
+  }
+}
+
+/// The name color selector — a row of preset swatches plus hue/saturation/
+/// brightness sliders for any color you like. Locked until
+/// [nameColorUnlockPoints], same as every other name style; once unlocked
+/// the color you land on is saved when you let go of a slider (not on
+/// every pixel of the drag), and shows up on your name everywhere.
+class _NameColorPicker extends StatefulWidget {
+  final ThemeTokens tokens;
+  const _NameColorPicker({required this.tokens});
+
+  @override
+  State<_NameColorPicker> createState() => _NameColorPickerState();
+}
+
+class _NameColorPickerState extends State<_NameColorPicker> {
+  HSVColor? _hsv;
+
+  static const _presets = [
+    Color(0xFFFF3B30),
+    Color(0xFFFF9500),
+    Color(0xFFFFCC00),
+    Color(0xFF34C759),
+    Color(0xFF00C7BE),
+    Color(0xFF32ADE6),
+    Color(0xFF5E5CE6),
+    Color(0xFFAF52DE),
+    Color(0xFFFF2D92),
+    Color(0xFFFFFFFF),
+    Color(0xFF8E8E93),
+    Color(0xFF000000),
+  ];
+
+  void _commit(AppStore store) {
+    final hsv = _hsv;
+    if (hsv == null) return;
+    store.setNameColor(hsv.toColor().toARGB32());
+  }
+
+  Widget _slider(String label, double value, double min, double max, ValueChanged<double> onChanged, AppStore store) {
+    final tokens = widget.tokens;
+    return Row(
+      children: [
+        SizedBox(width: 30, child: Text(label, style: TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w700))),
+        Expanded(
+          child: Slider(
+            value: value.clamp(min, max).toDouble(),
+            min: min,
+            max: max,
+            activeColor: tokens.brand,
+            onChanged: onChanged,
+            onChangeEnd: (_) => _commit(store),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = widget.tokens;
+    final store = context.watch<AppStore>();
+    final unlocked = canUseNameColor(store.me.points);
+    if (!unlocked) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Pick any color for your name — needs $nameColorUnlockPoints pts',
+                style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w500),
+              ),
+            ),
+            Icon(Icons.lock_outline, size: 18, color: tokens.mute),
+          ],
+        ),
+      );
+    }
+    final current = store.me.nameColor;
+    final hsv = _hsv ?? HSVColor.fromColor(Color(current ?? 0xFFFF7A1A));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            GestureDetector(
+              onTap: () {
+                setState(() => _hsv = null);
+                store.setNameColor(null);
+              },
+              child: Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: tokens.raised,
+                  border: Border.all(color: current == null ? tokens.brand : tokens.line, width: current == null ? 2.5 : 1),
+                ),
+                child: Icon(Icons.block, size: 16, color: tokens.mute),
+              ),
+            ),
+            ..._presets.map((c) {
+              final selected = current == c.toARGB32();
+              return GestureDetector(
+                onTap: () {
+                  setState(() => _hsv = HSVColor.fromColor(c));
+                  store.setNameColor(c.toARGB32());
+                },
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: c,
+                    border: Border.all(color: selected ? tokens.brand : tokens.line, width: selected ? 3 : 1),
+                  ),
+                ),
+              );
+            }),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _slider('Hue', hsv.hue, 0, 359.9, (v) => setState(() => _hsv = hsv.withHue(v)), store),
+        _slider('Sat', hsv.saturation, 0, 1, (v) => setState(() => _hsv = hsv.withSaturation(v)), store),
+        _slider('Lite', hsv.value, 0, 1, (v) => setState(() => _hsv = hsv.withValue(v)), store),
+      ],
     );
   }
 }

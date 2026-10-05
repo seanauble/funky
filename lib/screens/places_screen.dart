@@ -119,6 +119,11 @@ class PlacesScreen extends StatelessWidget {
                         ...ranked.map((p) {
                           const size = 30.0;
                           final cover = p.coverPhotoPath;
+                          final coverUrl = p.coverUrl;
+                          Widget initial() => Text(
+                                p.name.substring(0, 1),
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
+                              );
                           return Marker(
                             point: ll.LatLng(p.place.lat, p.place.lng),
                             width: size,
@@ -143,16 +148,20 @@ class PlacesScreen extends StatelessWidget {
                                           width: size,
                                           height: size,
                                           fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) => Text(
-                                            p.name.substring(0, 1),
-                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
-                                          ),
+                                          errorBuilder: (_, __, ___) => initial(),
                                         ),
                                       )
-                                    : Text(
-                                        p.name.substring(0, 1),
-                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
-                                      ),
+                                    : (coverUrl != null
+                                        ? ClipOval(
+                                            child: Image.network(
+                                              coverUrl,
+                                              width: size,
+                                              height: size,
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (_, __, ___) => initial(),
+                                            ),
+                                          )
+                                        : initial()),
                               ),
                             ),
                           );
@@ -215,7 +224,7 @@ class PlacesScreen extends StatelessWidget {
                               child: SizedBox(
                                 width: 44,
                                 height: 44,
-                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
+                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, coverUrl: p.coverUrl, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
                               ),
                             ),
                             const SizedBox(width: 12),

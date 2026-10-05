@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:easy_video_editor/easy_video_editor.dart';
@@ -399,24 +400,62 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   }
 
   /// Video's own zoom gesture — slide up/down from the shutter button while
-  /// it's held, same feel as Snapchat/TikTok, instead of pinching. Dragging
-  /// the full finger's travel (~1800px — more than two full screens' worth
-  /// of drag on any phone) up sweeps from min to max zoom; down sweeps
-  /// back. _baseZoom is snapshotted in _startRecording, same pattern as the
-  /// pinch gesture's _onZoomStart. This was 220 originally (way too
-  /// sensitive — well under half a screen's drag hit max zoom), then 900
-  /// (still too fast), now doubled again to 1800.
-  static const double _dragZoomRange = 1800;
+  /// it's held, same feel as Snapchat/TikTok, instead of pinching.
+  ///
+  /// Why this used to feel "outrageously fast" at the start: the old mapping
+  /// was LINEAR in the zoom factor, but zoom is perceived as a ratio —
+  /// going 1x→2x doubles the image while 7x→8x barely changes it. So the
+  /// first few pixels of drag (1x→1.5x…) looked wildly fast and the rest
+  /// looked slow, and making the drag range bigger just made the whole
+  /// thing mushy without fixing the first bit. Now it's EXPONENTIAL: every
+  /// bit of drag changes the zoom by the same percentage, so the speed feels
+  /// constant from the first pixel to the last. On top of that:
+  ///  - the sweep stops at [_maxDragZoom] (digital zoom past that is
+  ///    just a blurry mess anyway; pinching on the preview still reaches
+  ///    the full hardware range), and
+  ///  - the drag only sets a TARGET; a small timer eases the real zoom
+  ///    toward it every ~33ms, so a jumpy finger can't make the camera jerk.
+  static const double _dragZoomRange = 1100; // px of drag to sweep min → _maxDragZoom
+  static const double _maxDragZoom = 8;
+  double _targetZoom = 1;
+  double _dragAnchorDy = 0; // drag offset at the moment the baseline was last reset
+  double _lastDragDy = 0;
+  Timer? _zoomEase;
+
+  void _resetZoomDragBaseline() {
+    _baseZoom = _currentZoom;
+    _targetZoom = _currentZoom;
+    _dragAnchorDy = _lastDragDy;
+  }
 
   void _onRecordDragUpdate(LongPressMoveUpdateDetails details) {
     if (!_isRecording) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
-    final dy = details.offsetFromOrigin.dy; // negative = finger moved up
-    final zoom = (_baseZoom - (dy / _dragZoomRange) * (_maxZoom - _minZoom)).clamp(_minZoom, _maxZoom);
-    if (zoom == _currentZoom) return;
-    _currentZoom = zoom;
-    controller.setZoomLevel(zoom);
+    _lastDragDy = details.offsetFromOrigin.dy; // negative = finger moved up
+    final up = -(_lastDragDy - _dragAnchorDy) / _dragZoomRange; // +1 = a full sweep up
+    final lo = _minZoom;
+    var hi = _maxDragZoom < _maxZoom ? _maxDragZoom : _maxZoom;
+    if (_baseZoom > hi) hi = _baseZoom; // already pinched past the cap — don't snap back
+    if (hi <= lo) return;
+    final double target = lo > 0.01
+        ? _baseZoom * math.pow(hi / lo, up).toDouble()
+        : _baseZoom + up * (hi - lo);
+    _targetZoom = target.clamp(lo, hi).toDouble();
+    _zoomEase ??= Timer.periodic(const Duration(milliseconds: 33), (_) {
+      final c = _controller;
+      if (c == null || !_isRecording) {
+        _zoomEase?.cancel();
+        _zoomEase = null;
+        return;
+      }
+      final diff = _targetZoom - _currentZoom;
+      if (diff.abs() < 0.004) return;
+      // Ease 22% of the remaining distance per tick — quick enough to feel
+      // attached to your finger, slow enough to never jump.
+      _currentZoom = (_currentZoom + diff * 0.22).clamp(_minZoom, _maxZoom).toDouble();
+      c.setZoomLevel(_currentZoom).catchError((_) {});
+    });
   }
 
   @override
@@ -436,6 +475,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _recordTicker?.cancel();
+    _zoomEase?.cancel();
     _filterLabelTimer?.cancel();
     _partyController.dispose();
     _snapController.dispose();
@@ -499,7 +539,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     // The lens (and its zoom range) just changed — if you're still holding
     // and dragging through the flip, the drag-to-zoom baseline needs to
     // follow the fresh lens's own zoom, not whatever the old one was at.
-    _baseZoom = _currentZoom;
+    _resetZoomDragBaseline();
     if (mounted) setState(() => _isRecording = true);
   }
 
@@ -511,7 +551,9 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     // Baseline for the shutter-button drag-to-zoom gesture (see
     // _onRecordDragUpdate) — whatever zoom the live preview is already
     // sitting at when you start holding is where the drag starts from.
-    _baseZoom = _currentZoom;
+    _lastDragDy = 0;
+    _dragAnchorDy = 0;
+    _resetZoomDragBaseline();
     // Flip the button red and start the progress ring right away, instead
     // of waiting on controller.startVideoRecording() below to finish first
     // — that's a real round trip to the camera hardware and can take a
@@ -755,6 +797,13 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   }
 
   void _post(AppStore store) {
+    // Daily cap / cooldown (see AppStore.storyBlockReason) — checked up
+    // front so you see WHY it didn't post instead of it silently vanishing.
+    final blocked = store.storyBlockReason();
+    if (blocked != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
+      return;
+    }
     // Posting (including any real-backend upload) keeps running after this
     // screen closes — fire-and-forget rather than awaiting here, so the
     // camera flow still feels instant even on a slow upload.
@@ -1325,6 +1374,11 @@ class _TextStoryPageState extends State<_TextStoryPage> {
             child: ElevatedButton(
               onPressed: canPost
                   ? () => requireAccountThen(context, store, () {
+                        final blocked = store.storyBlockReason();
+                        if (blocked != null) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
+                          return;
+                        }
                         unawaited(store.addStory(text: _textController.text.trim(), place: _place, anon: _anon));
                         Navigator.of(context).pop();
                       })
@@ -1437,12 +1491,13 @@ class _PollFormPageState extends State<_PollFormPage> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: canPost
-                  ? () => requireAccountThen(context, store, () {
+                  ? () => requireAccountThen(context, store, () async {
                         final options = _optionControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList();
-                        final poll = store.addPoll(_questionController.text.trim(), options);
+                        final poll = await store.addPoll(_questionController.text.trim(), options);
+                        if (!context.mounted) return;
                         if (poll == null) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("You can only add one poll per day — check back after the 2 PM reset.")),
+                            SnackBar(content: Text(store.lastPollError ?? "You can only add one poll per day — check back after the 2 PM reset.")),
                           );
                           return;
                         }
@@ -1709,22 +1764,25 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: canPost
-                  ? () => requireAccountThen(context, store, () {
-                        final place = store.addPlace(
+                  ? () => requireAccountThen(context, store, () async {
+                        // Places are shared with everyone, so this waits on
+                        // the server for the new place's real id.
+                        final place = await store.addPlace(
                           _nameController.text.trim(),
                           _kind,
                           _addressController.text.trim().isEmpty ? 'Address not given' : _addressController.text.trim(),
                           coverPhotoPath: _coverPhoto?.path,
                         );
+                        if (!context.mounted) return;
                         if (place == null) {
-                          // canPost already blocks both of these in the
-                          // common case — this only fires if something
-                          // changed out from under you between typing and
-                          // tapping (e.g. someone else added a similarly
-                          // named place in the last few seconds).
-                          final message = store.canAddPlaceToday
-                              ? "There's already a place with a similar name near you."
-                              : "You can only add one place per day — check back after the 2 PM reset.";
+                          // canPost already blocks the duplicate/daily-limit
+                          // cases in the common case — this fires if
+                          // something changed between typing and tapping, or
+                          // the server couldn't be reached.
+                          final message = store.lastPlaceError ??
+                              (store.canAddPlaceToday
+                                  ? "There's already a place with a similar name near you."
+                                  : "You can only add one place per day — check back after the 2 PM reset.");
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
                           return;
                         }

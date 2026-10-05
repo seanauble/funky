@@ -1,11 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../services/screenshot_detector.dart';
+import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'dm_thread_screen.dart';
 import 'person_profile_screen.dart';
@@ -69,6 +72,75 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     ScreenshotDetector.stop();
     _videoController?.dispose();
     super.dispose();
+  }
+
+  bool _savingMedia = false;
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Downloads a remote (signed-URL) photo/video to a temp file so it can be
+  /// handed to the camera-roll saver — a Memory that was posted from another
+  /// of your devices has no local file here, only the URL.
+  Future<String> _downloadToTemp(String url, String ext) async {
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+      if (response.statusCode != 200) throw HttpException('HTTP ${response.statusCode}');
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/funky_save_${DateTime.now().millisecondsSinceEpoch}.$ext');
+      await response.pipe(file.openWrite());
+      return file.path;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Saves a Story/Memory's photo or video to the phone's own Camera Roll —
+  /// the download button in the viewer header (and the swipe-up sheet on
+  /// your own Story). Handles both a local file and a remote signed URL.
+  Future<void> _saveStoryToCameraRoll(Story story) async {
+    if (_savingMedia) return;
+    final hasVideo = story.videoPath != null || story.videoUrl != null;
+    final hasImage = story.imagePath != null || story.imageUrl != null;
+    if (!hasVideo && !hasImage) {
+      _toast('This one is just text — there is no photo or video to save.');
+      return;
+    }
+    setState(() => _savingMedia = true);
+    try {
+      var hasAccess = await Gal.hasAccess();
+      if (!hasAccess) hasAccess = await Gal.requestAccess();
+      if (!hasAccess) {
+        _toast("Couldn't save — FUNKY needs photo library access.");
+        return;
+      }
+      final String filePath;
+      final local = hasVideo ? story.videoPath : story.imagePath;
+      if (local != null && File(local).existsSync()) {
+        filePath = local;
+      } else {
+        final url = hasVideo ? story.videoUrl : story.imageUrl;
+        if (url == null) {
+          _toast("Couldn't save — that file is no longer on this device.");
+          return;
+        }
+        filePath = await _downloadToTemp(url, hasVideo ? 'mp4' : 'jpg');
+      }
+      if (hasVideo) {
+        await Gal.putVideo(filePath);
+      } else {
+        await Gal.putImage(filePath);
+      }
+      _toast('Saved to your camera roll.');
+    } catch (e) {
+      _toast("Couldn't save: $e");
+    } finally {
+      if (mounted) setState(() => _savingMedia = false);
+    }
   }
 
   void _ensureVideoFor(Story story, VoidCallback advance) {
@@ -235,6 +307,23 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                   ),
                 ],
                 const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      _saveStoryToCameraRoll(story);
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      side: const BorderSide(color: Colors.white54),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.download_outlined, color: Colors.white70),
+                    label: const Text('Save to camera roll', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 // Memories auto-delete memoryRetentionDays after posting —
                 // this is the other place (besides the bookmark on the
                 // Memory card itself) to pin one to the Timeline forever.
@@ -463,9 +552,15 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                     child: story.anon
                         ? Row(
                             children: [
-                              FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
+                              const GhostAvatar(size: 32),
                               const SizedBox(width: 10),
-                              const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                                  Text(timeAgoLabel(story.t), style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
                             ],
                           )
                         : GestureDetector(
@@ -475,19 +570,35 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                             )),
                             child: Row(
                               children: [
-                                FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 32, photoPath: person.photoPath),
+                                PersonAvatar(person: person, size: 32),
                                 const SizedBox(width: 10),
                                 Expanded(
-                                  child: StyledName(
-                                    person: person,
-                                    text: '@${person.handle}',
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      StyledName(
+                                        person: person,
+                                        text: '@${person.handle}',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+                                      ),
+                                      Text(timeAgoLabel(story.t), style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
+                                    ],
                                   ),
                                 ),
                               ],
                             ),
                           ),
                   ),
+                  // Download — save this photo/video to your camera roll.
+                  // Only your own Stories/Memories get it.
+                  if (story.uid == 'me')
+                    IconButton(
+                      onPressed: _savingMedia ? null : () => _saveStoryToCameraRoll(story),
+                      tooltip: 'Save to camera roll',
+                      icon: _savingMedia
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.download_outlined, color: Colors.white),
+                    ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.close, color: Colors.white),

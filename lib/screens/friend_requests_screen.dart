@@ -48,7 +48,7 @@ class FriendRequestsScreen extends StatelessWidget {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
-                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath, photoUrl: p.photoUrl),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -75,7 +75,7 @@ class FriendRequestsScreen extends StatelessWidget {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
-                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath, photoUrl: p.photoUrl),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -105,7 +105,7 @@ class FriendRequestsScreen extends StatelessWidget {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: p.id))),
-                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath),
+                        child: FunkyAvatar(seed: p.id, label: p.handle.isNotEmpty ? p.handle : '?', size: 40, photoPath: p.photoPath, photoUrl: p.photoUrl),
                       ),
                       const SizedBox(width: 12),
                       Expanded(

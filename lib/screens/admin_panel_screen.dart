@@ -92,10 +92,17 @@ class AdminPanelScreen extends StatelessWidget {
               ),
             ),
           ),
-          if (store.bannedUserIds.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'To give someone points, open their profile — the +100 / +500 / +1000 buttons are right under Add Friend.',
+              style: TextStyle(color: tokens.mute, fontSize: 12.5),
+            ),
+          ),
+          if (store.allBannedIds.isEmpty)
             Padding(padding: const EdgeInsets.only(top: 8), child: EmptyNote(text: 'No one is banned right now.'))
           else
-            ...store.bannedUserIds.map((id) {
+            ...store.allBannedIds.map((id) {
               final handle = store.personById(id)?.handle ?? id;
               return FunkyCard(
                 margin: const EdgeInsets.only(top: 10),

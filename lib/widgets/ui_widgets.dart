@@ -124,7 +124,10 @@ class FunkyAvatar extends StatelessWidget {
   // common case for everyone but 'me' right now, and for 'me' before ever
   // setting one) falls back to the initial.
   final String? photoPath;
-  const FunkyAvatar({super.key, required this.seed, required this.label, this.size = 40, this.photoPath});
+  // A remote photo URL (another real account's profile picture, from
+  // Supabase Storage) — used only when there's no local photoPath.
+  final String? photoUrl;
+  const FunkyAvatar({super.key, required this.seed, required this.label, this.size = 40, this.photoPath, this.photoUrl});
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +144,19 @@ class FunkyAvatar extends StatelessWidget {
           // Falls back to the initial circle if the file's gone missing
           // (e.g. the OS cleared app storage) instead of a broken-image icon.
           errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+        ),
+      );
+    }
+    final url = photoUrl;
+    if (url != null && url.isNotEmpty) {
+      return ClipOval(
+        child: Image.network(
+          url,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+          loadingBuilder: (context, child, progress) => progress == null ? child : _initialCircle(color, letter),
         ),
       );
     }
@@ -182,7 +198,14 @@ class StyledName extends StatelessWidget {
     if (person.nameUnderline && canUseUnderlineName(person.points)) {
       effective = effective.copyWith(decoration: TextDecoration.underline);
     }
+    if (person.nameColor != null && canUseNameColor(person.points)) {
+      effective = effective.copyWith(color: Color(person.nameColor!));
+    }
     final showCheck = person.nameCheckbox && canUseCheckName(person.points);
+    // The "going" streak — 🔥 plus the number of days in a row they've
+    // voted for a place they're going to. Hidden at 0 (never started, or
+    // a missed day killed it — see effectiveMoveStreak).
+    final streak = effectiveMoveStreak(person);
     // The one hardcoded FUNKY Admin account (AppStore.isAdmin) gets its own
     // gold verified badge next to its name everywhere this renders — your
     // own profile, your own chat/area messages, your own Stories. Distinct
@@ -192,8 +215,8 @@ class StyledName extends StatelessWidget {
     // there's no backend "is this OTHER account the admin" check that
     // would let this show correctly on anyone else's device looking at
     // this same profile.
-    final isAdmin = person.id == 'me' && context.watch<AppStore>().isAdmin;
-    if (!showCheck && !isAdmin) return Text(text, style: effective);
+    final isAdmin = person.isAdminUser || (person.id == 'me' && context.watch<AppStore>().isAdmin);
+    if (!showCheck && !isAdmin && streak <= 0) return Text(text, style: effective);
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -210,6 +233,13 @@ class StyledName extends StatelessWidget {
             child: Icon(Icons.verified, size: (effective.fontSize ?? 14) * 0.9, color: tokens.gold),
           ),
         ],
+        if (streak > 0) ...[
+          const SizedBox(width: 4),
+          Tooltip(
+            message: '$streak day going streak',
+            child: Text('🔥$streak', style: TextStyle(fontSize: (effective.fontSize ?? 14) * 0.85, fontWeight: FontWeight.w800)),
+          ),
+        ],
       ],
     );
   }
@@ -224,9 +254,12 @@ class StyledName extends StatelessWidget {
 class PlaceMediaThumbnail extends StatefulWidget {
   final Story? story;
   final String? coverPhotoPath;
+  // The shared (backend) copy of the cover photo — used when this device
+  // doesn't have the original file, i.e. someone else added the place.
+  final String? coverUrl;
   final String fallbackLabel;
   final double fontSize;
-  const PlaceMediaThumbnail({super.key, required this.story, this.coverPhotoPath, required this.fallbackLabel, this.fontSize = 22});
+  const PlaceMediaThumbnail({super.key, required this.story, this.coverPhotoPath, this.coverUrl, required this.fallbackLabel, this.fontSize = 22});
 
   @override
   State<PlaceMediaThumbnail> createState() => _PlaceMediaThumbnailState();
@@ -318,15 +351,24 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
       );
     }
     final cover = widget.coverPhotoPath;
+    final coverUrl = widget.coverUrl;
+    Widget fromNetwork() => Image.network(
+          coverUrl!,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          errorBuilder: (_, __, ___) => _fallback(tokens),
+        );
     if (cover != null) {
       return Image.file(
         File(cover),
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        errorBuilder: (_, __, ___) => _fallback(tokens),
+        errorBuilder: (_, __, ___) => coverUrl != null ? fromNetwork() : _fallback(tokens),
       );
     }
+    if (coverUrl != null) return fromNetwork();
     return _fallback(tokens);
   }
 

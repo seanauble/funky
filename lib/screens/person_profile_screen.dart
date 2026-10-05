@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/models.dart';
+import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'dm_thread_screen.dart';
 
@@ -31,6 +33,16 @@ Future<void> _confirmBan(BuildContext context, AppStore store, String personId, 
     ),
   );
   if (confirmed == true) store.banUser(personId);
+}
+
+/// Admin-only: gives (or takes away) points and tells the admin how it went.
+Future<void> _giveAdminPoints(BuildContext context, AppStore store, String personId, String handle, int amount) async {
+  final error = await store.adminGivePoints(personId, amount);
+  if (!context.mounted) return;
+  final sign = amount > 0 ? '+' : '';
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(error ?? 'Gave @$handle $sign$amount points.'), duration: const Duration(seconds: 1)),
+  );
 }
 
 /// The public profile of someone else — reached by tapping their handle in
@@ -73,13 +85,15 @@ class PersonProfileScreen extends StatelessWidget {
           Center(
             child: Column(
               children: [
-                FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 84, photoPath: person.photoPath),
+                PersonAvatar(person: person, size: 84, viewProfile: false),
                 const SizedBox(height: 10),
                 FunkyHandle(handle: person.handle, person: person),
                 if (person.bio.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute)),
                 ],
+                const SizedBox(height: 4),
+                Text('${person.points} pts · Lv ${levelFor(person.points)}', style: TextStyle(color: tokens.mute, fontSize: 12)),
               ],
             ),
           ),
@@ -116,6 +130,28 @@ class PersonProfileScreen extends StatelessWidget {
           // request with them and hides their Stories/chat messages/DMs
           // everywhere on this device (see AppStore.banUser).
           if (store.isAdmin && personId != 'me') ...[
+            const SizedBox(height: 10),
+            // Give points — as many times as you like; each tap is applied
+            // on the server and the person's app picks it up live.
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                for (final amount in const [100, 500, 1000, -500])
+                  OutlinedButton(
+                    onPressed: () => _giveAdminPoints(context, store, personId, person.handle, amount),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: tokens.gold),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: Text(
+                      amount > 0 ? '+$amount pts' : '$amount pts',
+                      style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,

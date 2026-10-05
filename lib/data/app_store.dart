@@ -14,6 +14,12 @@ const _storageKey = 'funky.store.v1';
 
 final _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
 
+// Real accounts always have a Supabase uuid for an id; the old demo people
+// ('p1', 'p2', 'p3', …) never did. Used by the one-time go-live cleanup in
+// load() to strip leftover demo ids out of a device's saved friends list.
+final _uuidPattern = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+bool _isRealPersonId(String id) => _uuidPattern.hasMatch(id);
+
 enum LocationStatus { unknown, requesting, granted, denied }
 
 class RankedPlace {
@@ -40,6 +46,7 @@ class RankedPlace {
   PlaceKind get kind => place.kind;
   String get address => place.address;
   String? get coverPhotoPath => place.coverPhotoPath;
+  String? get coverUrl => place.coverUrl;
 }
 
 /// The canonical chat "room" key for a DM thread between two people — the
@@ -123,16 +130,26 @@ class AppStore extends ChangeNotifier {
   // shouldn't quietly undo itself at the 2 PM reset.
   Set<String> bannedUserIds = {};
 
-  bool isBanned(String personId) => bannedUserIds.contains(personId);
+  bool isBanned(String personId) => bannedUserIds.contains(personId) || _remoteBannedIds.contains(personId);
 
-  // Whether the one-time "seed a test friend" step (see load()) has
-  // already run on this device. Starts true because the constructor
-  // above already seeds 'p1' as a friend for a brand-new install — this
-  // only ever needs to do real work for an account that existed before
-  // this seed was added, which is why load() overwrites it with the
-  // persisted value (defaulting to false for any such older account) the
-  // moment there's something stored to read.
-  bool _testFriendSeeded = true;
+  // Banned on the real backend (profiles.banned) — everyone's app learns
+  // about it from the profile rows, so a ban actually takes effect for
+  // everybody, not just on the admin's phone.
+  final Set<String> _remoteBannedIds = {};
+
+  // True when YOUR OWN account has been banned by the admin — posting,
+  // messaging, adding places, etc. are all blocked (the server also
+  // refuses them; this just fails fast with a clear message).
+  bool selfBanned = false;
+  static const String _bannedMessage = 'Your account has been suspended.';
+
+  // Whether the one-time go-live cleanup (see load()) has already run on
+  // this device — wipes everything that came from the old demo data
+  // (sample people/places/polls/chat, test places and chats, fake
+  // confirmations, the seeded p1/p2 "friends") exactly once, then never
+  // again. False for any install from before go-live, which is exactly the
+  // install that needs it; a brand-new install has nothing to clean.
+  bool _goLiveCleaned = false;
 
   /// Admin-only — removes [personId] from the social graph on this device:
   /// unfriends them both ways, clears any pending request between you, and
@@ -162,6 +179,11 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    if (_isRealPersonId(personId)) {
+      _remoteBannedIds.add(personId);
+      _fireAndForgetRpc('admin_set_banned', {'target': personId, 'flag': true});
+      _fireAndForgetFriendshipRemove(personId);
+    }
   }
 
   /// Admin-only — lifts a ban. Doesn't restore the friendship that banning
@@ -170,8 +192,45 @@ class AppStore extends ChangeNotifier {
     if (!isAdmin) return;
     final next = Set<String>.from(bannedUserIds)..remove(personId);
     bannedUserIds = next;
+    _remoteBannedIds.remove(personId);
     notifyListeners();
     _persist();
+    if (_isRealPersonId(personId)) {
+      _fireAndForgetRpc('admin_set_banned', {'target': personId, 'flag': false});
+    }
+  }
+
+  /// Everyone currently banned, from either source (this device's local
+  /// set or the backend), for the admin panel's list.
+  Set<String> get allBannedIds => {...bannedUserIds, ..._remoteBannedIds};
+
+  /// Admin-only — gives [personId] [amount] FUNKY Points (negative takes
+  /// some away). Can be used as many times as you like. For someone else
+  /// it goes through the server (their app picks it up live); for yourself
+  /// it just adds to your own total. Returns null on success or a message.
+  Future<String?> adminGivePoints(String personId, int amount) async {
+    if (!isAdmin) return 'Admins only.';
+    if (amount == 0) return null;
+    if (personId == 'me') {
+      final next = me.points + amount;
+      me = me.copyWith(points: next < 0 ? 0 : next);
+      notifyListeners();
+      _persist();
+      return null;
+    }
+    if (!_isRealPersonId(personId) || !signedIn) return 'That account is not synced yet.';
+    try {
+      await Supabase.instance.client.rpc('admin_give_points', params: {'target': personId, 'amount': amount});
+      final p = people[personId];
+      if (p != null) {
+        final next = p.points + amount;
+        people = {...people, personId: p.copyWith(points: next < 0 ? 0 : next)};
+        notifyListeners();
+      }
+      return null;
+    } catch (_) {
+      return "Couldn't give points — make sure the Phase 2 SQL was run in Supabase.";
+    }
   }
 
   /// Admin-only — permanently removes a place from tonight's list, along
@@ -188,6 +247,9 @@ class AppStore extends ChangeNotifier {
     adminVerifiedPlaceIds = Set<String>.from(adminVerifiedPlaceIds)..remove(placeId);
     notifyListeners();
     _persist();
+    if (_remotePlaceIds.remove(placeId)) {
+      _fireAndForgetRemote(() => Supabase.instance.client.from('places').delete().eq('id', placeId));
+    }
   }
 
   /// Admin-only — permanently deletes one chat message, area-chat or a DM.
@@ -197,6 +259,9 @@ class AppStore extends ChangeNotifier {
     messages = messages.where((m) => m.id != messageId).toList();
     notifyListeners();
     _persist();
+    if (_remoteChatIds.remove(messageId)) {
+      _fireAndForgetRemote(() => Supabase.instance.client.from('chat_messages').delete().eq('id', messageId));
+    }
   }
 
   /// Admin-only — permanently deletes a poll (and scrubs its id out of
@@ -239,6 +304,11 @@ class AppStore extends ChangeNotifier {
     adminVerifiedPlaceIds = next;
     notifyListeners();
     _persist();
+    if (_remotePlaceIds.contains(placeId)) {
+      _fireAndForgetRemote(
+        () => Supabase.instance.client.from('places').update({'admin_verified': verified}).eq('id', placeId),
+      );
+    }
   }
 
   bool isPlaceVerified(String placeId) =>
@@ -263,11 +333,17 @@ class AppStore extends ChangeNotifier {
   /// Vouches that [placeId] is a real, currently-active venue. Same
   /// one-confirm-per-account rule as report confirmations.
   String? confirmPlace(String placeId) {
+    if (selfBanned) return _bannedMessage;
     final current = placeConfirmations[placeId] ?? const [];
     if (current.contains('me')) return null;
+    if (_tooSoon('confirmPlace', 800)) return null;
     placeConfirmations = {...placeConfirmations, placeId: [...current, 'me']};
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _remotePlaceIds.contains(placeId)) {
+      _fireAndForgetInsert('place_confirmations', {'place_id': placeId, 'user_id': uid});
+    }
     return null;
   }
 
@@ -371,6 +447,21 @@ class AppStore extends ChangeNotifier {
     _persist();
   }
 
+  /// Sets (or, with null, clears) your custom name color — [argb] is a
+  /// Color.toARGB32() value. Points-gated like every other name style
+  /// (see canUseNameColor); a color picked before that unlock is ignored.
+  void setNameColor(int? argb) {
+    if (argb == null) {
+      me = me.copyWith(clearNameColor: true);
+    } else if (canUseNameColor(me.points)) {
+      me = me.copyWith(nameColor: argb);
+    } else {
+      return;
+    }
+    notifyListeners();
+    _persist();
+  }
+
   /// Earned by actually contributing and getting confirmed — see each
   /// threshold for exactly what it takes. A user can earn all of these;
   /// picking 1-3 to display is a future profile-customization step.
@@ -419,69 +510,89 @@ class AppStore extends ChangeNotifier {
   // no matter how the text got here (paste, a future API caller, etc).
   static const int _maxMessageLength = 240;
 
+  // --- Limits: keep anyone from spamming the app into a crash ----------
+  // Every one of these is enforced HERE in the store (the UI's own
+  // maxLength/disabled buttons are just the friendly first line of defense),
+  // so no code path — a paste, a double-tap, a future caller — can get past
+  // them. A signed-in FUNKY Admin is exempt from the per-day caps (see
+  // isAdmin), never from the length caps.
+  static const int maxStoriesPerDay = 30;
+  static const int maxReportsPerDay = 20;
+  static const int maxPendingFriendRequests = 40;
+  static const int maxPlaceNameLength = 40;
+  static const int maxPlaceAddressLength = 80;
+  static const int maxPollQuestionLength = 80;
+  static const int maxPollOptionLength = 40;
+  static const int maxPollOptions = 8;
+  static const int maxStoryTextLength = 200;
+  static const int maxReportDetailLength = 20;
+  static const int maxSearchLength = 30;
+  // Oldest messages beyond this are dropped from memory (and never written
+  // to disk) so a long-running chat can't grow without bound.
+  static const int maxMessagesKept = 1500;
+  static const int maxPersistedMessages = 200;
+  // A Story/DM photo or video bigger than this never gets uploaded (the
+  // camera already caps videos at 15s; this is the backstop for a library
+  // pick or a weird codec).
+  static const int maxStoryUploadBytes = 60 * 1024 * 1024;
+  // Direct-message snaps: a video must be under 25 MB (matches the dm_media
+  // bucket's own server-side limit) and a photo under 12 MB.
+  static const int maxDmVideoBytes = 25 * 1024 * 1024;
+  static const int maxDmImageBytes = 12 * 1024 * 1024;
+
+  final Map<String, int> _lastActionAt = {};
+
+  /// True if [key] already fired less than [cooldownMs] ago (and so should
+  /// be ignored); otherwise records now as its latest time and returns
+  /// false. The one tiny helper every rate limit below shares.
+  bool _tooSoon(String key, int cooldownMs) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastActionAt[key];
+    if (last != null && now - last < cooldownMs) return true;
+    _lastActionAt[key] = now;
+    return false;
+  }
+
+  /// Why you can't post another Story right now, or null if you can — a
+  /// short cooldown between posts plus a per-day cap (not for an Admin).
+  String? storyBlockReason() {
+    if (!isAdmin) {
+      final today = sessionKey();
+      final postedToday = stories.where((s) => s.uid == 'me' && s.session == today).length;
+      if (postedToday >= maxStoriesPerDay) return "That's the limit for today — you can post $maxStoriesPerDay Stories a day.";
+    }
+    final last = _lastActionAt['story'];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (last != null && now - last < 5000) return 'Easy — wait a few seconds before posting another Story.';
+    return null;
+  }
+
+  /// Why you can't submit another place report right now, or null.
+  String? reportBlockReason() {
+    if (!isAdmin) {
+      final today = sessionKey();
+      final startOfSession = DateTime.tryParse(today)?.add(const Duration(hours: resetHour)).millisecondsSinceEpoch ?? 0;
+      final mine = placeReports.where((r) => r.reporterId == 'me' && r.t >= startOfSession).length;
+      if (mine >= maxReportsPerDay) return "That's the limit for today — you can submit $maxReportsPerDay reports a day.";
+    }
+    final last = _lastActionAt['report'];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (last != null && now - last < 4000) return 'Easy — wait a few seconds before submitting another report.';
+    return null;
+  }
+
+  // Everything starts empty — FUNKY is live now, so there's no demo people,
+  // places, polls, chat, or Stories to seed. What shows up comes from real
+  // accounts (and, for places added/confirmed on this device, the local
+  // lists below).
   AppStore() {
-    final session = sessionKey();
-    people = {for (final p in samplePeople(session)) p.id: p};
-    places = sampleWithSession(session);
-    polls = samplePolls(session);
-    messages = sampleMessages();
-    stories = sampleStories(session);
-
-    // Demo seed so Friends isn't empty on a fresh install: p1 is already a
-    // friend (their Stories show unlocked), p2 has a pending request waiting
-    // on you (so the notification bell has something to show immediately).
-    me = me.copyWith(friends: const ['p1'], friendRequestsReceived: const ['p2']);
-    if (people.containsKey('p1')) {
-      people = {...people, 'p1': people['p1']!.copyWith(friends: const ['me'])};
-    }
-    if (people.containsKey('p2')) {
-      people = {...people, 'p2': people['p2']!.copyWith(friendRequestsSent: const ['me'])};
-    }
-
-    // Demo seed so the sample polls don't start sitting at a dead 0% —
-    // give the demo people a few opinions already cast tonight.
-    if (people.containsKey('p1')) {
-      people = {...people, 'p1': people['p1']!.copyWith(votes: const {'rowan-out': 0})};
-    }
-    if (people.containsKey('p2')) {
-      people = {...people, 'p2': people['p2']!.copyWith(votes: const {'rowan-out': 0, 'ac-best': 1})};
-    }
-    if (people.containsKey('p3')) {
-      people = {...people, 'p3': people['p3']!.copyWith(votes: const {'ac-best': 0})};
-    }
-
-    // Demo seed so the reports UI isn't empty on a fresh install — one
-    // report that's already over the verification line and one that's
-    // still building confirmations, so both states are visible immediately.
-    placeReports = [
-      PlaceReport(
-        id: 'report_demo1',
-        placeId: 'sigchi',
-        kind: ReportKind.cover,
-        detail: '\$10',
-        t: DateTime.now().millisecondsSinceEpoch,
-        reporterId: 'p1',
-        confirmedBy: const ['p1', 'p2', 'p3', 'demo4', 'demo5', 'demo6', 'demo7', 'demo8'],
-      ),
-      PlaceReport(
-        id: 'report_demo2',
-        placeId: 'point',
-        kind: ReportKind.line,
-        detail: '20 min',
-        t: DateTime.now().millisecondsSinceEpoch,
-        reporterId: 'p3',
-        confirmedBy: const ['p3', 'p1'],
-      ),
-    ];
-
-    // Demo seed so the sample venues clear the 15-confirmation bar on a
-    // fresh install — otherwise Home's "verified venues only" surfaces
-    // (trending carousel, story rings, what's-the-move picks) would be
-    // empty until real people confirmed them, which is a bad first run.
-    placeConfirmations = {
-      for (final p in places)
-        p.id: List.generate(venueVerificationThreshold, (i) => 'demo_confirm_${p.id}_$i'),
-    };
+    people = {};
+    places = [];
+    polls = [];
+    messages = [];
+    stories = [];
+    placeReports = [];
+    placeConfirmations = {};
   }
 
   Future<void> load() async {
@@ -492,17 +603,55 @@ class AppStore extends ChangeNotifier {
       if (raw != null) {
         final parsed = jsonDecode(raw) as Map<String, dynamic>;
         final storedSession = parsed['session'] as String?;
-        final parsedMe = Person.fromJson(parsed['me'] as Map<String, dynamic>);
-        final parsedPlaces = (parsed['places'] as List).map((e) => Place.fromJson(e as Map<String, dynamic>)).toList();
-        final parsedPolls = (parsed['polls'] as List).map((e) => Poll.fromJson(e as Map<String, dynamic>)).toList();
-        final parsedMessages = (parsed['messages'] as List).map((e) => ChatMessage.fromJson(e as Map<String, dynamic>)).toList();
+        // The one-time go-live cleanup (see _goLiveCleaned): on the first
+        // launch of a build that has it, the old local test places, polls,
+        // chats, reports, venue confirmations, and admin verifications are
+        // all dropped, and the seeded demo friends/votes are stripped off
+        // 'me' — everything that only ever existed because of the demo data.
+        // Your own Stories (Memories), points, name styling, and profile
+        // are kept.
+        final alreadyCleaned = parsed['goLiveCleaned'] as bool? ?? false;
+        final rawMe = Person.fromJson(parsed['me'] as Map<String, dynamic>);
+        final parsedMe = alreadyCleaned
+            ? rawMe
+            : rawMe.copyWith(
+                friends: rawMe.friends.where(_isRealPersonId).toList(),
+                friendRequestsSent: rawMe.friendRequestsSent.where(_isRealPersonId).toList(),
+                friendRequestsReceived: rawMe.friendRequestsReceived.where(_isRealPersonId).toList(),
+                votes: const {},
+                clearMove: true,
+              );
+        final parsedPlaces = alreadyCleaned
+            ? (parsed['places'] as List).map((e) => Place.fromJson(e as Map<String, dynamic>)).toList()
+            : <Place>[];
+        final parsedPolls = alreadyCleaned
+            ? (parsed['polls'] as List).map((e) => Poll.fromJson(e as Map<String, dynamic>)).toList()
+            : <Poll>[];
+        final parsedMessages = alreadyCleaned
+            ? (parsed['messages'] as List).map((e) => ChatMessage.fromJson(e as Map<String, dynamic>)).toList()
+            : <ChatMessage>[];
+        // A message that was still 'sending' when the app last closed never
+        // finished — show it as failed (tap to retry) instead of spinning forever.
+        final parsedMessagesFixed = parsedMessages.map((m) => m.status == 'sending' ? m.copyWith(status: 'failed') : m).toList();
         final parsedStories = (parsed['stories'] as List).map((e) => Story.fromJson(e as Map<String, dynamic>)).toList();
-        final parsedReports =
-            ((parsed['placeReports'] as List?) ?? const []).map((e) => PlaceReport.fromJson(e as Map<String, dynamic>)).toList();
+        final parsedReports = alreadyCleaned
+            ? ((parsed['placeReports'] as List?) ?? const []).map((e) => PlaceReport.fromJson(e as Map<String, dynamic>)).toList()
+            : <PlaceReport>[];
+        _goLiveCleaned = true;
+        _lastUserId = parsed['lastUserId'] as String?;
+        _appliedBonus = (parsed['appliedBonus'] as num?)?.toInt() ?? 0;
+        final covers = parsed['placeCovers'];
+        if (covers is Map) {
+          _localPlaceCovers
+            ..clear()
+            ..addAll({for (final e in covers.entries) e.key.toString(): e.value.toString()});
+        }
         // Which venues 'me' has personally vouched for — never tied to
-        // tonight's session, re-applied on top of the fresh demo seed below
-        // either way (a real confirm should never be lost on reload).
-        final myVenueConfirmations = ((parsed['myVenueConfirmations'] as List?) ?? const []).map((e) => e as String).toSet();
+        // tonight's session, re-applied on top of whatever's loaded either
+        // way (a real confirm should never be lost on reload).
+        final myVenueConfirmations = alreadyCleaned
+            ? ((parsed['myVenueConfirmations'] as List?) ?? const []).map((e) => e as String).toSet()
+            : <String>{};
         for (final placeId in myVenueConfirmations) {
           final current = placeConfirmations[placeId] ?? const [];
           if (!current.contains('me')) {
@@ -512,15 +661,12 @@ class AppStore extends ChangeNotifier {
 
         // Also never tied to tonight's session — a FUNKY Admin verification
         // should survive the 2 PM reset the same way the account itself does.
-        adminVerifiedPlaceIds = ((parsed['adminVerifiedPlaceIds'] as List?) ?? const []).map((e) => e as String).toSet();
+        adminVerifiedPlaceIds = alreadyCleaned
+            ? ((parsed['adminVerifiedPlaceIds'] as List?) ?? const []).map((e) => e as String).toSet()
+            : <String>{};
 
         // Same reasoning — a ban shouldn't quietly lift itself at 2 PM.
         bannedUserIds = ((parsed['bannedUserIds'] as List?) ?? const []).map((e) => e as String).toSet();
-
-        // Defaults to false for any account stored before this flag
-        // existed — which is exactly the account that still needs the
-        // retroactive friend seed just below.
-        _testFriendSeeded = parsed['testFriendSeeded'] as bool? ?? false;
 
         // Whether 'me' has viewed/liked someone ELSE's story — their story
         // content itself is never persisted (it's re-seeded fresh from the
@@ -537,37 +683,30 @@ class AppStore extends ChangeNotifier {
           me = parsedMe;
           places = _dedupeById([...places, ...parsedPlaces], (p) => p.id);
           polls = _dedupeById([...polls, ...parsedPolls], (p) => p.id);
-          messages = _dedupeById([...messages, ...parsedMessages], (m) => m.id);
+          messages = _dedupeById([...messages, ...parsedMessagesFixed], (m) => m.id);
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
           placeReports = _dedupeById([...placeReports, ...parsedReports], (r) => r.id);
         } else {
           // Stale night — carry over only what survives the reset (rule 3).
           // Friends (and pending requests) stay, same as DMs — only the
-          // tonight-only stuff (move, votes, reports) gets wiped.
-          me = Person(
-            id: parsedMe.id,
-            handle: parsedMe.handle,
-            bio: parsedMe.bio,
-            since: parsedMe.since,
-            points: parsedMe.points,
-            friends: parsedMe.friends,
-            friendRequestsSent: parsedMe.friendRequestsSent,
-            friendRequestsReceived: parsedMe.friendRequestsReceived,
-            muted: parsedMe.muted,
-            anon: parsedMe.anon,
+          // tonight-only stuff (move, votes, seen/likes) gets wiped. Built
+          // with copyWith off the saved profile (rather than a fresh Person
+          // listing fields one by one) so every cosmetic/streak field —
+          // name styling and color, the chosen title, the going streak —
+          // survives the reset automatically instead of silently resetting
+          // to its default every night.
+          me = parsedMe.copyWith(
             session: currentSession,
-            move: null,
+            clearMove: true,
             votes: const {},
             seen: const [],
             likes: const [],
-            // Cumulative points history — never tied to tonight's session,
-            // same as points itself just above.
-            activeNights: parsedMe.activeNights,
-            streak: parsedMe.streak,
-            placesVisited: parsedMe.placesVisited,
-            photoPath: parsedMe.photoPath,
-            lastHandleChangeAt: parsedMe.lastHandleChangeAt,
           );
+          // Places are tonight-only too — but a place a FUNKY Admin has
+          // verified outright keeps living across the reset (and, once
+          // places sync with the backend, so does anything the crowd has
+          // verified with 15+ confirmations — see _applyRemotePlaces).
+          places = parsedPlaces.where((p) => adminVerifiedPlaceIds.contains(p.id)).toList();
           // Your own Stories are permanent (Memories), even though the
           // *place* records and everyone else's tonight-only Stories get
           // wiped at reset — this used to just drop `parsedStories`
@@ -575,6 +714,8 @@ class AppStore extends ChangeNotifier {
           // night. _persist() only ever writes 'me'-authored stories here,
           // so this merge is always just your own history.
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
+          // DMs stay across the reset (only tonight's live chat is wiped).
+          messages = _dedupeById([...messages, ...parsedMessagesFixed.where((m) => m.room.startsWith('dm_'))], (m) => m.id);
           justReset = true;
         }
 
@@ -597,22 +738,6 @@ class AppStore extends ChangeNotifier {
             );
           }).toList();
         }
-
-        // One-time retroactive seed (see _testFriendSeeded above) so an
-        // account that existed before the constructor's own "p1 is
-        // already a friend" demo seed gets that same starting point —
-        // something to immediately test the friends list and DMs with —
-        // instead of just starting from an empty friends list forever.
-        if (!_testFriendSeeded) {
-          _testFriendSeeded = true;
-          if (!me.friends.contains('p1')) {
-            me = me.copyWith(friends: [...me.friends, 'p1']);
-          }
-          final p1 = people['p1'];
-          if (p1 != null && !p1.friends.contains('me')) {
-            people = {...people, 'p1': p1.copyWith(friends: [...p1.friends, 'me'])};
-          }
-        }
       } else {
         // Nothing saved yet — this is a brand-new install, worth the
         // "First night using FUNKY" bonus (see the points comment on
@@ -622,6 +747,10 @@ class AppStore extends ChangeNotifier {
     } catch (_) {
       // Corrupt or missing storage — just start fresh, same as a new install.
     } finally {
+      // Whatever happened above (a brand-new install with nothing to clean,
+      // or a cleanup that just ran), the go-live cleanup never needs to run
+      // again on this device.
+      _goLiveCleaned = true;
       // Real sign-in state now comes from Supabase's own session, not a
       // locally-stored flag — supabase_flutter persists and auto-refreshes
       // that session on its own, so this just mirrors whatever it already
@@ -658,18 +787,36 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  Timer? _persistTimer;
+
+  /// Coalesces a burst of changes (a flurry of reactions, taps, realtime
+  /// events…) into a single disk write instead of one per call — the
+  /// actual write is _persistNow, ~250 ms after the last request.
   Future<void> _persist() async {
+    if (!loaded) return;
+    _persistTimer?.cancel();
+    _persistTimer = Timer(const Duration(milliseconds: 250), () => unawaited(_persistNow()));
+  }
+
+  Future<void> _persistNow() async {
     if (!loaded) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final payload = {
         'session': sessionKey(),
         'me': me.toJson(),
-        'places': places.where((p) => p.by == 'me').map((p) => p.toJson()).toList(),
-        'polls': polls.where((p) => p.by == 'me').map((p) => p.toJson()).toList(),
-        'messages': messages.where((m) => m.uid == 'me').map((m) => m.toJson()).toList(),
+        // Places live on the server now (shared with everyone), re-fetched
+        // on every launch — nothing worth saving locally.
+        'places': <Map<String, dynamic>>[],
+        // Polls and reports live on the server now too.
+        'polls': <Map<String, dynamic>>[],
+        'messages': (() {
+          final mine = messages.where((m) => m.uid == 'me').toList();
+          final recent = mine.length > maxPersistedMessages ? mine.sublist(mine.length - maxPersistedMessages) : mine;
+          return recent.map((m) => m.toJson()).toList();
+        })(),
         'stories': stories.where((s) => s.uid == 'me').map((s) => s.toJson()).toList(),
-        'placeReports': placeReports.where((r) => r.reporterId == 'me').map((r) => r.toJson()).toList(),
+        'placeReports': <Map<String, dynamic>>[],
         'myVenueConfirmations': placeConfirmations.entries.where((e) => e.value.contains('me')).map((e) => e.key).toList(),
         // accountEmail/signedIn/supabaseUserId are no longer written here —
         // they're derived fresh from Supabase's own session on every load()
@@ -684,9 +831,15 @@ class AppStore extends ChangeNotifier {
         // of this fix).
         'myViewedStoryIds': stories.where((s) => s.uid != 'me' && s.views.contains('me')).map((s) => s.id).toList(),
         'myLikedStoryIds': stories.where((s) => s.uid != 'me' && s.likes.contains('me')).map((s) => s.id).toList(),
-        'testFriendSeeded': _testFriendSeeded,
+        'goLiveCleaned': _goLiveCleaned,
+        'lastUserId': _lastUserId,
+        'appliedBonus': _appliedBonus,
+        'placeCovers': _localPlaceCovers,
       };
       await prefs.setString(_storageKey, jsonEncode(payload));
+      // Anything that changed worth telling other people about (points,
+      // going-to, streak, name style) rides along on the same debounce.
+      _maybePushProfile();
     } catch (_) {
       // Non-fatal — worst case this session's additions don't survive a reload.
     }
@@ -871,15 +1024,19 @@ class AppStore extends ChangeNotifier {
   /// lookup fails (offline, etc.) rather than showing an error. Banned
   /// users never show up here, same as everywhere else they're hidden.
   Future<List<Person>> searchPeopleByHandle(String query) async {
-    final q = query.trim().toLowerCase();
+    var q = query.trim().toLowerCase();
     if (q.isEmpty) return const [];
+    if (q.length > maxSearchLength) q = q.substring(0, maxSearchLength);
+    // Escape LIKE wildcards so a typed % or _ can't turn this into a
+    // match-everything query against the real profiles table.
+    final remoteQ = q.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
     final localMatches = people.values.where((p) => p.handle.toLowerCase().contains(q) && !isBanned(p.id)).toList();
     if (!signedIn || supabaseUserId == null) return localMatches;
     try {
       final rows = await Supabase.instance.client
           .from('profiles')
           .select()
-          .ilike('handle', '%$q%')
+          .ilike('handle', '%$remoteQ%')
           .neq('id', supabaseUserId!)
           .limit(25);
       final updated = Map<String, Person>.from(people);
@@ -887,6 +1044,7 @@ class AppStore extends ChangeNotifier {
       for (final row in rows) {
         final id = row['id'] as String;
         matchedIds.add(id);
+        if (row['banned'] == true) _remoteBannedIds.add(id);
         if (isBanned(id)) continue;
         // Same rule as _ensurePeopleFor — never clobber a Person record
         // already in [people] (e.g. an existing friend's local state), only
@@ -909,6 +1067,11 @@ class AppStore extends ChangeNotifier {
 
   void sendFriendRequest(String personId) {
     if (personId == 'me' || isFriendsWith(personId) || hasSentRequestTo(personId)) return;
+    // A cap on requests still waiting + a tiny cooldown so nobody can
+    // carpet-bomb everybody they can find with Add Friend.
+    if (!isAdmin && me.friendRequestsSent.length >= maxPendingFriendRequests) return;
+    if (_tooSoon('friendRequest', 700)) return;
+    if (selfBanned) return;
     me = me.copyWith(friendRequestsSent: [...me.friendRequestsSent, personId]);
     final them = people[personId];
     if (them != null) {
@@ -916,6 +1079,10 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _isRealPersonId(personId)) {
+      _fireAndForgetInsert('friendships', {'requester_id': uid, 'addressee_id': personId});
+    }
   }
 
   void cancelFriendRequest(String personId) {
@@ -926,6 +1093,12 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _isRealPersonId(personId)) {
+      _fireAndForgetRemote(
+        () => Supabase.instance.client.from('friendships').delete().eq('requester_id', uid).eq('addressee_id', personId),
+      );
+    }
   }
 
   void acceptFriendRequest(String personId) {
@@ -946,6 +1119,16 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _isRealPersonId(personId)) {
+      _fireAndForgetRemote(
+        () => Supabase.instance.client
+            .from('friendships')
+            .update({'status': 'accepted'})
+            .eq('requester_id', personId)
+            .eq('addressee_id', uid),
+      );
+    }
   }
 
   void declineFriendRequest(String personId) {
@@ -956,6 +1139,12 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _isRealPersonId(personId)) {
+      _fireAndForgetRemote(
+        () => Supabase.instance.client.from('friendships').delete().eq('requester_id', personId).eq('addressee_id', uid),
+      );
+    }
   }
 
   void removeFriend(String personId) {
@@ -966,6 +1155,7 @@ class AppStore extends ChangeNotifier {
     }
     notifyListeners();
     _persist();
+    _fireAndForgetFriendshipRemove(personId);
   }
 
   // How often you're allowed to actually change your @handle — just
@@ -1016,6 +1206,35 @@ class AppStore extends ChangeNotifier {
     me = me.copyWith(photoPath: path);
     notifyListeners();
     _persist();
+    unawaited(_uploadAvatar(path));
+  }
+
+  /// Uploads your profile picture to the public avatars bucket and points
+  /// your profile row at it, so everyone else sees it (their app can only
+  /// show an image by URL — your local file path means nothing to them).
+  Future<void> _uploadAvatar(String path) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return;
+    try {
+      final file = File(path);
+      if (!await file.exists()) return;
+      if (await file.length() > 8 * 1024 * 1024) return;
+      final isPng = path.toLowerCase().endsWith('.png');
+      final storagePath = '$uid/avatar.${isPng ? 'png' : 'jpg'}';
+      final client = Supabase.instance.client;
+      await client.storage.from('avatars').uploadBinary(
+            storagePath,
+            await file.readAsBytes(),
+            fileOptions: FileOptions(upsert: true, contentType: isPng ? 'image/png' : 'image/jpeg'),
+          );
+      final url = client.storage.from('avatars').getPublicUrl(storagePath);
+      // The same path is reused every time, so a changing query string is
+      // what makes other devices actually refetch the new picture.
+      final busted = '$url?v=${DateTime.now().millisecondsSinceEpoch}';
+      await client.from('profiles').update({'avatar_url': busted}).eq('id', uid);
+    } catch (_) {
+      // Best-effort — your own device keeps showing the local file either way.
+    }
   }
 
   void setBio(String bio) {
@@ -1030,13 +1249,9 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  void setAnon(bool value) {
-    me = me.copyWith(anon: value);
-    notifyListeners();
-    _persist();
-  }
-
   void setMove(String placeIdOrIn) {
+    // Mashing the "I'm going" button can't spin up a pile of writes.
+    if (_tooSoon('move', 600)) return;
     final isFirstPickTonight = me.move == null;
     var visited = me.placesVisited;
     if (placeIdOrIn != 'in' && !visited.contains(placeIdOrIn)) {
@@ -1044,12 +1259,31 @@ class AppStore extends ChangeNotifier {
     }
     me = me.copyWith(move: placeIdOrIn, placesVisited: visited);
     if (isFirstPickTonight) _award(3); // "vote where you're going"
+    // The 🔥 going streak only counts voting for an actual place, not
+    // "staying in".
+    if (placeIdOrIn != 'in') _bumpMoveStreak();
     _recordNightActivity();
     notifyListeners();
     _persist();
   }
 
+  /// Extends (or starts over) the daily "going" streak: voting for a place
+  /// today after voting yesterday makes it +1; voting after missing a day
+  /// (or ever) starts a fresh 1; voting again the same day does nothing.
+  /// The displayed number also falls to 0 on its own once a day is missed —
+  /// see effectiveMoveStreak in models.dart.
+  void _bumpMoveStreak() {
+    final today = sessionKey();
+    if (me.moveStreakDay == today) return;
+    final yesterday = sessionKey(DateTime.now().subtract(const Duration(days: 1)));
+    final continuing = me.moveStreakDay == yesterday;
+    me = me.copyWith(moveStreak: continuing ? me.moveStreak + 1 : 1, moveStreakDay: today);
+  }
+
   void votePoll(String pollId, int optionIndex) {
+    if (_tooSoon('votePoll', 300)) return;
+    final pollIdx = polls.indexWhere((p) => p.id == pollId);
+    if (pollIdx == -1 || optionIndex < 0 || optionIndex >= polls[pollIdx].options.length) return;
     final votes = {...me.votes, pollId: optionIndex};
     me = me.copyWith(votes: votes);
     notifyListeners();
@@ -1073,10 +1307,12 @@ class AppStore extends ChangeNotifier {
   /// One place add per day (same 2 PM rolling reset as everything else) —
   /// keeps the map from getting spammed with duplicate/fake venues. true
   /// means the slot is still open tonight.
-  bool get canAddPlaceToday => !places.any((p) => p.by == 'me' && p.session == sessionKey());
+  /// A FUNKY Admin can add as many as they like.
+  bool get canAddPlaceToday => isAdmin || !places.any((p) => p.by == 'me' && p.session == sessionKey());
 
-  /// Same one-per-day rule as places, for polls.
-  bool get canAddPollToday => !polls.any((p) => p.by == 'me' && p.session == sessionKey());
+  /// Same one-per-day rule as places, for polls (and the same Admin
+  /// exemption).
+  bool get canAddPollToday => isAdmin || !polls.any((p) => p.by == 'me' && p.session == sessionKey());
 
   // Lowercased, letters/digits-only — so "Sigma Chi", "sigma-chi!", and
   // "Sigma  Chi" all collapse to the same key before comparing names.
@@ -1105,32 +1341,80 @@ class AppStore extends ChangeNotifier {
   /// exists (see [similarNearbyPlace]). Callers should check both first so
   /// they can disable the "Add place" button instead of only finding out
   /// after.
-  Place? addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath}) {
+  String? lastPlaceError;
+
+  Future<Place?> addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath}) async {
+    lastPlaceError = null;
+    if (selfBanned) {
+      lastPlaceError = _bannedMessage;
+      return null;
+    }
     if (!canAddPlaceToday) return null;
-    if (similarNearbyPlace(name) != null) return null;
+    // Double-tap / rapid-fire guard — even an Admin can't create several in
+    // the same instant.
+    if (_tooSoon('addPlace', 3000)) return null;
+    final cleanName = name.trim().length > maxPlaceNameLength ? name.trim().substring(0, maxPlaceNameLength) : name.trim();
+    final cleanAddress = address.trim().length > maxPlaceAddressLength ? address.trim().substring(0, maxPlaceAddressLength) : address.trim();
+    if (cleanName.isEmpty) return null;
+    if (similarNearbyPlace(cleanName) != null) return null;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) {
+      lastPlaceError = 'Log in to add a place.';
+      return null;
+    }
     final here = location ?? defaultLocation;
-    final place = Place(
-      id: 'place_${DateTime.now().millisecondsSinceEpoch}',
-      name: name,
-      kind: kind,
-      lat: here.lat,
-      lng: here.lng,
-      address: address,
-      by: 'me',
-      t: DateTime.now().millisecondsSinceEpoch,
-      session: sessionKey(),
-      coverPhotoPath: coverPhotoPath,
-    );
+    // The cover photo goes up first (best-effort — a failed upload just
+    // means the place is added without a shared photo) so its public URL
+    // can ride along on the place row for everyone else to see.
+    String? coverUrl;
+    if (coverPhotoPath != null) coverUrl = await _uploadPlaceCover(uid, coverPhotoPath);
+    // Places are shared, so this goes straight to the server and waits for
+    // its real id (the same id everyone else will see) before showing up.
+    final Place place;
+    try {
+      final rows = await Supabase.instance.client.from('places').insert({
+        'name': cleanName,
+        'kind': kind.name,
+        'lat': here.lat,
+        'lng': here.lng,
+        'address': cleanAddress,
+        'by_uid': uid,
+        // Only the admin's insert policy accepts a pre-verified place; for
+        // everyone else this is just false.
+        'admin_verified': isAdmin,
+        if (coverUrl != null) 'cover_url': coverUrl,
+      }).select();
+      final built = _placeFromRow(rows.first);
+      if (built == null) throw const FormatException('bad place row');
+      place = Place(
+        id: built.id,
+        name: built.name,
+        kind: built.kind,
+        lat: built.lat,
+        lng: built.lng,
+        address: built.address,
+        by: 'me',
+        t: built.t,
+        session: built.session,
+        coverPhotoPath: coverPhotoPath,
+        coverUrl: coverUrl,
+      );
+    } catch (_) {
+      lastPlaceError = "Couldn't add that place — check your connection and try again.";
+      return null;
+    }
+    _remotePlaceIds.add(place.id);
+    if (coverPhotoPath != null) _localPlaceCovers[place.id] = coverPhotoPath;
     places = [...places, place];
-    // Same demo-boost the 5 built-in venues got in the constructor — without
-    // this, a venue you add starts at 0 confirmations and can never clear
-    // the 15-confirmation bar, so it would never show up on Home's
-    // verified-only surfaces (trending, story rings, what's-the-move) no
-    // matter how much Story activity happened there.
+    // Whoever adds a place counts as its first real confirmation — it has
+    // to earn the other 14 from real people. A FUNKY Admin's own places are
+    // verified outright (and so also survive the nightly cleanup).
     placeConfirmations = {
       ...placeConfirmations,
-      place.id: [...List.generate(venueVerificationThreshold - 1, (i) => 'demo_confirm_${place.id}_$i'), 'me'],
+      place.id: ['me'],
     };
+    if (isAdmin) adminVerifiedPlaceIds = {...adminVerifiedPlaceIds, place.id};
+    _fireAndForgetInsert('place_confirmations', {'place_id': place.id, 'user_id': uid});
     _award(10); // "add a missing venue"
     _recordNightActivity();
     notifyListeners();
@@ -1138,22 +1422,78 @@ class AppStore extends ChangeNotifier {
     return place;
   }
 
+  /// Uploads a place's cover photo to the public `place_covers` bucket and
+  /// returns its URL, or null if it's missing, too big (8 MB), or the upload fails.
+  Future<String?> _uploadPlaceCover(String uid, String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists() || await file.length() > 8 * 1024 * 1024) return null;
+      final bytes = await file.readAsBytes();
+      final storagePath = '$uid/${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final client = Supabase.instance.client;
+      await client.storage.from('place_covers').uploadBinary(
+            storagePath,
+            bytes,
+            fileOptions: const FileOptions(upsert: false, contentType: 'image/jpeg'),
+          );
+      return client.storage.from('place_covers').getPublicUrl(storagePath);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Returns the new poll, or null if you've already added one today —
   /// see [canAddPollToday]. Callers should check that first so they can
   /// disable the "Post poll" button instead of only finding out after.
-  Poll? addPoll(String q, List<String> options) {
-    if (!canAddPollToday) return null;
+  String? lastPollError;
+
+  Future<Poll?> addPoll(String q, List<String> options) async {
+    lastPollError = null;
+    if (selfBanned) {
+      lastPollError = _bannedMessage;
+      return null;
+    }
+    if (!canAddPollToday) {
+      lastPollError = "You can only add one poll per day — check back after the 2 PM reset.";
+      return null;
+    }
+    if (_tooSoon('addPoll', 3000)) {
+      lastPollError = 'Hold on — your poll is already going up.';
+      return null;
+    }
+    final cleanQ = q.trim().length > maxPollQuestionLength ? q.trim().substring(0, maxPollQuestionLength) : q.trim();
+    final cleanOptions = options
+        .map((o) => o.trim().length > maxPollOptionLength ? o.trim().substring(0, maxPollOptionLength) : o.trim())
+        .where((o) => o.isNotEmpty)
+        .take(maxPollOptions)
+        .toList();
+    if (cleanQ.isEmpty || cleanOptions.length < 2) {
+      lastPollError = 'A poll needs a question and at least two options.';
+      return null;
+    }
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) {
+      lastPollError = 'Log in to post a poll.';
+      return null;
+    }
     final here = location ?? defaultLocation;
-    final poll = Poll(
-      id: 'poll_${DateTime.now().millisecondsSinceEpoch}',
-      q: q,
-      options: options,
-      lat: here.lat,
-      lng: here.lng,
-      by: 'me',
-      t: DateTime.now().millisecondsSinceEpoch,
-      session: sessionKey(),
-    );
+    final Poll poll;
+    try {
+      final rows = await Supabase.instance.client.from('polls').insert({
+        'q': cleanQ,
+        'options': cleanOptions,
+        'lat': here.lat,
+        'lng': here.lng,
+        'by_uid': uid,
+      }).select();
+      final built = _pollFromRow(rows.first);
+      if (built == null) throw const FormatException('bad poll row');
+      poll = built;
+    } catch (_) {
+      lastPollError = "Couldn't post that poll — check your connection and try again.";
+      return null;
+    }
+    _remotePollIds.add(poll.id);
     polls = [...polls, poll];
     notifyListeners();
     _persist();
@@ -1163,12 +1503,15 @@ class AppStore extends ChangeNotifier {
   /// Returns null on success, or a user-facing error if you're still inside
   /// the cooldown (basic anti-spam — nothing fancier than "wait a moment").
   String? sendMessage(String room, String text, bool anon) {
+    if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
     if (last != null && now - last < _messageCooldownMs) {
       return 'Slow down a sec before sending another message.';
     }
     final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
+    if (capped.trim().isEmpty) return null;
+    final here = location;
     final message = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
@@ -1176,12 +1519,55 @@ class AppStore extends ChangeNotifier {
       uid: 'me',
       text: capped,
       anon: anon,
+      status: room == 'main' && signedIn ? 'sending' : 'delivered',
+      lat: room == 'main' ? here?.lat : null,
+      lng: room == 'main' ? here?.lng : null,
     );
-    messages = [...messages, message];
+    messages = _capMessages([...messages, message]);
     _lastMessageAt = now;
     notifyListeners();
     _persist();
+    if (room == 'main' && signedIn && supabaseUserId != null) {
+      unawaited(_sendLiveChatRemote(message));
+    }
     return null;
+  }
+
+  /// Posts a Live Chat message to the shared `chat_messages` table. The
+  /// message is already showing locally under a temporary id; on success it
+  /// swaps to the server's real id (so the realtime echo of its own insert
+  /// is recognised and not shown twice), on failure it's marked 'failed'.
+  Future<void> _sendLiveChatRemote(ChatMessage local) async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('chat_messages').insert({
+        // Anonymous messages carry NO sender at all (see the SQL) — the
+        // server keeps the real author in an admin-only table.
+        'sender_id': local.anon ? null : uid,
+        'text': local.text,
+        'anon': local.anon,
+        'lat': local.lat,
+        'lng': local.lng,
+      }).select();
+      final serverId = rows.first['id'] as String;
+      _remoteChatIds.add(serverId);
+      messages = messages
+          .where((m) => m.id != serverId)
+          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'sent') : m)
+          .toList();
+    } catch (_) {
+      messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  /// Keeps only the newest [maxMessagesKept] messages in memory so a chat
+  /// that stays open all night can't grow without bound.
+  List<ChatMessage> _capMessages(List<ChatMessage> list) {
+    if (list.length <= maxMessagesKept) return list;
+    return list.sublist(list.length - maxMessagesKept);
   }
 
   /// A DM to one specific person instead of the shared area chat — same
@@ -1195,37 +1581,151 @@ class AppStore extends ChangeNotifier {
   /// subscription will also see — see _onRemoteMessageInsert's no-op-if-
   /// already-present check, which is what stops that from double-posting.
   /// Returns null on success, same contract as sendMessage.
-  Future<String?> sendDirectMessage(String toPersonId, String text) async {
+  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType}) async {
+    if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
     if (last != null && now - last < _messageCooldownMs) {
       return 'Slow down a sec before sending another message.';
     }
     final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
-    if (signedIn && supabaseUserId != null && _remotePersonIds.contains(toPersonId)) {
+    final mp = mediaPath;
+    final mt = mediaType;
+    final hasMedia = mp != null && mt != null;
+    if (capped.trim().isEmpty && !hasMedia) return null;
+    if (hasMedia) {
+      if (_tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
-        final rows = await Supabase.instance.client.from('messages').insert({
-          'sender_id': supabaseUserId,
-          'recipient_id': toPersonId,
-          'text': capped,
-        }).select();
-        final msg = _messageFromRow(rows.first);
-        if (msg != null) {
-          _remoteMessageIds.add(msg.id);
-          messages = [...messages, msg];
-          _lastMessageAt = now;
-          notifyListeners();
-          _persist();
-          return null;
+        final bytes = await File(mp!).length();
+        if (mt == 'video' && bytes > maxDmVideoBytes) {
+          return 'That video is too big — keep it under ${maxDmVideoBytes ~/ (1024 * 1024)} MB.';
+        }
+        if (mt != 'video' && bytes > maxDmImageBytes) {
+          return 'That photo is too big — keep it under ${maxDmImageBytes ~/ (1024 * 1024)} MB.';
         }
       } catch (_) {
-        // Falls through to the local-only send below so the message still
-        // shows up on this device even if the real send failed (offline,
-        // etc.) — it just won't reach the other person's phone until a
-        // retry succeeds.
+        return "Couldn't read that file.";
       }
     }
-    return sendMessage(dmRoomId('me', toPersonId), capped, false);
+    final remote = signedIn && supabaseUserId != null && _remotePersonIds.contains(toPersonId);
+    final local = ChatMessage(
+      id: 'dm_${DateTime.now().microsecondsSinceEpoch}',
+      t: DateTime.now().millisecondsSinceEpoch,
+      room: dmRoomId('me', toPersonId),
+      uid: 'me',
+      text: capped,
+      anon: false,
+      status: remote ? 'sending' : 'delivered',
+      mediaType: hasMedia ? mt : null,
+      mediaPath: hasMedia ? mp : null,
+    );
+    messages = _capMessages([...messages, local]);
+    _lastMessageAt = now;
+    notifyListeners();
+    _persist();
+    if (remote) unawaited(_deliverDirectMessage(local, toPersonId));
+    return null;
+  }
+
+  /// Uploads a DM's photo/video (if any), inserts the `messages` row, and
+  /// swaps the optimistic local message over to the server's id with the
+  /// status 'delivered' — or 'failed' (tap to retry) if anything throws.
+  Future<void> _deliverDirectMessage(ChatMessage local, String toPersonId) async {
+    final uid = supabaseUserId;
+    if (uid == null) {
+      _setMessageStatus(local.id, 'failed');
+      return;
+    }
+    try {
+      final client = Supabase.instance.client;
+      String? storagePath;
+      final localFile = local.mediaPath;
+      if (localFile != null) {
+        final file = File(localFile);
+        final bytes = await file.readAsBytes();
+        final isVideo = local.mediaType == 'video';
+        final dot = localFile.lastIndexOf('.');
+        var ext = dot == -1 ? (isVideo ? 'mp4' : 'jpg') : localFile.substring(dot + 1).toLowerCase();
+        if (ext.length > 5) ext = isVideo ? 'mp4' : 'jpg';
+        storagePath = '$uid/${local.t}_${local.id.hashCode.abs()}.$ext';
+        await client.storage.from('dm_media').uploadBinary(
+              storagePath,
+              bytes,
+              fileOptions: FileOptions(
+                upsert: true,
+                contentType: isVideo ? (ext == 'mov' ? 'video/quicktime' : 'video/mp4') : (ext == 'png' ? 'image/png' : 'image/jpeg'),
+              ),
+            );
+      }
+      final rows = await client.from('messages').insert({
+        'sender_id': uid,
+        'recipient_id': toPersonId,
+        'text': local.text,
+        if (storagePath != null) 'media_path': storagePath,
+        if (storagePath != null) 'media_type': local.mediaType,
+      }).select();
+      final serverId = rows.first['id'] as String;
+      _remoteMessageIds.add(serverId);
+      messages = messages
+          .where((m) => m.id != serverId)
+          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
+          .toList();
+    } catch (_) {
+      messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  void _setMessageStatus(String id, String status) {
+    messages = messages.map((m) => m.id == id ? m.copyWith(status: status) : m).toList();
+    notifyListeners();
+    _persist();
+  }
+
+  /// Tap-to-retry on a DM that shows "Not sent".
+  void retryDirectMessage(String messageId) {
+    if (_tooSoon('dmRetry', 1500)) return;
+    final i = messages.indexWhere((m) => m.id == messageId && m.status == 'failed' && m.uid == 'me');
+    if (i == -1) return;
+    final m = messages[i];
+    if (!m.room.startsWith('dm_')) return;
+    final ids = m.room.substring(3).split('_');
+    final other = ids.length == 2 ? (ids[0] == 'me' ? ids[1] : ids[0]) : null;
+    if (other == null || !_remotePersonIds.contains(other)) return;
+    _setMessageStatus(m.id, 'sending');
+    unawaited(_deliverDirectMessage(m.copyWith(status: 'sending'), other));
+  }
+
+  // Newest incoming message time we've already told the server we've seen,
+  // per person — so opening a thread doesn't re-send the same update.
+  final Map<String, int> _seenMarkedAt = {};
+
+  /// Called when a DM thread is open (and when new messages land while it
+  /// is) — stamps `read_at` on everything they sent you so THEIR screen
+  /// flips from "Delivered" to "Seen".
+  void markDmSeen(String personId) {
+    final uid = supabaseUserId;
+    if (uid == null || !signedIn || !_remotePersonIds.contains(personId)) return;
+    final room = dmRoomId('me', personId);
+    var latest = 0;
+    for (final m in messages) {
+      if (m.room == room && m.uid == personId && m.t > latest) latest = m.t;
+    }
+    if (latest == 0 || (_seenMarkedAt[personId] ?? 0) >= latest) return;
+    _seenMarkedAt[personId] = latest;
+    unawaited(() async {
+      try {
+        await Supabase.instance.client
+            .from('messages')
+            .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+            .eq('sender_id', personId)
+            .eq('recipient_id', uid)
+            .filter('read_at', 'is', null);
+      } catch (_) {
+        _seenMarkedAt.remove(personId);
+      }
+    }());
   }
 
   /// Everyone 'me' has a DM thread with, most-recently-active first — what
@@ -1259,6 +1759,11 @@ class AppStore extends ChangeNotifier {
   /// so posting never silently fails on this device — it just won't reach
   /// anyone else's phone until a retry succeeds.
   Future<void> addStory({String? text, String? imagePath, String? videoPath, required String place, required bool anon}) async {
+    // The UI checks storyBlockReason() first and shows why; this is the
+    // backstop so nothing that skips that check can post past the limits.
+    if (storyBlockReason() != null) return;
+    _lastActionAt['story'] = DateTime.now().millisecondsSinceEpoch;
+    if (text != null && text.length > maxStoryTextLength) text = text.substring(0, maxStoryTextLength);
     // A snapshot of the place's name right now — Places are tonight-only
     // and get wiped at 2 PM, but a Story's entry in Memories is permanent,
     // so this is what lets an old Memory still say "Posted at Sigma Chi"
@@ -1286,7 +1791,11 @@ class AppStore extends ChangeNotifier {
           // so the upload path's first folder segment must be your own id —
           // see supabase/schema.sql.
           mediaPath = '$uid/${DateTime.now().millisecondsSinceEpoch}.$ext';
-          final bytes = await File(localMediaFile).readAsBytes();
+          final mediaFile = File(localMediaFile);
+          // Too big to upload (or somehow gone) — drop to the local-only post
+          // below instead of trying to push it through and risking a crash.
+          if (await mediaFile.length() > maxStoryUploadBytes) throw const FileSystemException('Story media too large to upload');
+          final bytes = await mediaFile.readAsBytes();
           await client.storage.from('stories').uploadBinary(mediaPath, bytes, fileOptions: const FileOptions(upsert: false));
         }
         final rows = await client.from('stories').insert({
@@ -1337,6 +1846,7 @@ class AppStore extends ChangeNotifier {
   /// on that message instead of stacking multiple reactions from the same
   /// person, same as iMessage tapbacks.
   void toggleReaction(String messageId, String emoji) {
+    if (_tooSoon('reaction', 250)) return;
     final i = messages.indexWhere((m) => m.id == messageId);
     if (i == -1) return;
     final current = messages[i].reactions;
@@ -1352,6 +1862,82 @@ class AppStore extends ChangeNotifier {
     messages = [...messages]..[i] = messages[i].copyWith(reactions: next);
     notifyListeners();
     _persist();
+    // Live-chat messages that exist on the server share their reactions with
+    // everyone: your reaction is upserted (one per person per message) or,
+    // when you tapped the same emoji again, removed.
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _remoteChatIds.contains(messageId)) {
+      if (alreadyThisEmoji) {
+        _fireAndForgetRemote(
+          () => Supabase.instance.client.from('chat_reactions').delete().eq('message_id', messageId).eq('user_id', uid),
+        );
+      } else {
+        _fireAndForgetRemote(
+          () => Supabase.instance.client.from('chat_reactions').upsert({'message_id': messageId, 'user_id': uid, 'emoji': emoji}),
+        );
+      }
+    }
+  }
+
+  /// Sets (or, with a null [emoji], clears) one person's reaction on a
+  /// message — the single place remote reaction changes are applied.
+  /// Returns true if anything changed.
+  bool _applyReactionChange(String messageId, String userId, String? emoji) {
+    final i = messages.indexWhere((m) => m.id == messageId);
+    if (i == -1) return false;
+    final who = userId == supabaseUserId ? 'me' : userId;
+    final current = messages[i].reactions;
+    final next = <String, List<String>>{};
+    for (final entry in current.entries) {
+      final others = entry.value.where((u) => u != who).toList();
+      if (others.isNotEmpty) next[entry.key] = others;
+    }
+    if (emoji != null && emoji.isNotEmpty) next[emoji] = [...(next[emoji] ?? const []), who];
+    final same = next.length == current.length &&
+        next.entries.every((e) {
+          final c = current[e.key];
+          return c != null && c.length == e.value.length && c.toSet().containsAll(e.value);
+        });
+    if (same) return false;
+    messages = [...messages]..[i] = messages[i].copyWith(reactions: next);
+    return true;
+  }
+
+  void _onRemoteReactionChange(Map<String, dynamic> row, {required bool removed}) {
+    final messageId = row['message_id'] as String?;
+    final userId = row['user_id'] as String?;
+    if (messageId == null || userId == null) return;
+    final emoji = removed ? null : row['emoji'] as String?;
+    if (_applyReactionChange(messageId, userId, emoji)) notifyListeners();
+  }
+
+  /// Pulls tonight's live-chat reactions and rebuilds each remote message's
+  /// reaction list from them (so a reaction removed elsewhere disappears).
+  Future<void> _fetchRemoteReactions() async {
+    if (supabaseUserId == null) return;
+    try {
+      final cutoff = DateTime.fromMillisecondsSinceEpoch(_sessionStartMs()).toUtc().toIso8601String();
+      final rows = await Supabase.instance.client.from('chat_reactions').select().gte('created_at', cutoff).limit(3000);
+      final byMessage = <String, Map<String, List<String>>>{};
+      for (final row in rows) {
+        final mid = row['message_id'] as String?;
+        final u = row['user_id'] as String?;
+        final e = row['emoji'] as String?;
+        if (mid == null || u == null || e == null) continue;
+        ((byMessage[mid] ??= {})[e] ??= []).add(u == supabaseUserId ? 'me' : u);
+      }
+      var changed = false;
+      messages = messages.map((m) {
+        if (!_remoteChatIds.contains(m.id)) return m;
+        final remote = byMessage[m.id] ?? const <String, List<String>>{};
+        if (remote.isEmpty && m.reactions.isEmpty) return m;
+        changed = true;
+        return m.copyWith(reactions: remote);
+      }).toList();
+      if (changed) notifyListeners();
+    } catch (_) {
+      // Offline — realtime catches up.
+    }
   }
 
   /// Deletes one of your own Stories — from a memory card on your profile,
@@ -1456,11 +2042,13 @@ class AppStore extends ChangeNotifier {
   /// re-earn its own 8 confirmations. The reporter counts as the first
   /// confirmation, per the spec.
   PlaceReport submitReport(String placeId, ReportKind kind, {String? detail}) {
+    _lastActionAt['report'] = DateTime.now().millisecondsSinceEpoch;
+    final trimmedDetail = detail == null ? null : (detail.length > maxReportDetailLength ? detail.substring(0, maxReportDetailLength) : detail);
     final report = PlaceReport(
       id: 'report_${DateTime.now().millisecondsSinceEpoch}',
       placeId: placeId,
       kind: kind,
-      detail: detail,
+      detail: trimmedDetail,
       t: DateTime.now().millisecondsSinceEpoch,
       reporterId: 'me',
       confirmedBy: const ['me'],
@@ -1472,7 +2060,44 @@ class AppStore extends ChangeNotifier {
     _recordNightActivity();
     notifyListeners();
     _persist();
+    // Shows up instantly under a temporary id; the server's real id (the one
+    // everyone else's confirmations attach to) swaps in once it's saved.
+    if (signedIn && supabaseUserId != null && _remotePlaceIds.contains(placeId)) {
+      unawaited(_saveReportRemote(report));
+    }
     return report;
+  }
+
+  Future<void> _saveReportRemote(PlaceReport local) async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('place_reports').insert({
+        'place_id': local.placeId,
+        'kind': local.kind.name,
+        'detail': local.detail,
+        'reporter_id': uid,
+      }).select();
+      final serverId = rows.first['id'] as String;
+      _remoteReportIds.add(serverId);
+      placeReports = placeReports
+          .where((r) => r.id != serverId)
+          .map((r) => r.id == local.id ? PlaceReport(
+                id: serverId,
+                placeId: r.placeId,
+                kind: r.kind,
+                detail: r.detail,
+                t: r.t,
+                reporterId: r.reporterId,
+                confirmedBy: r.confirmedBy,
+              ) : r)
+          .toList();
+      notifyListeners();
+      _persist();
+    } catch (_) {
+      // The report stays on this device only — a failed save (rate limit,
+      // offline) just doesn't reach anyone else.
+    }
   }
 
   /// Confirms an existing report as 'me'. Returns null on success, or a
@@ -1512,6 +2137,10 @@ class AppStore extends ChangeNotifier {
     _recordNightActivity();
     notifyListeners();
     _persist();
+    final uid = supabaseUserId;
+    if (signedIn && uid != null && _remoteReportIds.contains(reportId)) {
+      _fireAndForgetInsert('report_confirmations', {'report_id': reportId, 'user_id': uid});
+    }
     return null;
   }
 
@@ -1527,6 +2156,9 @@ class AppStore extends ChangeNotifier {
     placeReports = [...placeReports]..removeAt(i);
     notifyListeners();
     _persist();
+    if (_remoteReportIds.remove(reportId)) {
+      _fireAndForgetRemote(() => Supabase.instance.client.from('place_reports').delete().eq('id', reportId));
+    }
     return null;
   }
 
@@ -1709,17 +2341,40 @@ class AppStore extends ChangeNotifier {
   RealtimeChannel? _storyViewsChannel;
   RealtimeChannel? _storyLikesChannel;
   RealtimeChannel? _messagesChannel;
+  RealtimeChannel? _placesChannel;
+  RealtimeChannel? _placeConfirmationsChannel;
+  RealtimeChannel? _chatChannel;
+  RealtimeChannel? _chatReactionsChannel;
+  RealtimeChannel? _friendshipsChannel;
+  RealtimeChannel? _profilesChannel;
+  RealtimeChannel? _pollsChannel;
+  RealtimeChannel? _pollVotesChannel;
+  RealtimeChannel? _reportsChannel;
+  RealtimeChannel? _reportConfirmationsChannel;
 
   // Every story/message/person id that came from the real backend, tracked
   // just so signOut (_clearRemoteData) can cleanly drop them again.
   final Set<String> _remoteStoryIds = {};
   final Set<String> _remoteMessageIds = {};
   final Set<String> _remotePersonIds = {};
+  final Set<String> _remotePlaceIds = {};
+  final Set<String> _remoteChatIds = {};
+  final Set<String> _remotePollIds = {};
+  final Set<String> _remoteReportIds = {};
+  // pollId -> (voter id, or 'me') -> option index, for polls from the server.
+  final Map<String, Map<String, int>> _remotePollVotes = {};
 
   void _startRemoteSync() {
     final uid = supabaseUserId;
     if (uid == null) return;
     _stopRemoteSync();
+    _resetLocalIfDifferentAccount(uid);
+    unawaited(_fetchRemoteProfiles());
+    unawaited(_fetchRemoteFriendships());
+    unawaited(_fetchRemotePlaces(purge: true));
+    unawaited(_fetchRemoteChat());
+    unawaited(_fetchRemotePolls());
+    unawaited(_fetchRemoteReports());
     unawaited(_fetchRemoteStories());
     unawaited(_fetchRemoteMessages());
 
@@ -1770,27 +2425,745 @@ class AppStore extends ChangeNotifier {
         table: 'messages',
         callback: (payload) => _onRemoteMessageInsert(payload.newRecord),
       )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'messages',
+        callback: (payload) => _onRemoteMessageUpdate(payload.newRecord),
+      )
+      ..subscribe();
+
+    // Places and their confirmations change rarely and in small ways, so
+    // any change just triggers a (debounced) re-fetch of both rather than
+    // trying to patch the local lists event by event.
+    _placesChannel = client.channel('public:places:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'places',
+        callback: (_) => _schedulePlacesRefresh(),
+      )
+      ..subscribe();
+
+    _placeConfirmationsChannel = client.channel('public:place_confirmations:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'place_confirmations',
+        callback: (_) => _schedulePlacesRefresh(),
+      )
+      ..subscribe();
+
+    _chatChannel = client.channel('public:chat_messages:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_messages',
+        callback: (payload) => _onRemoteChatInsert(payload.newRecord),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'chat_messages',
+        callback: (payload) => _onRemoteChatDelete(payload.oldRecord),
+      )
+      ..subscribe();
+
+    _chatReactionsChannel = client.channel('public:chat_reactions:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_reactions',
+        callback: (payload) => _onRemoteReactionChange(payload.newRecord, removed: false),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'chat_reactions',
+        callback: (payload) => _onRemoteReactionChange(payload.newRecord, removed: false),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'chat_reactions',
+        callback: (payload) => _onRemoteReactionChange(payload.oldRecord, removed: true),
+      )
+      ..subscribe();
+
+    _pollsChannel = client.channel('public:polls:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'polls',
+        callback: (_) => _schedulePollsRefresh(),
+      )
+      ..subscribe();
+
+    _pollVotesChannel = client.channel('public:poll_votes:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'poll_votes',
+        callback: (_) => _schedulePollsRefresh(),
+      )
+      ..subscribe();
+
+    _reportsChannel = client.channel('public:place_reports:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'place_reports',
+        callback: (_) => _scheduleReportsRefresh(),
+      )
+      ..subscribe();
+
+    _reportConfirmationsChannel = client.channel('public:report_confirmations:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'report_confirmations',
+        callback: (_) => _scheduleReportsRefresh(),
+      )
+      ..subscribe();
+
+    // RLS already limits this to your own friendships — any change
+    // (a new request, an accept, an unfriend) re-reads the whole set.
+    _friendshipsChannel = client.channel('public:friendships:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'friendships',
+        callback: (_) => unawaited(_fetchRemoteFriendships()),
+      )
+      ..subscribe();
+
+    // Profile changes: someone's "going" pick, points, name style, a ban,
+    // an admin points gift to YOU — all arrive as updates to that row.
+    _profilesChannel = client.channel('public:profiles:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'profiles',
+        callback: (payload) => _applyProfileRow(payload.newRecord),
+      )
       ..subscribe();
   }
 
   void _stopRemoteSync() {
     final client = Supabase.instance.client;
-    for (final channel in [_storiesChannel, _storyViewsChannel, _storyLikesChannel, _messagesChannel]) {
+    for (final channel in [
+      _storiesChannel,
+      _storyViewsChannel,
+      _storyLikesChannel,
+      _messagesChannel,
+      _placesChannel,
+      _placeConfirmationsChannel,
+      _chatChannel,
+      _chatReactionsChannel,
+      _friendshipsChannel,
+      _profilesChannel,
+      _pollsChannel,
+      _pollVotesChannel,
+      _reportsChannel,
+      _reportConfirmationsChannel,
+    ]) {
       if (channel != null) client.removeChannel(channel);
     }
     _storiesChannel = null;
     _storyViewsChannel = null;
     _storyLikesChannel = null;
     _messagesChannel = null;
+    _placesChannel = null;
+    _placeConfirmationsChannel = null;
+    _chatChannel = null;
+    _chatReactionsChannel = null;
+    _friendshipsChannel = null;
+    _profilesChannel = null;
+    _pollsChannel = null;
+    _pollVotesChannel = null;
+    _reportsChannel = null;
+    _reportConfirmationsChannel = null;
+    _placesRefreshTimer?.cancel();
+    _placesRefreshTimer = null;
+    _pollsRefreshTimer?.cancel();
+    _pollsRefreshTimer = null;
+    _reportsRefreshTimer?.cancel();
+    _reportsRefreshTimer = null;
   }
 
   void _clearRemoteData() {
     stories = stories.where((s) => !_remoteStoryIds.contains(s.id)).toList();
-    messages = messages.where((m) => !_remoteMessageIds.contains(m.id)).toList();
+    messages = messages.where((m) => !_remoteMessageIds.contains(m.id) && !_remoteChatIds.contains(m.id)).toList();
     people = {for (final entry in people.entries) if (!_remotePersonIds.contains(entry.key)) entry.key: entry.value};
+    places = places.where((p) => !_remotePlaceIds.contains(p.id)).toList();
+    placeConfirmations = {for (final e in placeConfirmations.entries) if (!_remotePlaceIds.contains(e.key)) e.key: e.value};
+    adminVerifiedPlaceIds = adminVerifiedPlaceIds.where((id) => !_remotePlaceIds.contains(id)).toSet();
+    polls = polls.where((p) => !_remotePollIds.contains(p.id)).toList();
+    placeReports = placeReports.where((r) => !_remoteReportIds.contains(r.id)).toList();
+    me = me.copyWith(friends: const [], friendRequestsSent: const [], friendRequestsReceived: const []);
+    _remotePollIds.clear();
+    _remoteReportIds.clear();
+    _remotePollVotes.clear();
     _remoteStoryIds.clear();
     _remoteMessageIds.clear();
+    _seenMarkedAt.clear();
     _remotePersonIds.clear();
+    _remotePlaceIds.clear();
+    _remoteChatIds.clear();
+    _remoteBannedIds.clear();
+    selfBanned = false;
+    _profileSynced = false;
+    _lastProfilePush = null;
+  }
+
+  /// A shared phone: if a DIFFERENT account signs in than the one this
+  /// device's saved progress belongs to, start that account from a clean
+  /// profile instead of handing it the previous person's points, name
+  /// styling, streak, and Memories. The very first sign-in on a device
+  /// (nothing recorded yet) keeps whatever progress is already here.
+  void _resetLocalIfDifferentAccount(String uid) {
+    final previous = _lastUserId;
+    _lastUserId = uid;
+    if (previous == null || previous == uid) return;
+    me = freshMe();
+    stories = stories.where((s) => s.uid != 'me').toList();
+    messages = messages.where((m) => m.uid != 'me').toList();
+    placeReports = placeReports.where((r) => r.reporterId != 'me').toList();
+    polls = polls.where((p) => p.by != 'me').toList();
+    placeConfirmations = {for (final e in placeConfirmations.entries) e.key: e.value.where((id) => id != 'me').toList()};
+    _appliedBonus = 0;
+    _localPlaceCovers.clear();
+    notifyListeners();
+  }
+
+  // The Supabase user id this device's saved progress belongs to — persisted
+  // so _resetLocalIfDifferentAccount can tell a new account from a re-login.
+  String? _lastUserId;
+
+  // The total admin-gifted bonus points currently folded into me.points —
+  // tracked separately so a new gift (or a fresh device) can be applied as
+  // an exact delta, and so only EARNED points (total minus this) are ever
+  // pushed up to profiles.points. Persisted.
+  int _appliedBonus = 0;
+  bool _profileSynced = false;
+  String? _lastProfilePush;
+
+  // Place cover photos only exist as files on the device that took them (no
+  // upload yet) — this remembers placeId -> local path so a re-fetch from
+  // the backend doesn't lose your own cover photo. Persisted.
+  final Map<String, String> _localPlaceCovers = {};
+
+  Timer? _placesRefreshTimer;
+  void _schedulePlacesRefresh() {
+    _placesRefreshTimer?.cancel();
+    _placesRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchRemotePlaces()));
+  }
+
+  /// Runs a Supabase call without waiting on it — errors are swallowed on
+  /// purpose (the local copy already updated; the server catches up on the
+  /// next successful sync).
+  void _fireAndForgetRemote(Future<dynamic> Function() op) {
+    unawaited(() async {
+      try {
+        await op();
+      } catch (_) {}
+    }());
+  }
+
+  void _fireAndForgetRpc(String fn, Map<String, dynamic> params) {
+    _fireAndForgetRemote(() => Supabase.instance.client.rpc(fn, params: params));
+  }
+
+  // --- Profile sync ----------------------------------------------------
+
+  Future<void> _fetchRemoteProfiles() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final client = Supabase.instance.client;
+      // Your own row first (that's what unlocks pushing your state up),
+      // then everyone who's currently "going" somewhere tonight so the
+      // going counts are real from the first frame.
+      final mine = await client.from('profiles').select().eq('id', uid);
+      for (final row in mine) {
+        _applyProfileRow(row);
+      }
+      final tonight = await client.from('profiles').select().eq('move_session', sessionKey()).limit(1000);
+      for (final row in tonight) {
+        _applyProfileRow(row);
+      }
+      // Everyone the admin has banned, so their stuff is hidden here too.
+      final banned = await client.from('profiles').select().eq('banned', true).limit(500);
+      for (final row in banned) {
+        _applyProfileRow(row);
+      }
+    } catch (_) {
+      // Offline — the realtime channel / next sync catches up.
+    }
+  }
+
+  /// Folds one `profiles` row into local state: your own row reconciles
+  /// points/streak/style/ban status; anyone else's refreshes their Person
+  /// (avatar, going-to, name style, points, ban, admin flag).
+  void _applyProfileRow(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    if (id == null) return;
+    if (id == supabaseUserId) {
+      _applyOwnProfileRow(row);
+      return;
+    }
+    final banned = row['banned'] as bool? ?? false;
+    if (banned) {
+      _remoteBannedIds.add(id);
+    } else {
+      _remoteBannedIds.remove(id);
+    }
+    _remotePersonIds.add(id);
+    people = {...people, id: _personFromProfileRow(row)};
+    notifyListeners();
+  }
+
+  void _applyOwnProfileRow(Map<String, dynamic> row) {
+    selfBanned = row['banned'] as bool? ?? false;
+    final remoteEarned = (row['points'] as num?)?.toInt() ?? 0;
+    final bonus = (row['bonus_points'] as num?)?.toInt() ?? 0;
+    final localEarned = me.points - _appliedBonus;
+    final earned = localEarned > remoteEarned ? localEarned : remoteEarned;
+    var next = me;
+    if (earned + bonus != me.points) next = next.copyWith(points: earned + bonus);
+    _appliedBonus = bonus;
+
+    // A device that's never set a handle/bio/photo/style adopts what the
+    // account already has on the server (a second phone, a reinstall).
+    final serverHandle = row['handle'] as String?;
+    if (next.lastHandleChangeAt == null && serverHandle != null && serverHandle.isNotEmpty && next.handle != serverHandle) {
+      next = next.copyWith(handle: serverHandle);
+    }
+    final serverBio = row['bio'] as String?;
+    if (next.bio.isEmpty && serverBio != null && serverBio.isNotEmpty) next = next.copyWith(bio: serverBio);
+    final avatarUrl = row['avatar_url'] as String?;
+    if (avatarUrl != null && avatarUrl.isNotEmpty) next = next.copyWith(photoUrl: avatarUrl);
+    final style = row['style'];
+    final hasLocalStyle = next.nameBold || next.nameItalic || next.nameUnderline || next.nameCheckbox || next.nameColor != null;
+    if (!hasLocalStyle && style is Map && style.isNotEmpty) {
+      next = next.copyWith(
+        nameBold: style['bold'] == true,
+        nameItalic: style['italic'] == true,
+        nameUnderline: style['underline'] == true,
+        nameCheckbox: style['check'] == true,
+        nameColor: (style['color'] as num?)?.toInt(),
+      );
+    }
+    final serverStreakDay = row['move_streak_day'] as String?;
+    final serverStreak = (row['move_streak'] as num?)?.toInt() ?? 0;
+    if (serverStreakDay != null && (next.moveStreakDay == null || serverStreakDay.compareTo(next.moveStreakDay!) > 0)) {
+      next = next.copyWith(moveStreak: serverStreak, moveStreakDay: serverStreakDay);
+    }
+    me = next;
+    _profileSynced = true;
+    notifyListeners();
+    _persist();
+    _maybePushProfile();
+  }
+
+  Map<String, dynamic> _profilePayload() {
+    final earned = me.points - _appliedBonus;
+    return {
+      'points': earned < 0 ? 0 : earned,
+      'move': me.move,
+      'move_session': me.move == null ? null : sessionKey(),
+      'move_streak': me.moveStreak,
+      'move_streak_day': me.moveStreakDay,
+      'style': {
+        'bold': me.nameBold,
+        'italic': me.nameItalic,
+        'underline': me.nameUnderline,
+        'check': me.nameCheckbox,
+        'color': me.nameColor,
+      },
+    };
+  }
+
+  /// Pushes your points/going-to/streak/name style up to your profile row —
+  /// only after the first fetch of that row (so a fresh install can never
+  /// overwrite the server with zeros), and only when something actually
+  /// changed since the last push.
+  void _maybePushProfile() {
+    final uid = supabaseUserId;
+    if (!_profileSynced || !signedIn || uid == null) return;
+    final payload = _profilePayload();
+    final encoded = jsonEncode(payload);
+    if (encoded == _lastProfilePush) return;
+    _lastProfilePush = encoded;
+    _fireAndForgetUpdate('profiles', payload, uid);
+  }
+
+  // --- Friends -----------------------------------------------------------
+
+  Future<void> _fetchRemoteFriendships() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('friendships').select();
+      final friends = <String>[];
+      final sent = <String>[];
+      final received = <String>[];
+      for (final r in rows) {
+        final requester = r['requester_id'] as String?;
+        final addressee = r['addressee_id'] as String?;
+        final status = r['status'] as String?;
+        if (requester == null || addressee == null) continue;
+        final other = requester == uid ? addressee : requester;
+        if (status == 'accepted') {
+          friends.add(other);
+        } else if (requester == uid) {
+          sent.add(other);
+        } else {
+          received.add(other);
+        }
+      }
+      await _ensurePeopleFor([...friends, ...sent, ...received]);
+      me = me.copyWith(friends: friends, friendRequestsSent: sent, friendRequestsReceived: received);
+      notifyListeners();
+      _persist();
+    } catch (_) {
+      // Offline — the realtime channel re-reads on the next change.
+    }
+  }
+
+  void _fireAndForgetFriendshipRemove(String personId) {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null || !_isRealPersonId(personId)) return;
+    _fireAndForgetRemote(
+      () => Supabase.instance.client
+          .from('friendships')
+          .delete()
+          .or('and(requester_id.eq.$uid,addressee_id.eq.$personId),and(requester_id.eq.$personId,addressee_id.eq.$uid)'),
+    );
+  }
+
+  // --- Places ------------------------------------------------------------
+
+  Future<void> _fetchRemotePlaces({bool purge = false}) async {
+    if (supabaseUserId == null) return;
+    try {
+      final client = Supabase.instance.client;
+      if (purge) {
+        // Best-effort cleanup of stale unverified places — anyone's app
+        // may call this; it only ever deletes places already past their
+        // night (see purge_stale_places in the SQL).
+        try {
+          await client.rpc('purge_stale_places');
+        } catch (_) {}
+      }
+      final rows = await client.from('places').select();
+      final confRows = await client.from('place_confirmations').select();
+      _applyRemotePlaces(rows, confRows);
+    } catch (_) {
+      // Offline — keep whatever's showing.
+    }
+  }
+
+  Place? _placeFromRow(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final lat = (row['lat'] as num?)?.toDouble();
+    final lng = (row['lng'] as num?)?.toDouble();
+    if (id == null || lat == null || lng == null) return null;
+    final createdRaw = row['created_at'] as String?;
+    final created = createdRaw != null ? DateTime.parse(createdRaw).toLocal() : DateTime.now();
+    final byUid = row['by_uid'] as String?;
+    final kindName = row['kind'] as String?;
+    return Place(
+      id: id,
+      name: (row['name'] as String?) ?? 'Unnamed place',
+      kind: PlaceKind.values.firstWhere((k) => k.name == kindName, orElse: () => PlaceKind.area),
+      lat: lat,
+      lng: lng,
+      address: (row['address'] as String?) ?? '',
+      by: byUid == supabaseUserId ? 'me' : (byUid ?? 'deleted'),
+      t: created.millisecondsSinceEpoch,
+      session: sessionKey(created),
+      coverPhotoPath: _localPlaceCovers[id],
+      coverUrl: row['cover_url'] as String?,
+    );
+  }
+
+  /// Replaces the backend-sourced places with a fresh copy. Tonight's places
+  /// always show; an older one only survives if a FUNKY Admin verified it or
+  /// 15+ people confirmed it — that's the nightly "unverified places clear
+  /// out, verified ones stay" rule.
+  void _applyRemotePlaces(List<dynamic> rows, List<dynamic> confRows) {
+    final uid = supabaseUserId;
+    final confByPlace = <String, List<String>>{};
+    for (final c in confRows) {
+      final pid = c['place_id'] as String?;
+      final u = c['user_id'] as String?;
+      if (pid == null || u == null) continue;
+      (confByPlace[pid] ??= []).add(u == uid ? 'me' : u);
+    }
+    final today = sessionKey();
+    final fetched = <Place>[];
+    final verifiedByAdmin = <String>{};
+    for (final raw in rows) {
+      final row = raw as Map<String, dynamic>;
+      final place = _placeFromRow(row);
+      if (place == null) continue;
+      final adminVerified = row['admin_verified'] as bool? ?? false;
+      final confirmations = confByPlace[place.id]?.length ?? 0;
+      final verified = adminVerified || confirmations >= venueVerificationThreshold;
+      if (place.session != today && !verified) continue;
+      fetched.add(place);
+      if (adminVerified) verifiedByAdmin.add(place.id);
+    }
+    final fetchedIds = fetched.map((p) => p.id).toSet();
+    places = [...places.where((p) => !_remotePlaceIds.contains(p.id) && !fetchedIds.contains(p.id)), ...fetched];
+    _remotePlaceIds
+      ..clear()
+      ..addAll(fetchedIds);
+    adminVerifiedPlaceIds = verifiedByAdmin;
+    placeConfirmations = {for (final id in fetchedIds) id: confByPlace[id] ?? const <String>[]};
+    notifyListeners();
+    _persist();
+  }
+
+  // --- Polls -------------------------------------------------------------
+
+  Timer? _pollsRefreshTimer;
+  void _schedulePollsRefresh() {
+    _pollsRefreshTimer?.cancel();
+    _pollsRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchRemotePolls()));
+  }
+
+  Poll? _pollFromRow(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final q = row['q'] as String?;
+    final lat = (row['lat'] as num?)?.toDouble();
+    final lng = (row['lng'] as num?)?.toDouble();
+    final optionsRaw = row['options'];
+    if (id == null || q == null || lat == null || lng == null || optionsRaw is! List) return null;
+    final createdRaw = row['created_at'] as String?;
+    final created = createdRaw != null ? DateTime.parse(createdRaw).toLocal() : DateTime.now();
+    final byUid = row['by_uid'] as String?;
+    return Poll(
+      id: id,
+      q: q,
+      options: optionsRaw.map((e) => e.toString()).toList(),
+      lat: lat,
+      lng: lng,
+      by: byUid == supabaseUserId ? 'me' : (byUid ?? 'deleted'),
+      t: created.millisecondsSinceEpoch,
+      session: sessionKey(created),
+    );
+  }
+
+  Future<void> _fetchRemotePolls() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client.from('polls').select();
+      final voteRows = await client.from('poll_votes').select();
+      final today = sessionKey();
+      final fetched = <Poll>[];
+      for (final row in rows) {
+        final poll = _pollFromRow(row);
+        // Polls are tonight-only — an older one is just left behind.
+        if (poll == null || poll.session != today) continue;
+        fetched.add(poll);
+      }
+      final fetchedIds = fetched.map((p) => p.id).toSet();
+      final votes = <String, Map<String, int>>{};
+      var myVotes = Map<String, int>.from(me.votes);
+      for (final v in voteRows) {
+        final pid = v['poll_id'] as String?;
+        final voter = v['user_id'] as String?;
+        final idx = (v['option_idx'] as num?)?.toInt();
+        if (pid == null || voter == null || idx == null || !fetchedIds.contains(pid)) continue;
+        if (voter == uid) {
+          // Your own vote on a poll (maybe cast on another device).
+          myVotes[pid] = idx;
+        } else {
+          (votes[pid] ??= {})[voter] = idx;
+        }
+      }
+      polls = [...polls.where((p) => !_remotePollIds.contains(p.id) && !fetchedIds.contains(p.id)), ...fetched];
+      _remotePollIds
+        ..clear()
+        ..addAll(fetchedIds);
+      _remotePollVotes
+        ..clear()
+        ..addAll(votes);
+      // Drop votes recorded on polls that no longer exist.
+      myVotes.removeWhere((pid, _) => !fetchedIds.contains(pid));
+      me = me.copyWith(votes: myVotes);
+      notifyListeners();
+      _persist();
+    } catch (_) {
+      // Offline — keep what's showing.
+    }
+  }
+
+  // --- Place reports -----------------------------------------------------
+
+  Timer? _reportsRefreshTimer;
+  void _scheduleReportsRefresh() {
+    _reportsRefreshTimer?.cancel();
+    _reportsRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchRemoteReports()));
+  }
+
+  Future<void> _fetchRemoteReports() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final client = Supabase.instance.client;
+      final cutoff = DateTime.fromMillisecondsSinceEpoch(_sessionStartMs()).toUtc().toIso8601String();
+      final rows = await client.from('place_reports').select().gte('created_at', cutoff);
+      final confRows = await client.from('report_confirmations').select();
+      final confByReport = <String, List<String>>{};
+      for (final c in confRows) {
+        final rid = c['report_id'] as String?;
+        final voter = c['user_id'] as String?;
+        if (rid == null || voter == null) continue;
+        (confByReport[rid] ??= []).add(voter == uid ? 'me' : voter);
+      }
+      final fetched = <PlaceReport>[];
+      for (final row in rows) {
+        final id = row['id'] as String?;
+        final placeId = row['place_id'] as String?;
+        final kindName = row['kind'] as String?;
+        if (id == null || placeId == null || kindName == null) continue;
+        final kind = ReportKind.values.where((k) => k.name == kindName);
+        if (kind.isEmpty) continue;
+        final createdRaw = row['created_at'] as String?;
+        final created = createdRaw != null ? DateTime.parse(createdRaw).toLocal() : DateTime.now();
+        final reporter = row['reporter_id'] as String? ?? 'deleted';
+        final confirmed = {...(confByReport[id] ?? const <String>[]), if (reporter != 'deleted') (reporter == uid ? 'me' : reporter)}.toList();
+        fetched.add(PlaceReport(
+          id: id,
+          placeId: placeId,
+          kind: kind.first,
+          detail: row['detail'] as String?,
+          t: created.millisecondsSinceEpoch,
+          reporterId: reporter == uid ? 'me' : reporter,
+          confirmedBy: confirmed,
+        ));
+      }
+      final fetchedIds = fetched.map((r) => r.id).toSet();
+      placeReports = [...placeReports.where((r) => !_remoteReportIds.contains(r.id) && !fetchedIds.contains(r.id)), ...fetched];
+      _remoteReportIds
+        ..clear()
+        ..addAll(fetchedIds);
+      notifyListeners();
+      _persist();
+    } catch (_) {
+      // Offline — keep what's showing.
+    }
+  }
+
+  // --- Live Chat ---------------------------------------------------------
+
+  int _sessionStartMs() {
+    final day = DateTime.tryParse(sessionKey());
+    if (day == null) return DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
+    return day.add(const Duration(hours: resetHour)).millisecondsSinceEpoch;
+  }
+
+  ChatMessage? _chatFromRow(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final text = row['text'] as String?;
+    if (id == null || text == null) return null;
+    final createdRaw = row['created_at'] as String?;
+    final created = createdRaw != null ? DateTime.parse(createdRaw).toLocal() : DateTime.now();
+    final anon = row['anon'] as bool? ?? false;
+    final sender = row['sender_id'] as String?;
+    final String uid;
+    if (sender == null) {
+      uid = 'anon';
+    } else {
+      uid = sender == supabaseUserId ? 'me' : sender;
+    }
+    return ChatMessage(
+      id: id,
+      t: created.millisecondsSinceEpoch,
+      room: 'main',
+      uid: uid,
+      text: text,
+      anon: anon,
+      status: 'delivered',
+      lat: (row['lat'] as num?)?.toDouble(),
+      lng: (row['lng'] as num?)?.toDouble(),
+    );
+  }
+
+  Future<void> _fetchRemoteChat() async {
+    if (supabaseUserId == null) return;
+    try {
+      final cutoff = DateTime.fromMillisecondsSinceEpoch(_sessionStartMs()).toUtc().toIso8601String();
+      final rows = await Supabase.instance.client
+          .from('chat_messages')
+          .select()
+          .gte('created_at', cutoff)
+          .order('created_at', ascending: false)
+          .limit(300);
+      final fetched = <ChatMessage>[];
+      for (final row in rows) {
+        final msg = _chatFromRow(row);
+        if (msg == null) continue;
+        fetched.add(msg);
+        _remoteChatIds.add(msg.id);
+      }
+      await _ensurePeopleFor(fetched.map((m) => m.uid).where((u) => u != 'anon' && u != 'me'));
+      final existingIds = messages.map((m) => m.id).toSet();
+      final newOnes = fetched.where((m) => !existingIds.contains(m.id)).toList();
+      if (newOnes.isNotEmpty) {
+        messages = _capMessages([...messages, ...newOnes]);
+        notifyListeners();
+      }
+      await _fetchRemoteReactions();
+    } catch (_) {
+      // Offline — realtime / next sync catches up.
+    }
+  }
+
+  void _onRemoteChatInsert(Map<String, dynamic> row) {
+    final msg = _chatFromRow(row);
+    if (msg == null) return;
+    _remoteChatIds.add(msg.id);
+    if (messages.any((m) => m.id == msg.id)) return;
+    unawaited(() async {
+      if (msg.uid != 'anon' && msg.uid != 'me') await _ensurePeopleFor([msg.uid]);
+      if (messages.any((m) => m.id == msg.id)) return;
+      messages = _capMessages([...messages, msg]);
+      notifyListeners();
+    }());
+  }
+
+  void _onRemoteChatDelete(Map<String, dynamic> oldRow) {
+    final id = oldRow['id'] as String?;
+    if (id == null) return;
+    _remoteChatIds.remove(id);
+    final before = messages.length;
+    messages = messages.where((m) => m.id != id).toList();
+    if (messages.length != before) notifyListeners();
+  }
+
+  /// The Live Chat feed for display: tonight's area messages from people
+  /// within 25 miles of where you are (a message with no recorded location
+  /// is always shown), minus anyone who's banned.
+  List<ChatMessage> get liveChatMessages {
+    final here = location ?? defaultLocation;
+    final start = _sessionStartMs();
+    final list = messages.where((m) {
+      if (m.room != 'main') return false;
+      if (m.t < start) return false;
+      if (m.uid != 'me' && isBanned(m.uid)) return false;
+      final lat = m.lat;
+      final lng = m.lng;
+      if (lat != null && lng != null && !near(here, LatLng(lat, lng))) return false;
+      return true;
+    }).toList();
+    list.sort((a, b) => a.t.compareTo(b.t));
+    return list;
   }
 
   void _fireAndForgetInsert(String table, Map<String, dynamic> data) {
@@ -1830,6 +3203,7 @@ class AppStore extends ChangeNotifier {
         final id = row['id'] as String;
         updated[id] = _personFromProfileRow(row);
         _remotePersonIds.add(id);
+        if (row['banned'] == true) _remoteBannedIds.add(id);
       }
       people = updated;
       notifyListeners();
@@ -1841,26 +3215,41 @@ class AppStore extends ChangeNotifier {
 
   Person _personFromProfileRow(Map<String, dynamic> row) {
     final id = row['id'] as String;
+    final style = row['style'];
+    final styleMap = style is Map ? style : const <dynamic, dynamic>{};
+    // Only count their "going" pick if it was made tonight — an old one
+    // from a previous night is just a stale value.
+    final moveSession = row['move_session'] as String?;
+    final move = moveSession == sessionKey() ? row['move'] as String? : null;
     return Person(
       id: id,
       handle: (row['handle'] as String?) ?? 'funky_${id.substring(0, 8)}',
       bio: (row['bio'] as String?) ?? '',
       since: 0,
-      points: (row['points'] as num?)?.toInt() ?? 0,
+      // Earned points plus any admin-gifted bonus — what everyone sees.
+      points: ((row['points'] as num?)?.toInt() ?? 0) + ((row['bonus_points'] as num?)?.toInt() ?? 0),
       friends: const [],
       friendRequestsSent: const [],
       friendRequestsReceived: const [],
       muted: const [],
       anon: false,
       session: sessionKey(),
+      move: move,
       votes: const {},
       seen: const [],
       likes: const [],
-      // Their avatar_url (if they ever set one) is a remote URL, not a
-      // local file path — FunkyAvatar only renders local files right now,
-      // so a real account just falls back to its initial-letter circle
-      // until avatars are part of this sync too.
+      // Their profile picture is a public URL (avatars bucket), not a local
+      // file — FunkyAvatar shows photoUrl when there's no photoPath.
       photoPath: null,
+      photoUrl: row['avatar_url'] as String?,
+      nameBold: styleMap['bold'] == true,
+      nameItalic: styleMap['italic'] == true,
+      nameUnderline: styleMap['underline'] == true,
+      nameCheckbox: styleMap['check'] == true,
+      nameColor: (styleMap['color'] as num?)?.toInt(),
+      moveStreak: (row['move_streak'] as num?)?.toInt() ?? 0,
+      moveStreakDay: row['move_streak_day'] as String?,
+      isAdminUser: row['is_admin'] as bool? ?? false,
     );
   }
 
@@ -2022,7 +3411,21 @@ class AppStore extends ChangeNotifier {
       uid: senderId == uid ? 'me' : senderId,
       text: row['text'] as String? ?? '',
       anon: false,
+      status: senderId == uid && row['read_at'] != null ? 'seen' : 'delivered',
+      mediaType: row['media_path'] != null ? (row['media_type'] as String? ?? 'image') : null,
     );
+  }
+
+  /// A short-lived signed URL for a DM photo/video (the dm_media bucket is
+  /// private). Null if the row has no media or signing fails.
+  Future<String?> _signedDmMediaUrl(Map<String, dynamic> row) async {
+    final path = row['media_path'] as String?;
+    if (path == null) return null;
+    try {
+      return await Supabase.instance.client.storage.from('dm_media').createSignedUrl(path, 6 * 3600);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _fetchRemoteMessages() async {
@@ -2030,10 +3433,18 @@ class AppStore extends ChangeNotifier {
     try {
       final rows = await Supabase.instance.client.from('messages').select().order('created_at');
       final fetched = <ChatMessage>[];
+      final urls = <String, String>{};
       final otherIds = <String>{};
       for (final row in rows) {
-        final msg = _messageFromRow(row);
+        var msg = _messageFromRow(row);
         if (msg == null) continue;
+        if (row['media_path'] != null) {
+          final url = await _signedDmMediaUrl(row);
+          if (url != null) {
+            urls[msg.id] = url;
+            msg = msg.copyWith(mediaUrl: url);
+          }
+        }
         fetched.add(msg);
         _remoteMessageIds.add(msg.id);
         final sender = row['sender_id'] as String;
@@ -2041,10 +3452,23 @@ class AppStore extends ChangeNotifier {
         otherIds.add(sender == supabaseUserId ? recipient : sender);
       }
       await _ensurePeopleFor(otherIds);
+      final byId = {for (final m in fetched) m.id: m};
+      // Existing ones: refresh the delivery status (so "Delivered" becomes
+      // "Seen") and re-attach a fresh download URL to remote media.
+      var changed = false;
+      messages = messages.map((m) {
+        final f = byId[m.id];
+        if (f == null) return m;
+        final nextStatus = m.uid == 'me' && f.status == 'seen' ? 'seen' : m.status;
+        final needUrl = urls[m.id] != null && m.mediaUrl == null;
+        if (nextStatus == m.status && !needUrl) return m;
+        changed = true;
+        return m.copyWith(status: nextStatus, mediaUrl: needUrl ? urls[m.id] : null);
+      }).toList();
       final existingIds = messages.map((m) => m.id).toSet();
       final newOnes = fetched.where((m) => !existingIds.contains(m.id)).toList();
-      if (newOnes.isNotEmpty) {
-        messages = [...messages, ...newOnes];
+      if (newOnes.isNotEmpty || changed) {
+        messages = _capMessages([...messages, ...newOnes]);
         notifyListeners();
         _persist();
       }
@@ -2056,23 +3480,37 @@ class AppStore extends ChangeNotifier {
   }
 
   void _onRemoteMessageInsert(Map<String, dynamic> row) {
-    final msg = _messageFromRow(row);
-    if (msg == null) return;
-    _remoteMessageIds.add(msg.id);
-    // Already here — either this device sent it (sendDirectMessage adds it
-    // straight from the insert response) or a duplicate delivery of the
-    // same realtime event.
-    if (messages.any((m) => m.id == msg.id)) return;
+    final base = _messageFromRow(row);
+    if (base == null) return;
+    _remoteMessageIds.add(base.id);
+    // Already here — either a duplicate delivery of the same realtime event
+    // or something a fetch already brought in.
+    if (messages.any((m) => m.id == base.id)) return;
     unawaited(() async {
+      var msg = base;
+      final url = await _signedDmMediaUrl(row);
+      if (url != null) msg = msg.copyWith(mediaUrl: url);
       await _ensurePeopleFor([msg.uid]);
-      messages = [...messages, msg];
+      // Re-check: the send path may have swapped in this id while we waited.
+      if (messages.any((m) => m.id == msg.id)) return;
+      messages = _capMessages([...messages, msg]);
       notifyListeners();
       _persist();
     }());
   }
 
+  /// The other side opened the thread — flip my message to "Seen".
+  void _onRemoteMessageUpdate(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    if (id == null || row['read_at'] == null) return;
+    final i = messages.indexWhere((m) => m.id == id);
+    if (i == -1 || messages[i].uid != 'me' || messages[i].status == 'seen') return;
+    _setMessageStatus(id, 'seen');
+  }
+
   @override
   void dispose() {
+    _persistTimer?.cancel();
     _stopRemoteSync();
     super.dispose();
   }

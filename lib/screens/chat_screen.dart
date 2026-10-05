@@ -6,7 +6,7 @@ import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'dm_thread_screen.dart';
-import 'person_profile_screen.dart';
+import '../widgets/avatar_preview.dart';
 
 // The hold-to-react picker's fixed set — "custom" in the sense that it's
 // FUNKY's own curated strip rather than the OS's full emoji keyboard, same
@@ -60,6 +60,33 @@ Future<void> _showReactionPicker(BuildContext context, AppStore store, ChatMessa
     ),
   );
   if (chosen != null) store.toggleReaction(message.id, chosen);
+}
+
+/// The pop-up shown the moment you flip on ghost mode in Live Chat — the
+/// only place anonymous mode lives now (it used to also be a switch on the
+/// profile page, which made it unclear what it actually covered).
+void _showAnonymousDialog(BuildContext context) {
+  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+  showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: tokens.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      title: const Text('👀👻', textAlign: TextAlign.center, style: TextStyle(fontSize: 44)),
+      content: Text(
+        "You've entered anonymous mode 👀👻\n\nYour name and profile picture are hidden on every Live Chat message you send until you tap the ghost again.",
+        textAlign: TextAlign.center,
+        style: TextStyle(color: tokens.ink, fontSize: 15, height: 1.35),
+      ),
+      actionsAlignment: MainAxisAlignment.center,
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: Text('Got it', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+        ),
+      ],
+    ),
+  );
 }
 
 /// One shared live chat for everyone within 25 miles — no per-place rooms,
@@ -125,7 +152,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Row(
                     children: [
                       GestureDetector(
-                        onTap: () => setState(() => _anon = !_anon),
+                        onTap: () {
+                          final turningOn = !_anon;
+                          setState(() => _anon = turningOn);
+                          if (turningOn) _showAnonymousDialog(context);
+                        },
                         child: Container(
                           width: 38,
                           height: 38,
@@ -231,13 +262,18 @@ class _MessagesList extends StatelessWidget {
           leading: Container(
             padding: EdgeInsets.all(isFriend ? 2 : 0),
             decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 2)) : null,
-            child: FunkyAvatar(seed: person.id, label: person.handle.isNotEmpty ? person.handle : '?', size: 44, photoPath: person.photoPath),
+            child: PersonAvatar(person: person, size: 44),
           ),
           title: StyledName(person: person, text: '@${person.handle}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
           subtitle: last == null
               ? null
               : Text(
-                  last.uid == 'me' ? 'You: ${last.text}' : last.text,
+                  (() {
+                    final body = last.mediaType == null
+                        ? last.text
+                        : '${last.mediaType == 'video' ? '🎥 Video' : '📷 Photo'}${last.text.isEmpty ? '' : ' · ${last.text}'}';
+                    return last.uid == 'me' ? 'You: $body' : body;
+                  })(),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: tokens.mute),
@@ -258,7 +294,7 @@ class _LiveChat extends StatelessWidget {
     // A banned sender's area-chat messages stop showing up for everyone on
     // this device (see AppStore.banUser) — ghost-mode messages have no uid
     // to check here either way, so they're unaffected.
-    final msgs = store.messagesFor('main').where((m) => !store.isBanned(m.uid)).toList();
+    final msgs = store.liveChatMessages;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -281,15 +317,28 @@ class _LiveChat extends StatelessWidget {
           final sender = m.uid == 'me' ? store.me : store.people[m.uid];
           final handle = sender?.handle ?? m.uid;
           Widget nameLine;
+          Widget avatar;
           if (m.anon) {
             nameLine = Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12));
-          } else if (m.uid == 'me') {
-            nameLine = FunkyHandle(handle: handle, person: sender);
+            avatar = Container(
+              width: 30,
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: tokens.raised, shape: BoxShape.circle),
+              child: const Text('👻', style: TextStyle(fontSize: 15)),
+            );
           } else {
+            // Tapping the name goes straight to their profile (your own
+            // full profile, for your own messages); tapping the small
+            // picture pops up a bigger preview of it first.
             nameLine = GestureDetector(
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: m.uid))),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => openProfile(context, m.uid),
               child: FunkyHandle(handle: handle, person: sender),
             );
+            avatar = sender != null
+                ? PersonAvatar(person: sender, size: 30)
+                : FunkyAvatar(seed: m.uid, label: handle.isNotEmpty ? handle : '?', size: 30);
           }
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
@@ -299,12 +348,26 @@ class _LiveChat extends StatelessWidget {
               onDoubleTap: () => store.toggleReaction(m.id, '❤️'),
               onLongPress: () => _showReactionPicker(context, store, m),
               behavior: HitTestBehavior.opaque,
-              child: Column(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  avatar,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   nameLine,
                   const SizedBox(height: 2),
                   filteredMessageText(m.text, TextStyle(color: tokens.ink)),
+                  if (m.uid == 'me' && (m.status == 'sending' || m.status == 'failed'))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        m.status == 'failed' ? 'Not sent' : 'Sending…',
+                        style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11),
+                      ),
+                    ),
                   if (m.reactions.isNotEmpty) ...[
                     const SizedBox(height: 5),
                     Wrap(
@@ -330,6 +393,9 @@ class _LiveChat extends StatelessWidget {
                       }).toList(),
                     ),
                   ],
+                ],
+              ),
+                  ),
                 ],
               ),
             ),

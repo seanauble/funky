@@ -6,6 +6,7 @@ import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/poll_bars.dart';
+import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
@@ -71,7 +72,7 @@ class HomeScreen extends StatelessWidget {
     // one), then everyone else, unseen first — shared with the viewer so a
     // left/right swipe there moves through this exact same queue.
     final storyQueue = [if (hasMyStories) 'me', ...sortedStorytellerIds];
-    final areaMessages = store.messagesFor('main');
+    final areaMessages = store.liveChatMessages;
     final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
 
     return Container(
@@ -99,6 +100,7 @@ class HomeScreen extends StatelessWidget {
                   unseen: false,
                   seed: store.me.id,
                   photoPath: store.me.photoPath,
+                  photoUrl: store.me.photoUrl,
                   onTap: hasMyStories
                       ? () => Navigator.of(context)
                           .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0)))
@@ -115,8 +117,10 @@ class HomeScreen extends StatelessWidget {
                     label: person.handle,
                     seed: person.id,
                     photoPath: person.photoPath,
+                    photoUrl: person.photoUrl,
                     unseen: hasUnseenFrom(uid),
                     isFriend: isFriend(uid),
+                    onLongPress: () => openProfile(context, uid),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: storyQueue.indexOf(uid))),
                     ),
@@ -200,6 +204,7 @@ class HomeScreen extends StatelessWidget {
                               child: PlaceMediaThumbnail(
                                 story: store.latestMediaStoryFor(p.id),
                                 coverPhotoPath: p.coverPhotoPath,
+                                coverUrl: p.coverUrl,
                                 fallbackLabel: p.name.substring(0, 1),
                                 fontSize: 22,
                               ),
@@ -275,7 +280,9 @@ class HomeScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        m.anon ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12)) : FunkyHandle(handle: handle),
+                        m.anon
+                            ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
+                            : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
                         filteredMessageText(m.text, TextStyle(color: tokens.ink)),
                       ],
                     ),
@@ -331,7 +338,11 @@ class _StoryRing extends StatelessWidget {
   final bool isFriend;
   final String seed;
   final String? photoPath;
+  final String? photoUrl;
   final VoidCallback? onTap;
+  // Press-and-hold on someone's ring jumps to their profile (a plain tap
+  // opens their Stories).
+  final VoidCallback? onLongPress;
   // When set, the little corner camera badge gets its OWN tap target
   // (always opens the camera) separate from [onTap] on the ring itself —
   // used for "Your story" once you have stories to look back at, so the
@@ -344,7 +355,9 @@ class _StoryRing extends StatelessWidget {
     this.isFriend = false,
     required this.seed,
     this.photoPath,
+    this.photoUrl,
     this.onTap,
+    this.onLongPress,
     this.onAddBadgeTap,
   });
 
@@ -355,6 +368,7 @@ class _StoryRing extends StatelessWidget {
     final Color ringColor = isAdd ? tokens.line : (unseen ? (isFriend ? tokens.friend : tokens.orange) : tokens.line);
     return GestureDetector(
       onTap: onTap,
+      onLongPress: onLongPress,
       behavior: HitTestBehavior.opaque,
       child: Container(
         width: 72,
@@ -372,7 +386,7 @@ class _StoryRing extends StatelessWidget {
                     shape: BoxShape.circle,
                     border: Border.all(color: ringColor, width: 2.5),
                   ),
-                  child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath),
+                  child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
                 ),
                 if (showBadge)
                   Positioned(
