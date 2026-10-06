@@ -45,13 +45,18 @@ class _FunkyAppState extends State<FunkyApp> with WidgetsBindingObserver {
     _themeProvider = ThemeProvider();
     _store = AppStore();
     _themeProvider.load();
-    _store.load();
+    _store.load().then((_) => _store.setAppForeground(true));
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _store.setAppForeground(state == AppLifecycleState.resumed);
   }
 
   @override

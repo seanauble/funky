@@ -2622,6 +2622,7 @@ class AppStore extends ChangeNotifier {
     final uid = supabaseUserId;
     if (uid == null) return;
     _stopRemoteSync();
+    _lastFullRefresh = DateTime.now();
     _resetLocalIfDifferentAccount(uid);
     unawaited(_fetchRemoteProfiles());
     unawaited(_fetchRemoteFriendships());
@@ -2957,7 +2958,7 @@ class AppStore extends ChangeNotifier {
 
   // --- Profile sync ----------------------------------------------------
 
-  Future<void> _fetchRemoteProfiles() async {
+  Future<void> _fetchRemoteProfiles({bool othersOnly = false}) async {
     final uid = supabaseUserId;
     if (uid == null) return;
     try {
@@ -2971,8 +2972,10 @@ class AppStore extends ChangeNotifier {
         // it has one now.
         mine = await client.from('profiles').select().eq('id', uid);
       }
-      for (final row in mine) {
-        _applyProfileRow(row);
+      if (!othersOnly) {
+        for (final row in mine) {
+          _applyProfileRow(row);
+        }
       }
       final tonight = await client.from('profiles').select().eq('move_session', sessionKey()).limit(1000);
       for (final row in tonight) {
@@ -3663,10 +3666,14 @@ class AppStore extends ChangeNotifier {
     for (final story in fetched) {
       _remoteStoryIds.add(story.id);
       final existingLocal = byId[story.id];
+      // Never lose "I watched / liked this" just because the server list
+      // doesn't have it (yet) — the local copy is the fresher truth.
+      final views = existingLocal != null && existingLocal.views.contains('me') && !story.views.contains('me') ? [...story.views, 'me'] : story.views;
+      final likes = existingLocal != null && existingLocal.likes.contains('me') && !story.likes.contains('me') ? [...story.likes, 'me'] : story.likes;
       if (existingLocal != null && (existingLocal.imagePath != null || existingLocal.videoPath != null)) {
-        byId[story.id] = existingLocal.copyWith(views: story.views, likes: story.likes, savedToTimeline: story.savedToTimeline);
+        byId[story.id] = existingLocal.copyWith(views: views, likes: likes, savedToTimeline: story.savedToTimeline);
       } else {
-        byId[story.id] = story;
+        byId[story.id] = story.copyWith(views: views, likes: likes);
       }
     }
     stories = byId.values.toList();
@@ -3684,12 +3691,12 @@ class AppStore extends ChangeNotifier {
       final viewsByStory = <String, List<String>>{};
       for (final v in viewRows) {
         final sid = v['story_id'] as String;
-        (viewsByStory[sid] ??= []).add(v['viewer_id'] as String);
+        (viewsByStory[sid] ??= []).add(_asMe(v['viewer_id'] as String));
       }
       final likesByStory = <String, List<String>>{};
       for (final l in likeRows) {
         final sid = l['story_id'] as String;
-        (likesByStory[sid] ??= []).add(l['liker_id'] as String);
+        (likesByStory[sid] ??= []).add(_asMe(l['liker_id'] as String));
       }
       final fetched = <Story>[];
       for (final row in rows) {
@@ -3697,6 +3704,18 @@ class AppStore extends ChangeNotifier {
         if (story != null) fetched.add(story);
       }
       await _ensurePeopleFor(fetched.map((s) => s.uid));
+      // Stories that were deleted or expired on the server disappear here
+      // too (a story posted in the last two minutes is spared in case its
+      // upload is still landing).
+      final fetchedIds = fetched.map((s) => s.id).toSet();
+      final recent = DateTime.now().millisecondsSinceEpoch - 120000;
+      final before = stories.length;
+      stories = stories.where((s) => !_remoteStoryIds.contains(s.id) || fetchedIds.contains(s.id) || s.t > recent).toList();
+      _remoteStoryIds.removeWhere((id) => !fetchedIds.contains(id) && !stories.any((s) => s.id == id));
+      if (stories.length != before) {
+        notifyListeners();
+        _persist();
+      }
       _mergeRemoteStories(fetched);
     } catch (_) {
       // Offline or a transient error — keep whatever's already showing;
@@ -3726,9 +3745,10 @@ class AppStore extends ChangeNotifier {
     final storyId = row['story_id'] as String?;
     final viewerId = row['viewer_id'] as String?;
     if (storyId == null || viewerId == null) return;
+    final viewer = _asMe(viewerId);
     final i = stories.indexWhere((s) => s.id == storyId);
-    if (i == -1 || stories[i].views.contains(viewerId)) return;
-    stories = [...stories]..[i] = stories[i].copyWith(views: [...stories[i].views, viewerId]);
+    if (i == -1 || stories[i].views.contains(viewer)) return;
+    stories = [...stories]..[i] = stories[i].copyWith(views: [...stories[i].views, viewer]);
     notifyListeners();
     _persist();
   }
@@ -3737,10 +3757,11 @@ class AppStore extends ChangeNotifier {
     final storyId = row['story_id'] as String?;
     final likerId = row['liker_id'] as String?;
     if (storyId == null || likerId == null) return;
+    final liker = _asMe(likerId);
     final i = stories.indexWhere((s) => s.id == storyId);
     if (i == -1) return;
     final current = stories[i].likes;
-    final next = added ? (current.contains(likerId) ? current : [...current, likerId]) : current.where((id) => id != likerId).toList();
+    final next = added ? (current.contains(liker) ? current : [...current, liker]) : current.where((id) => id != liker).toList();
     stories = [...stories]..[i] = stories[i].copyWith(likes: next);
     notifyListeners();
     _persist();
@@ -3864,6 +3885,51 @@ class AppStore extends ChangeNotifier {
     _setMessageStatus(id, 'seen');
   }
 
+
+  /// A server user id as the app writes it locally: 'me' for yourself.
+  String _asMe(String id) => id == supabaseUserId ? 'me' : id;
+
+  // ---------------------------------------------------------------------
+  // Keeping the feed fresh without closing the app: a refresh whenever the
+  // app comes back to the foreground, plus a light one every 30 seconds
+  // while it's open (realtime is still the instant path; this is the
+  // safety net for when the connection dropped in the background).
+  // ---------------------------------------------------------------------
+
+  Timer? _autoRefreshTimer;
+  DateTime? _lastFullRefresh;
+
+  void setAppForeground(bool foreground) {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = null;
+    if (!foreground) return;
+    if (supabaseUserId != null) {
+      final last = _lastFullRefresh;
+      // Away for a while: the realtime sockets are probably dead, so
+      // rebuild them along with a full re-fetch.
+      if (last != null && DateTime.now().difference(last) > const Duration(seconds: 20)) {
+        refreshNow(rebuildRealtime: true);
+      }
+    }
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) => refreshNow());
+  }
+
+  Future<void> refreshNow({bool rebuildRealtime = false}) async {
+    if (!signedIn || supabaseUserId == null) return;
+    _lastFullRefresh = DateTime.now();
+    if (rebuildRealtime) {
+      _startRemoteSync();
+      return;
+    }
+    await Future.wait([
+      _fetchRemoteStories(),
+      _fetchRemoteProfiles(othersOnly: true),
+      _fetchRemoteFriendships(),
+      _fetchRemotePlaces(),
+      _fetchRemoteMessages(),
+      _fetchNotifications(),
+    ]);
+  }
 
   // ---------------------------------------------------------------------
   // Notifications (DMs, friend requests, new verified places nearby,
@@ -4054,6 +4120,7 @@ class AppStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _persistTimer?.cancel();
     _authSub?.cancel();
     _stopRemoteSync();
