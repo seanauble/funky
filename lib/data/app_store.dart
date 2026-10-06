@@ -1254,6 +1254,7 @@ class AppStore extends ChangeNotifier {
   static final RegExp _validHandle = RegExp(r'^[a-zA-Z0-9_]+$');
 
   Future<String?> setHandle(String handle) async {
+    if (!signedIn) return 'Create an account to pick a username.';
     final trimmed = handle.trim();
     if (trimmed.isEmpty) return 'Enter a username.';
     if (trimmed == me.handle) return null; // unchanged — no-op, no cooldown hit
@@ -1297,6 +1298,7 @@ class AppStore extends ChangeNotifier {
   /// uses a gallery/image picker, same rule as Stories (see
   /// CameraCaptureScreen).
   Future<String?> setProfilePhoto(String path) async {
+    if (!signedIn) return 'Create an account to add a profile picture.';
     me = me.copyWith(photoPath: path);
     notifyListeners();
     _persist();
@@ -1340,6 +1342,7 @@ class AppStore extends ChangeNotifier {
   }
 
   void setBio(String bio) {
+    if (!signedIn) return; // no account yet — the profile screen asks them to create one
     // Defense-in-depth alongside the bio TextField's own `maxLength: 50` —
     // whatever actually gets saved/synced is capped here too.
     final capped = bio.length > 50 ? bio.substring(0, 50) : bio;

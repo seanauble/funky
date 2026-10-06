@@ -19,14 +19,17 @@ import '../widgets/ui_widgets.dart';
 /// never backed by anything a second device could ever see anyway.
 class AccountScreen extends StatefulWidget {
   final bool closeOnSuccess;
-  const AccountScreen({super.key, this.closeOnSuccess = false});
+
+  /// Opens on the "Log in" form instead of "Create account".
+  final bool startInLogIn;
+  const AccountScreen({super.key, this.closeOnSuccess = false, this.startInLogIn = false});
 
   @override
   State<AccountScreen> createState() => _AccountScreenState();
 }
 
 class _AccountScreenState extends State<AccountScreen> {
-  bool _signUpMode = true;
+  late bool _signUpMode = !widget.startInLogIn;
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   String? _authError;

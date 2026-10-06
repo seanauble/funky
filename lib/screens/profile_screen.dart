@@ -9,6 +9,7 @@ import '../data/app_store.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
+import 'account_screen.dart';
 import 'camera_capture_screen.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
@@ -30,6 +31,11 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   late TextEditingController _handleController;
   late TextEditingController _bioController;
+  // What the text fields were last filled from — so a name/bio that changes
+  // underneath (you log in and the server's name arrives) shows up here
+  // instead of the old text staying stuck in the box.
+  String _syncedHandle = '';
+  String _syncedBio = '';
 
   @override
   void initState() {
@@ -37,6 +43,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final store = context.read<AppStore>();
     _handleController = TextEditingController(text: store.me.handle);
     _bioController = TextEditingController(text: store.me.bio);
+    _syncedHandle = store.me.handle;
+    _syncedBio = store.me.bio;
   }
 
   @override
@@ -119,6 +127,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
+
+    // Not logged in: there's no profile yet, so don't show a made-up name.
+    if (!store.signedIn) return const _SignedOutProfile();
+
+    if (store.me.handle != _syncedHandle) {
+      _syncedHandle = store.me.handle;
+      final fresh = store.me.handle;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _handleController.text != fresh) _handleController.text = fresh;
+      });
+    }
+    if (store.me.bio != _syncedBio) {
+      _syncedBio = store.me.bio;
+      final fresh = store.me.bio;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _bioController.text != fresh) _bioController.text = fresh;
+      });
+    }
 
     final friends = store.me.friends.length;
     final title = store.myLevelTitle;
@@ -328,6 +354,132 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
 /// The bottom sheet that asks "take a new photo or pick one from your
 /// library" when you tap the camera badge on your profile picture.
+/// What the Profile tab shows when nobody is logged in. It looks like a
+/// profile, but picture / username / bio are locked — tapping any of them
+/// asks the person to create an account instead.
+class _SignedOutProfile extends StatelessWidget {
+  const _SignedOutProfile();
+
+  void _openAccount(BuildContext context, bool logIn) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => AccountScreen(closeOnSuccess: true, startInLogIn: logIn)));
+  }
+
+  Future<void> _prompt(BuildContext context, String what) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final create = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: tokens.surface,
+        title: Text('Create an account', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+        content: Text('You need an account to $what. It only takes a minute.', style: TextStyle(color: tokens.mute)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text('Not now', style: TextStyle(color: tokens.mute))),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Create account', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    );
+    if (create == true && context.mounted) _openAccount(context, false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
+        children: [
+          Center(
+            child: Stack(
+              alignment: Alignment.bottomRight,
+              children: [
+                GestureDetector(
+                  onTap: () => _prompt(context, 'add a profile picture'),
+                  child: Container(
+                    width: 88,
+                    height: 88,
+                    decoration: BoxDecoration(color: tokens.raised, shape: BoxShape.circle),
+                    child: Icon(Icons.person_outline, size: 48, color: tokens.mute),
+                  ),
+                ),
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: GestureDetector(
+                    onTap: () => _prompt(context, 'add a profile picture'),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 2.5)),
+                      child: const Icon(Icons.edit, color: Colors.white, size: 15),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () => _prompt(context, 'pick a username'),
+            behavior: HitTestBehavior.opaque,
+            child: Center(
+              child: Text('Not logged in', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: () => _prompt(context, 'add a bio'),
+            behavior: HitTestBehavior.opaque,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text('Add a bio', style: TextStyle(color: tokens.mute, fontSize: 14)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            'Log in or create an account to get a username, a profile picture, friends and Funky Points.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: tokens.mute, fontSize: 14, height: 1.4),
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: () => _openAccount(context, false),
+              style: FilledButton.styleFrom(
+                backgroundColor: tokens.brand,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: const Text('Create account', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () => _openAccount(context, true),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: tokens.ink,
+                side: BorderSide(color: tokens.mute),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: const Text('Log in', style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PhotoSourceSheet extends StatelessWidget {
   const _PhotoSourceSheet();
 
