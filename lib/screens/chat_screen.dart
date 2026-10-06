@@ -363,9 +363,20 @@ class _LiveChat extends StatelessWidget {
                   if (m.uid == 'me' && (m.status == 'sending' || m.status == 'failed'))
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        m.status == 'failed' ? 'Not sent' : 'Sending…',
-                        style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11),
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: m.status == 'failed' ? () => store.retryChatMessage(m.id) : null,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              m.status == 'failed' ? 'Not sent · tap to retry' : 'Sending…',
+                              style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11),
+                            ),
+                            if (m.status == 'failed' && store.sendErrorFor(m.id) != null)
+                              Text(store.sendErrorFor(m.id)!, style: TextStyle(color: tokens.mute, fontSize: 10.5)),
+                          ],
+                        ),
                       ),
                     ),
                   if (m.reactions.isNotEmpty) ...[

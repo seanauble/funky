@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -112,7 +113,11 @@ class AppStore extends ChangeNotifier {
   // bypassing the 15-confirmation crowd bar entirely. Everyone else's
   // "Confirm" button still only ever feeds the normal count.
   static const String _adminEmail = 'seanauble@icloud.com';
-  bool get isAdmin => signedIn && accountEmail == _adminEmail;
+  // The owner (the one hardcoded email) is always an admin; the owner can also
+  // promote other accounts, which shows up here via profiles.is_admin.
+  bool _remoteAdmin = false;
+  bool get isOwner => signedIn && accountEmail?.toLowerCase() == _adminEmail;
+  bool get isAdmin => signedIn && (accountEmail?.toLowerCase() == _adminEmail || _remoteAdmin);
 
   // Which venues a FUNKY Admin has manually verified — separate from
   // placeConfirmations (which only ever holds real crowd confirmations).
@@ -228,9 +233,89 @@ class AppStore extends ChangeNotifier {
         notifyListeners();
       }
       return null;
-    } catch (_) {
-      return "Couldn't give points — make sure the Phase 2 SQL was run in Supabase.";
+    } catch (e) {
+      final why = _friendlySendError(e);
+      return "Couldn't give points — $why";
     }
+  }
+
+  /// Owner-only: makes another account an admin (or takes it away). The
+  /// server enforces this; the new admin sees the Admin panel and gets the
+  /// gold badge everywhere.
+  Future<String?> adminSetAdmin(String personId, bool makeAdmin) async {
+    if (!isOwner) return 'Only the FUNKY owner can do that.';
+    if (!_isRealPersonId(personId) || !signedIn) return 'That account is not synced yet.';
+    try {
+      await Supabase.instance.client.rpc('admin_set_admin', params: {'target': personId, 'flag': makeAdmin});
+      final p = people[personId];
+      if (p != null) {
+        people = {...people, personId: p.copyWith(isAdminUser: makeAdmin)};
+        notifyListeners();
+      }
+      return null;
+    } catch (e) {
+      return "Couldn't change admin access — ${_friendlySendError(e)}";
+    }
+  }
+
+  /// A quick health check of the Supabase side — which tables/functions the
+  /// app needs actually exist. Returns (label, ok, detail) rows for the
+  /// admin panel, so a missing SQL file is obvious instead of every feature
+  /// just saying "check your connection".
+  Future<List<(String, bool, String)>> checkBackend() async {
+    final client = Supabase.instance.client;
+    final results = <(String, bool, String)>[];
+    Future<void> table(String label, String name, [String cols = '*']) async {
+      try {
+        await client.from(name).select(cols).limit(1);
+        results.add((label, true, ''));
+      } catch (e) {
+        results.add((label, false, _friendlySendError(e)));
+      }
+    }
+    await table('Profiles (base)', 'profiles', 'id,handle,points');
+    await table('Profiles (phase 2 columns)', 'profiles', 'bonus_points,style,banned,is_admin,move,move_streak');
+    await table('Places', 'places', 'id');
+    await table('Polls', 'polls', 'id');
+    await table('Place reports', 'place_reports', 'id');
+    await table('Live chat', 'chat_messages', 'id');
+    await table('DM photo/video columns', 'messages', 'id,media_path,read_at');
+    await table('Chat reactions (phase 3)', 'chat_reactions', 'message_id');
+    await table('Place cover photos (phase 3)', 'places', 'cover_url');
+    try {
+      await client.rpc('is_admin');
+      results.add(('Admin functions', true, ''));
+    } catch (e) {
+      results.add(('Admin functions', false, _friendlySendError(e)));
+    }
+    try {
+      await client.rpc('random_handle');
+      results.add(('Random usernames (phase 4)', true, ''));
+    } catch (e) {
+      results.add(('Random usernames (phase 4)', false, _friendlySendError(e)));
+    }
+    try {
+      await client.rpc('admin_set_admin', params: {'target': '00000000-0000-0000-0000-000000000000', 'flag': false});
+      results.add(('Delegated admins (phase 5)', true, ''));
+    } catch (e) {
+      final m = e.toString().toLowerCase();
+      // "admin only"/"owner only" means the function exists and refused us
+      // (or ran against a nonexistent id) — which is a pass.
+      final exists = !(m.contains('could not find the function') || m.contains('pgrst202') || m.contains('42883'));
+      results.add(('Delegated admins (phase 5)', exists, exists ? '' : 'Run the latest SQL file (phase 5).'));
+    }
+    try {
+      final raw = await client.rpc('backend_status');
+      final st = raw is Map ? raw : <dynamic, dynamic>{};
+      results.add(('Your profile row exists', st['profile_exists'] == true, st['profile_exists'] == true ? '' : 'Run RUN_ALL.sql, then reopen the app.'));
+      results.add(('Profile-picture storage is public', st['avatars_public'] == true, st['avatars_public'] == true ? '' : 'Run RUN_ALL.sql (phase 6).'));
+      results.add(('Place-photo storage is public', st['place_covers_public'] == true, st['place_covers_public'] == true ? '' : 'Run RUN_ALL.sql (phase 6).'));
+      results.add(('Photo/video DM storage', st['dm_media_exists'] == true, st['dm_media_exists'] == true ? '' : 'Run RUN_ALL.sql (phase 2).'));
+      results.add(('Sign-up creates profiles', st['signup_trigger'] == true, st['signup_trigger'] == true ? '' : 'Run RUN_ALL.sql (phase 6).'));
+    } catch (e) {
+      results.add(('Backend health (phase 6)', false, 'Run the latest RUN_ALL.sql in Supabase.'));
+    }
+    return results;
   }
 
   /// Admin-only — permanently removes a place from tonight's list, along
@@ -774,6 +859,7 @@ class AppStore extends ChangeNotifier {
       // would, so Stories/DMs start flowing in without waiting for you to
       // touch the account screen.
       if (signedIn) _startRemoteSync();
+      _listenForAuthChanges();
       // Pick location back up automatically on every launch instead of
       // waiting for a tap on LocationGate's "Enable location" button —
       // once you've actually granted it to the OS, requestLocation()
@@ -1167,7 +1253,7 @@ class AppStore extends ChangeNotifier {
   /// 15-day cooldown) if the change didn't go through.
   static final RegExp _validHandle = RegExp(r'^[a-zA-Z0-9_]+$');
 
-  String? setHandle(String handle) {
+  Future<String?> setHandle(String handle) async {
     final trimmed = handle.trim();
     if (trimmed.isEmpty) return 'Enter a username.';
     if (trimmed == me.handle) return null; // unchanged — no-op, no cooldown hit
@@ -1183,42 +1269,52 @@ class AppStore extends ChangeNotifier {
         return "You can change your username again in $daysLeft day${daysLeft == 1 ? '' : 's'}.";
       }
     }
+    // For a real account the server is saved FIRST (handles are unique there,
+    // and everyone else reads yours from the server) — so the new name is
+    // only shown once it's really saved, and a "that name is taken" or a
+    // failed save is reported instead of silently reverting later.
+    final uid = supabaseUserId;
+    if (signedIn && uid != null) {
+      try {
+        final saved = await _updateOwnProfile({'handle': trimmed});
+        if (!saved) {
+          return "Couldn't save that username — your account isn't set up on the server yet (run RUN_ALL.sql in Supabase).";
+        }
+      } on PostgrestException catch (e) {
+        if (e.code == '23505') return 'That username is already taken — try another.';
+        return "Couldn't save that username — check your connection and try again.";
+      } catch (_) {
+        return "Couldn't save that username — check your connection and try again.";
+      }
+    }
     me = me.copyWith(handle: trimmed, lastHandleChangeAt: DateTime.now().millisecondsSinceEpoch);
     notifyListeners();
     _persist();
-    // Best-effort — other real accounts read your @handle from the
-    // `profiles` table (see _personFromProfileRow), not from this device's
-    // local copy, so a real account's handle needs to actually reach the
-    // server. profiles.handle is UNIQUE there; a collision just fails this
-    // silently and your local handle stays changed anyway — a known gap
-    // (not surfaced as an error here) rather than reworking this into an
-    // async, pre-checked flow.
-    if (signedIn && supabaseUserId != null) {
-      _fireAndForgetUpdate('profiles', {'handle': trimmed}, supabaseUserId!);
-    }
     return null;
   }
 
   /// Sets a profile photo captured with the in-app camera — FUNKY never
   /// uses a gallery/image picker, same rule as Stories (see
   /// CameraCaptureScreen).
-  void setProfilePhoto(String path) {
+  Future<String?> setProfilePhoto(String path) async {
     me = me.copyWith(photoPath: path);
     notifyListeners();
     _persist();
-    unawaited(_uploadAvatar(path));
+    return _uploadAvatar(path);
   }
+
+  bool _avatarBackfillTried = false;
 
   /// Uploads your profile picture to the public avatars bucket and points
   /// your profile row at it, so everyone else sees it (their app can only
   /// show an image by URL — your local file path means nothing to them).
-  Future<void> _uploadAvatar(String path) async {
+  Future<String?> _uploadAvatar(String path) async {
     final uid = supabaseUserId;
-    if (!signedIn || uid == null) return;
+    if (!signedIn || uid == null) return null;
     try {
       final file = File(path);
-      if (!await file.exists()) return;
-      if (await file.length() > 8 * 1024 * 1024) return;
+      if (!await file.exists()) return null;
+      if (await file.length() > 8 * 1024 * 1024) return 'That picture is too big — pick one under 8 MB.';
       final isPng = path.toLowerCase().endsWith('.png');
       final storagePath = '$uid/avatar.${isPng ? 'png' : 'jpg'}';
       final client = Supabase.instance.client;
@@ -1231,9 +1327,15 @@ class AppStore extends ChangeNotifier {
       // The same path is reused every time, so a changing query string is
       // what makes other devices actually refetch the new picture.
       final busted = '$url?v=${DateTime.now().millisecondsSinceEpoch}';
-      await client.from('profiles').update({'avatar_url': busted}).eq('id', uid);
-    } catch (_) {
-      // Best-effort — your own device keeps showing the local file either way.
+      final linked = await _updateOwnProfile({'avatar_url': busted});
+      if (!linked) {
+        return "Your picture uploaded but your profile couldn't be updated to show it — run RUN_ALL.sql in Supabase, then pick it again.";
+      }
+      return null;
+    } catch (e) {
+      // Your own device keeps showing the local file either way, but other
+      // people can't see it until this works — so say why.
+      return "Your picture saved on this phone but couldn't upload for other people — ${_friendlySendError(e)}";
     }
   }
 
@@ -1372,18 +1474,35 @@ class AppStore extends ChangeNotifier {
     // its real id (the same id everyone else will see) before showing up.
     final Place place;
     try {
-      final rows = await Supabase.instance.client.from('places').insert({
-        'name': cleanName,
-        'kind': kind.name,
-        'lat': here.lat,
-        'lng': here.lng,
-        'address': cleanAddress,
-        'by_uid': uid,
-        // Only the admin's insert policy accepts a pre-verified place; for
-        // everyone else this is just false.
-        'admin_verified': isAdmin,
-        if (coverUrl != null) 'cover_url': coverUrl,
-      }).select();
+      Future<List<Map<String, dynamic>>> insertPlace(bool withCover) {
+        return _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('places').insert({
+              'name': cleanName,
+              'kind': kind.name,
+              'lat': here.lat,
+              'lng': here.lng,
+              'address': cleanAddress,
+              'by_uid': uid,
+              // Only the admin's insert policy accepts a pre-verified place; for
+              // everyone else this is just false.
+              'admin_verified': isAdmin,
+              if (withCover && coverUrl != null) 'cover_url': coverUrl,
+            }).select());
+      }
+
+      List<Map<String, dynamic>> rows;
+      try {
+        rows = await insertPlace(true);
+      } catch (e) {
+        // The server hasn't got the cover_url column yet (phase 3 not run):
+        // still add the place — just without a photo other people can see.
+        final m = e.toString().toLowerCase();
+        if (coverUrl != null && m.contains('cover_url')) {
+          coverUrl = null;
+          rows = await insertPlace(false);
+        } else {
+          rethrow;
+        }
+      }
       final built = _placeFromRow(rows.first);
       if (built == null) throw const FormatException('bad place row');
       place = Place(
@@ -1399,8 +1518,9 @@ class AppStore extends ChangeNotifier {
         coverPhotoPath: coverPhotoPath,
         coverUrl: coverUrl,
       );
-    } catch (_) {
-      lastPlaceError = "Couldn't add that place — check your connection and try again.";
+    } catch (e) {
+      final why = _friendlySendError(e);
+      lastPlaceError = why.startsWith('No connection') ? "Couldn't add that place — check your connection and try again." : "Couldn't add that place — $why";
       return null;
     }
     _remotePlaceIds.add(place.id);
@@ -1479,18 +1599,19 @@ class AppStore extends ChangeNotifier {
     final here = location ?? defaultLocation;
     final Poll poll;
     try {
-      final rows = await Supabase.instance.client.from('polls').insert({
-        'q': cleanQ,
-        'options': cleanOptions,
-        'lat': here.lat,
-        'lng': here.lng,
-        'by_uid': uid,
-      }).select();
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('polls').insert({
+            'q': cleanQ,
+            'options': cleanOptions,
+            'lat': here.lat,
+            'lng': here.lng,
+            'by_uid': uid,
+          }).select());
       final built = _pollFromRow(rows.first);
       if (built == null) throw const FormatException('bad poll row');
       poll = built;
-    } catch (_) {
-      lastPollError = "Couldn't post that poll — check your connection and try again.";
+    } catch (e) {
+      final why = _friendlySendError(e);
+      lastPollError = why.startsWith('No connection') ? "Couldn't post that poll — check your connection and try again." : "Couldn't post that poll — $why";
       return null;
     }
     _remotePollIds.add(poll.id);
@@ -1541,26 +1662,111 @@ class AppStore extends ChangeNotifier {
     final uid = supabaseUserId;
     if (uid == null) return;
     try {
-      final rows = await Supabase.instance.client.from('chat_messages').insert({
-        // Anonymous messages carry NO sender at all (see the SQL) — the
-        // server keeps the real author in an admin-only table.
-        'sender_id': local.anon ? null : uid,
-        'text': local.text,
-        'anon': local.anon,
-        'lat': local.lat,
-        'lng': local.lng,
-      }).select();
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('chat_messages').insert({
+            // Anonymous messages carry NO sender at all (see the SQL) — the
+            // server keeps the real author in an admin-only table.
+            'sender_id': local.anon ? null : uid,
+            'text': local.text,
+            'anon': local.anon,
+            'lat': local.lat,
+            'lng': local.lng,
+          }).select());
       final serverId = rows.first['id'] as String;
       _remoteChatIds.add(serverId);
       messages = messages
           .where((m) => m.id != serverId)
           .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'sent') : m)
           .toList();
-    } catch (_) {
+    } catch (e) {
+      _sendErrors[local.id] = _friendlySendError(e);
       messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
     }
     notifyListeners();
     _persist();
+  }
+
+  // Why a message failed to send, keyed by its (temporary) id — shown under
+  // "Not sent" so a failure says what's actually wrong.
+  final Map<String, String> _sendErrors = {};
+  String? sendErrorFor(String messageId) => _sendErrors[messageId];
+
+  /// True when an insert failed because your account has no row in the
+  /// server's `profiles` table yet (a foreign-key error) — fixable by
+  /// [_ensureOwnProfile].
+  bool _isMissingProfileError(Object e) {
+    if (e is! PostgrestException) return false;
+    final m = '${e.code ?? ''} ${e.message} ${e.details}'.toLowerCase();
+    return m.contains('23503') && (m.contains('profiles') || m.contains('sender_id') || m.contains('by_uid') || m.contains('user_id'));
+  }
+
+  /// Asks the server to create your profile row if it's missing (the
+  /// `ensure_my_profile` function from phase 6). Returns false if that
+  /// function isn't installed or the call failed.
+  Future<bool> _ensureOwnProfile() async {
+    try {
+      await Supabase.instance.client.rpc('ensure_my_profile');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Runs a server write; if it fails only because your profile row is
+  /// missing, creates that row and tries once more.
+  Future<T> _withProfileRepair<T>(Future<T> Function() op) async {
+    try {
+      return await op();
+    } catch (e) {
+      if (_isMissingProfileError(e) && await _ensureOwnProfile()) return await op();
+      rethrow;
+    }
+  }
+
+  /// Updates your own profile row and reports whether a row really changed.
+  /// (The server answers "success" with zero rows when it blocks an update
+  /// or the row doesn't exist, so success alone proves nothing.) A missing
+  /// row is created and the update tried again.
+  Future<bool> _updateOwnProfile(Map<String, dynamic> data) async {
+    final uid = supabaseUserId;
+    if (uid == null) return false;
+    final client = Supabase.instance.client;
+    var rows = await client.from('profiles').update(data).eq('id', uid).select('id');
+    if (rows.isNotEmpty) return true;
+    if (!await _ensureOwnProfile()) return false;
+    rows = await client.from('profiles').update(data).eq('id', uid).select('id');
+    return rows.isNotEmpty;
+  }
+
+  String _friendlySendError(Object e) {
+    final text = e is PostgrestException ? '${e.code ?? ''} ${e.message}' : e.toString();
+    final lower = text.toLowerCase();
+    if (lower.contains('pgrst205') || lower.contains('schema cache') || lower.contains('does not exist') || lower.contains('42p01')) {
+      return "The server isn't set up for this yet (run the latest SQL files in Supabase).";
+    }
+    if (lower.contains('rate limit')) return 'Slow down — you are sending too fast.';
+    if (lower.contains('23503') && lower.contains('profiles')) {
+      return "Your account isn't fully set up on the server (run RUN_ALL.sql in Supabase).";
+    }
+    if (lower.contains('row-level security') || lower.contains('42501') || lower.contains('permission denied')) {
+      return 'The server refused it (permissions) — try logging out and back in.';
+    }
+    if (lower.contains('socket') || lower.contains('clientexception') || lower.contains('timeout') || lower.contains('host lookup')) {
+      return 'No connection — check your internet.';
+    }
+    final trimmed = text.trim();
+    return trimmed.length > 120 ? trimmed.substring(0, 120) : trimmed;
+  }
+
+  /// Tap-to-retry on a live-chat message that shows "Not sent".
+  void retryChatMessage(String messageId) {
+    if (_tooSoon('chatRetry', 1500)) return;
+    final i = messages.indexWhere((m) => m.id == messageId && m.status == 'failed' && m.uid == 'me' && m.room == 'main');
+    if (i == -1 || !signedIn || supabaseUserId == null) return;
+    _sendErrors.remove(messageId);
+    final retrying = messages[i].copyWith(status: 'sending');
+    messages = [...messages]..[i] = retrying;
+    notifyListeners();
+    unawaited(_sendLiveChatRemote(retrying));
   }
 
   /// Keeps only the newest [maxMessagesKept] messages in memory so a chat
@@ -1657,20 +1863,21 @@ class AppStore extends ChangeNotifier {
               ),
             );
       }
-      final rows = await client.from('messages').insert({
-        'sender_id': uid,
-        'recipient_id': toPersonId,
-        'text': local.text,
-        if (storagePath != null) 'media_path': storagePath,
-        if (storagePath != null) 'media_type': local.mediaType,
-      }).select();
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => client.from('messages').insert({
+            'sender_id': uid,
+            'recipient_id': toPersonId,
+            'text': local.text,
+            if (storagePath != null) 'media_path': storagePath,
+            if (storagePath != null) 'media_type': local.mediaType,
+          }).select());
       final serverId = rows.first['id'] as String;
       _remoteMessageIds.add(serverId);
       messages = messages
           .where((m) => m.id != serverId)
           .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
           .toList();
-    } catch (_) {
+    } catch (e) {
+      _sendErrors[local.id] = _friendlySendError(e);
       messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
     }
     notifyListeners();
@@ -2190,6 +2397,31 @@ class AppStore extends ChangeNotifier {
   /// — there's nothing to sign in as until the confirmation link is
   /// clicked, so this reports that back as its "error" (really an
   /// instruction) rather than claiming signedIn.
+  /// Where the email-confirmation link sends you — the app's own URL scheme.
+  /// Must also be listed under Authentication → URL Configuration → Redirect
+  /// URLs in the Supabase dashboard.
+  static const String authRedirectUrl = 'com.funkyapp.funky://login-callback/';
+
+  StreamSubscription<AuthState>? _authSub;
+
+  /// Picks up a sign-in that happens OUTSIDE the login form — tapping the
+  /// confirmation link in the email opens the app already signed in, and
+  /// this is what makes the app notice.
+  void _listenForAuthChanges() {
+    _authSub?.cancel();
+    _authSub = Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final s = data.session;
+      if (data.event == AuthChangeEvent.signedIn && s != null && !signedIn) {
+        accountEmail = s.user.email;
+        supabaseUserId = s.user.id;
+        signedIn = true;
+        notifyListeners();
+        _persist();
+        _startRemoteSync();
+      }
+    });
+  }
+
   Future<String?> signUp(String email, String password) async {
     final emailError = validateEmail(email);
     if (emailError != null) return emailError;
@@ -2199,6 +2431,9 @@ class AppStore extends ChangeNotifier {
       final response = await Supabase.instance.client.auth.signUp(
         email: email.trim(),
         password: password,
+        // The confirmation link opens THIS app (see CFBundleURLTypes in
+        // Info.plist) instead of Supabase's default "localhost" page.
+        emailRedirectTo: authRedirectUrl,
       );
       if (response.session == null) {
         return 'Check your email to confirm your account, then log in.';
@@ -2612,6 +2847,8 @@ class AppStore extends ChangeNotifier {
     _remoteChatIds.clear();
     _remoteBannedIds.clear();
     selfBanned = false;
+    _remoteAdmin = false;
+    _avatarBackfillTried = false;
     _profileSynced = false;
     _lastProfilePush = null;
   }
@@ -2684,7 +2921,12 @@ class AppStore extends ChangeNotifier {
       // Your own row first (that's what unlocks pushing your state up),
       // then everyone who's currently "going" somewhere tonight so the
       // going counts are real from the first frame.
-      final mine = await client.from('profiles').select().eq('id', uid);
+      var mine = await client.from('profiles').select().eq('id', uid);
+      if (mine.isEmpty && await _ensureOwnProfile()) {
+        // Your account had no profile row (so nothing you did could stick) —
+        // it has one now.
+        mine = await client.from('profiles').select().eq('id', uid);
+      }
       for (final row in mine) {
         _applyProfileRow(row);
       }
@@ -2723,8 +2965,57 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  // The placeholder handle a brand-new account gets before it picks/gets a
+  // real one (see handle_new_user in the SQL).
+  static final RegExp _autoHandle = RegExp(r'^funky_[0-9a-f]{8}$');
+  bool _assigningHandle = false;
+  static const List<String> _handleAdjectives = [
+    'Neon', 'Funky', 'Wild', 'Midnight', 'Electric', 'Cosmic', 'Sunny', 'Velvet',
+    'Turbo', 'Disco', 'Glitter', 'Lucky', 'Spicy', 'Groovy', 'Hyper', 'Chill',
+  ];
+  static const List<String> _handleNouns = [
+    'Fox', 'Panda', 'Tiger', 'Comet', 'Falcon', 'Otter', 'Raven', 'Llama',
+    'Gecko', 'Moose', 'Wolf', 'Koala', 'Dragon', 'Pixel', 'Rocket', 'Taco',
+  ];
+
+  String _randomHandle() {
+    final r = math.Random();
+    return '${_handleAdjectives[r.nextInt(_handleAdjectives.length)]}'
+        '${_handleNouns[r.nextInt(_handleNouns.length)]}'
+        '${100 + r.nextInt(900)}';
+  }
+
+  /// Gives this account a random username like "NeonFox482" — written to the
+  /// server first (handles are unique there, so a collision just tries a
+  /// different one) and only then shown locally.
+  Future<void> _assignRandomHandle() async {
+    final uid = supabaseUserId;
+    if (uid == null || _assigningHandle) return;
+    _assigningHandle = true;
+    try {
+      for (var i = 0; i < 8; i++) {
+        final h = _randomHandle();
+        try {
+          final saved = await _updateOwnProfile({'handle': h});
+          if (!saved) return; // no profile row and it couldn't be created — the checker explains why
+          me = me.copyWith(handle: h, clearLastHandleChange: true);
+          notifyListeners();
+          _persist();
+          return;
+        } on PostgrestException catch (e) {
+          if (e.code != '23505') return; // anything but "that name is taken"
+        }
+      }
+    } catch (_) {
+      // Offline — it just tries again the next time the profile loads.
+    } finally {
+      _assigningHandle = false;
+    }
+  }
+
   void _applyOwnProfileRow(Map<String, dynamic> row) {
     selfBanned = row['banned'] as bool? ?? false;
+    _remoteAdmin = row['is_admin'] as bool? ?? false;
     final remoteEarned = (row['points'] as num?)?.toInt() ?? 0;
     final bonus = (row['bonus_points'] as num?)?.toInt() ?? 0;
     final localEarned = me.points - _appliedBonus;
@@ -2736,13 +3027,31 @@ class AppStore extends ChangeNotifier {
     // A device that's never set a handle/bio/photo/style adopts what the
     // account already has on the server (a second phone, a reinstall).
     final serverHandle = row['handle'] as String?;
-    if (next.lastHandleChangeAt == null && serverHandle != null && serverHandle.isNotEmpty && next.handle != serverHandle) {
-      next = next.copyWith(handle: serverHandle);
+    if (serverHandle != null && serverHandle.isNotEmpty) {
+      if (_autoHandle.hasMatch(serverHandle)) {
+        // A brand-new account still wearing the placeholder "funky_1a2b3c4d"
+        // name: give it a random one (replacing whatever name this phone had
+        // from before the account existed).
+        unawaited(_assignRandomHandle());
+      } else if (serverHandle != next.handle) {
+        // The server's copy is what everyone else sees, so it wins — unless
+        // you literally just renamed yourself and the update is still in flight.
+        final last = next.lastHandleChangeAt;
+        final justChanged = last != null && DateTime.now().millisecondsSinceEpoch - last < 60000;
+        if (!justChanged) next = next.copyWith(handle: serverHandle);
+      }
     }
     final serverBio = row['bio'] as String?;
     if (next.bio.isEmpty && serverBio != null && serverBio.isNotEmpty) next = next.copyWith(bio: serverBio);
     final avatarUrl = row['avatar_url'] as String?;
-    if (avatarUrl != null && avatarUrl.isNotEmpty) next = next.copyWith(photoUrl: avatarUrl);
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      next = next.copyWith(photoUrl: avatarUrl);
+    } else if (next.photoPath != null && !_avatarBackfillTried) {
+      // A picture picked before it could be shared (older build, or the
+      // server wasn't set up yet): upload it now so other people see it.
+      _avatarBackfillTried = true;
+      unawaited(_uploadAvatar(next.photoPath!));
+    }
     final style = row['style'];
     final hasLocalStyle = next.nameBold || next.nameItalic || next.nameUnderline || next.nameCheckbox || next.nameColor != null;
     if (!hasLocalStyle && style is Map && style.isNotEmpty) {
@@ -3511,6 +3820,7 @@ class AppStore extends ChangeNotifier {
   @override
   void dispose() {
     _persistTimer?.cancel();
+    _authSub?.cancel();
     _stopRemoteSync();
     super.dispose();
   }

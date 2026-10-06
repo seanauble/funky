@@ -256,6 +256,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                           other: person,
                           statusLabel: label,
                           onRetry: m.status == 'failed' ? () => store.retryDirectMessage(m.id) : null,
+                          errorDetail: m.status == 'failed' ? store.sendErrorFor(m.id) : null,
                         );
                       },
                     ),
@@ -328,7 +329,8 @@ class _DmBubble extends StatelessWidget {
   // under your newest message (and under any that failed).
   final String? statusLabel;
   final VoidCallback? onRetry;
-  const _DmBubble({required this.message, required this.tokens, required this.other, this.statusLabel, this.onRetry});
+  final String? errorDetail;
+  const _DmBubble({required this.message, required this.tokens, required this.other, this.statusLabel, this.onRetry, this.errorDetail});
 
   @override
   Widget build(BuildContext context) {
@@ -378,6 +380,11 @@ class _DmBubble extends StatelessWidget {
                     ),
                   ),
                 ),
+              ),
+            if (errorDetail != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 1, right: 4),
+                child: Text(errorDetail!, textAlign: TextAlign.right, style: TextStyle(color: tokens.mute, fontSize: 10.5)),
               ),
           ],
         ),

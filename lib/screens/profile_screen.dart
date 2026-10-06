@@ -77,7 +77,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
       return;
     }
-    store.setProfilePhoto(media.file.path);
+    final err = await store.setProfilePhoto(media.file.path);
+    if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
   }
 
   Future<void> _changePhotoFromLibrary(AppStore store) async {
@@ -93,7 +94,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final dest = '${dir.path}/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedFile = await File(picked.path).copy(dest);
       if (!mounted) return;
-      store.setProfilePhoto(savedFile.path);
+      final err = await store.setProfilePhoto(savedFile.path);
+      if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
@@ -104,8 +106,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// Commits whatever's in the handle field right now — called on submit
   /// (keyboard "done") or the save button, not on every keystroke like
   /// before, since every keystroke used to try to spend the 15-day cooldown.
-  void _commitHandle(AppStore store) {
-    final error = store.setHandle(_handleController.text);
+  Future<void> _commitHandle(AppStore store) async {
+    final error = await store.setHandle(_handleController.text);
+    if (!mounted) return;
     if (error != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
       setState(() => _handleController.text = store.me.handle);

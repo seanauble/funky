@@ -169,6 +169,36 @@ class PersonProfileScreen extends StatelessWidget {
                 ),
               ),
             ),
+            // Only the owner can hand out (or take back) admin access.
+            if (store.isOwner) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final makeAdmin = !person.isAdminUser;
+                    final error = await store.adminSetAdmin(personId, makeAdmin);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(error ?? (makeAdmin ? '@${person.handle} is now an admin.' : '@${person.handle} is no longer an admin.')),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    side: BorderSide(color: tokens.gold),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: Icon(person.isAdminUser ? Icons.shield_outlined : Icons.shield, size: 18, color: tokens.gold),
+                  label: Text(
+                    person.isAdminUser ? 'Remove admin access' : 'Make admin',
+                    style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+            ],
           ],
           const SectionHeader(title: 'Stories'),
           if (canSeeStories)

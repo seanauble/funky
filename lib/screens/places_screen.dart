@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -13,6 +14,18 @@ import '../widgets/ui_widgets.dart';
 import 'place_detail_screen.dart';
 
 const _heatLabel = ['Quiet so far', 'Some activity', 'Active', 'Very active'];
+
+// The app-wide 25-mile area, in meters, and the lat/lng box that just
+// contains that circle (used to frame the map).
+const double _radiusMeters = 25 * 1609.344;
+
+LatLngBounds _radiusBounds(double lat, double lng) {
+  const milesPerDegLat = 69.0;
+  final dLat = 25 / milesPerDegLat;
+  final cosLat = math.cos(lat * math.pi / 180).abs();
+  final dLng = 25 / (milesPerDegLat * (cosLat < 0.05 ? 0.05 : cosLat));
+  return LatLngBounds(ll.LatLng(lat - dLat, lng - dLng), ll.LatLng(lat + dLat, lng + dLng));
+}
 
 /// The little text box explaining what a verified checkmark on a place
 /// means — its own tap target, separate from the row/marker, which opens
@@ -59,14 +72,37 @@ class PlacesScreen extends StatelessWidget {
             child: Stack(
               children: [
                 FlutterMap(
+                  // A fresh map when your location changes (e.g. the real GPS
+                  // fix replacing the default), since the starting view below
+                  // is only read once.
+                  key: ValueKey('${here.lat.toStringAsFixed(2)},${here.lng.toStringAsFixed(2)}'),
                   options: MapOptions(
                     initialCenter: ll.LatLng(here.lat, here.lng),
-                    initialZoom: 12,
+                    // Starts zoomed out just far enough to show the whole
+                    // 25-mile circle.
+                    initialCameraFit: CameraFit.bounds(
+                      bounds: _radiusBounds(here.lat, here.lng),
+                      padding: const EdgeInsets.all(14),
+                    ),
                   ),
                   children: [
                     TileLayer(
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.funkyapp.funky',
+                    ),
+                    // The 25-mile radius — everything FUNKY shows you
+                    // (places, polls, chat, Stories) comes from inside it.
+                    CircleLayer(
+                      circles: [
+                        CircleMarker(
+                          point: ll.LatLng(here.lat, here.lng),
+                          radius: _radiusMeters,
+                          useRadiusInMeter: true,
+                          color: tokens.orange.withValues(alpha: 0.07),
+                          borderColor: tokens.orange.withValues(alpha: 0.85),
+                          borderStrokeWidth: 2,
+                        ),
+                      ],
                     ),
                     // Hand-rolled soft heat-glow: a blurred, radially-gradiented
                     // circle under each place, sized/opacity-scaled by that
@@ -169,6 +205,26 @@ class PlacesScreen extends StatelessWidget {
                       ],
                     ),
                   ],
+                ),
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(color: tokens.surface.withValues(alpha: 0.92), borderRadius: BorderRadius.circular(999)),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 9,
+                          height: 9,
+                          decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.orange, width: 2)),
+                        ),
+                        const SizedBox(width: 6),
+                        Text('25-mile radius', style: TextStyle(color: tokens.ink, fontSize: 11, fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
                 ),
                 if (ranked.isEmpty)
                   Positioned(

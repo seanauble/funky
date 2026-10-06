@@ -415,8 +415,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   ///    the full hardware range), and
   ///  - the drag only sets a TARGET; a small timer eases the real zoom
   ///    toward it every ~33ms, so a jumpy finger can't make the camera jerk.
-  static const double _dragZoomRange = 1100; // px of drag to sweep min → _maxDragZoom
-  static const double _maxDragZoom = 8;
+  static const double _dragZoomRange = 700; // px of drag to sweep min → _maxDragZoom
+  static const double _maxDragZoom = 10;
   double _targetZoom = 1;
   double _dragAnchorDy = 0; // drag offset at the moment the baseline was last reset
   double _lastDragDy = 0;
@@ -451,9 +451,9 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       }
       final diff = _targetZoom - _currentZoom;
       if (diff.abs() < 0.004) return;
-      // Ease 22% of the remaining distance per tick — quick enough to feel
+      // Ease 32% of the remaining distance per tick — quick enough to feel
       // attached to your finger, slow enough to never jump.
-      _currentZoom = (_currentZoom + diff * 0.22).clamp(_minZoom, _maxZoom).toDouble();
+      _currentZoom = (_currentZoom + diff * 0.32).clamp(_minZoom, _maxZoom).toDouble();
       c.setZoomLevel(_currentZoom).catchError((_) {});
     });
   }
@@ -640,7 +640,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       final videoController = VideoPlayerController.file(mergedFile);
       await videoController.initialize();
       await videoController.setLooping(true);
-      await videoController.setVolume(0);
+      // The review plays WITH sound — what you hear is what gets posted.
+      await videoController.setVolume(1.0);
       await videoController.play();
       if (!mounted) {
         videoController.dispose();

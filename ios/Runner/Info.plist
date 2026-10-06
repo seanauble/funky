@@ -22,6 +22,21 @@
 	<string>FUNKY uses your photo library so you can choose an existing photo for your profile picture. Stories are always taken live in the app, never from your library.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>FUNKY uses this to save a copy of a photo or video to your library when you tap Save, and the video editing tool it uses to stitch a flipped-camera Story together also declares this permission.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.funkyapp.funky</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.funkyapp.funky</string>
+			</array>
+		</dict>
+	</array>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

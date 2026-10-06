@@ -601,6 +601,7 @@ class Person {
   });
 
   Person copyWith({
+    bool? isAdminUser,
     String? handle,
     String? bio,
     String? move,
@@ -616,6 +617,7 @@ class Person {
     List<String>? placesVisited,
     String? photoPath,
     int? lastHandleChangeAt,
+    bool clearLastHandleChange = false,
     int? displayedTitleThreshold,
     bool clearDisplayedTitleThreshold = false,
     bool? nameBold,
@@ -653,7 +655,7 @@ class Person {
         streak: streak ?? this.streak,
         placesVisited: placesVisited ?? this.placesVisited,
         photoPath: photoPath ?? this.photoPath,
-        lastHandleChangeAt: lastHandleChangeAt ?? this.lastHandleChangeAt,
+        lastHandleChangeAt: clearLastHandleChange ? null : (lastHandleChangeAt ?? this.lastHandleChangeAt),
         displayedTitleThreshold: clearDisplayedTitleThreshold ? null : (displayedTitleThreshold ?? this.displayedTitleThreshold),
         nameBold: nameBold ?? this.nameBold,
         nameItalic: nameItalic ?? this.nameItalic,
@@ -663,7 +665,7 @@ class Person {
         moveStreak: moveStreak ?? this.moveStreak,
         moveStreakDay: moveStreakDay ?? this.moveStreakDay,
         photoUrl: photoUrl ?? this.photoUrl,
-        isAdminUser: isAdminUser,
+        isAdminUser: isAdminUser ?? this.isAdminUser,
       );
 
   Map<String, dynamic> toJson() => {
