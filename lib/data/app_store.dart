@@ -1262,7 +1262,8 @@ class AppStore extends ChangeNotifier {
     if (!_validHandle.hasMatch(trimmed)) {
       return 'Usernames can only use letters, numbers, and underscores.';
     }
-    final last = me.lastHandleChangeAt;
+    // Admins can rename themselves as often as they like.
+    final last = isAdmin ? null : me.lastHandleChangeAt;
     if (last != null) {
       final elapsedMs = DateTime.now().millisecondsSinceEpoch - last;
       if (elapsedMs < _handleChangeCooldownMs) {

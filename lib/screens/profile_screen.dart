@@ -227,34 +227,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
                   ),
+                  // The badges sit right beside the name itself (not out at
+                  // the screen edge): measure the typed text, then lay out
+                  // [spacer | name-width | badges] so the name stays centred.
+                  if (store.isVerifiedUser || store.isAdmin)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _handleController,
+                          builder: (context, _) {
+                            const nameStyle = TextStyle(fontSize: 20, fontWeight: FontWeight.w800);
+                            final painter = TextPainter(
+                              text: TextSpan(text: _handleController.text.isEmpty ? ' ' : _handleController.text, style: nameStyle),
+                              textDirection: TextDirection.ltr,
+                              textScaler: MediaQuery.textScalerOf(context),
+                              maxLines: 1,
+                            )..layout();
+                            final badgeCount = (store.isVerifiedUser ? 1 : 0) + (store.isAdmin ? 1 : 0);
+                            final badgesWidth = 6.0 + badgeCount * 22.0;
+                            // Never wider than the room the field has for text.
+                            final maxName = (MediaQuery.sizeOf(context).width - 32 - 104 - 2 * badgesWidth).clamp(0.0, 400.0).toDouble();
+                            final nameWidth = painter.width < maxName ? painter.width : maxName;
+                            return Center(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(width: badgesWidth),
+                                  SizedBox(width: nameWidth),
+                                  const SizedBox(width: 6),
+                                  if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
+                                  // Gold FUNKY Admin badge — same as StyledName
+                                  // shows everywhere else; this row is a plain
+                                  // editable TextField, so it draws its own.
+                                  if (store.isAdmin)
+                                    Padding(
+                                      padding: EdgeInsets.only(left: store.isVerifiedUser ? 2 : 0),
+                                      child: Icon(Icons.verified, color: tokens.gold, size: 20),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
                   Positioned(
                     right: 0,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          onPressed: () => _commitHandle(store),
-                          tooltip: 'Save username',
-                          icon: Icon(Icons.check_circle_outline, color: tokens.brand, size: 20),
-                        ),
-                        if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
-                        // Same gold FUNKY Admin badge StyledName shows
-                        // everywhere else your name appears — this row is
-                        // a plain editable TextField rather than
-                        // StyledName while you're editing it, so it needs
-                        // its own copy of the same check.
-                        if (store.isAdmin)
-                          Tooltip(
-                            message: 'FUNKY Admin',
-                            child: Icon(Icons.verified, color: tokens.gold, size: 20),
-                          ),
-                      ],
+                    child: IconButton(
+                      onPressed: () => _commitHandle(store),
+                      tooltip: 'Save username',
+                      icon: Icon(Icons.check_circle_outline, color: tokens.brand, size: 20),
                     ),
                   ),
                 ],
               ),
               Text(
-                'Usernames can only change once every 15 days.',
+                store.isAdmin ? 'As an admin you can change your username any time.' : 'Usernames can only change once every 15 days.',
                 style: TextStyle(color: tokens.mute, fontSize: 11),
               ),
               TextField(
