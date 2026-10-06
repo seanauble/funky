@@ -404,9 +404,27 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
 
     _ensureVideoFor(story, advance);
 
+    // The picture/video fills the whole screen edge to edge (no black bars);
+    // the header, hint and buttons are pushed in by the notch / home-bar
+    // insets themselves instead.
+    final pad = MediaQuery.paddingOf(context);
+    // Where it was posted, shown next to the time: "26m ago · 📍 Taverns Bar".
+    String? whereLabel = story.placeName;
+    if (whereLabel == null && story.place != null && story.place != 'main') {
+      for (final pl in store.places) {
+        if (pl.id == story.place) {
+          whereLabel = pl.name;
+          break;
+        }
+      }
+    }
+    final whenLabel = whereLabel == null || whereLabel.isEmpty ? timeAgoLabel(story.t) : '${timeAgoLabel(story.t)} · 📍 $whereLabel';
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
+        top: false,
+        bottom: false,
         child: GestureDetector(
           onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
           onVerticalDragEnd: (details) {
@@ -468,18 +486,23 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               child: KeyedSubtree(
                 key: ValueKey(story.id),
                 child: story.videoPath != null || story.videoUrl != null
-                    ? Center(
-                        child: _videoController != null && _videoController!.value.isInitialized
-                            ? AspectRatio(
-                                aspectRatio: _videoController!.value.aspectRatio,
+                    ? (_videoController != null && _videoController!.value.isInitialized
+                        ? SizedBox.expand(
+                            child: FittedBox(
+                              fit: BoxFit.cover,
+                              clipBehavior: Clip.hardEdge,
+                              child: SizedBox(
+                                width: _videoController!.value.size.width,
+                                height: _videoController!.value.size.height,
                                 child: VideoPlayer(_videoController!),
-                              )
-                            : const CircularProgressIndicator(color: Colors.white),
-                      )
+                              ),
+                            ),
+                          )
+                        : const Center(child: CircularProgressIndicator(color: Colors.white)))
                     : story.imagePath != null
-                        ? Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
+                        ? SizedBox.expand(child: Image.file(File(story.imagePath!), fit: BoxFit.cover))
                         : story.imageUrl != null
-                            ? Center(child: Image.network(story.imageUrl!, fit: BoxFit.contain))
+                            ? SizedBox.expand(child: Image.network(story.imageUrl!, fit: BoxFit.cover))
                             : Center(
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 28),
@@ -502,7 +525,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               Positioned(
                 left: 16,
                 right: 16,
-                bottom: 72,
+                bottom: pad.bottom + 72,
                 child: Text(
                   story.text!,
                   textAlign: TextAlign.center,
@@ -516,9 +539,37 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 Expanded(child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: advance)),
               ],
             ),
+            // Soft shade behind the header and the bottom hint so the white
+            // text stays readable over a bright picture.
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: pad.top + 110,
+              child: const IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black54, Colors.transparent]),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: pad.bottom + 110,
+              child: const IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black54, Colors.transparent]),
+                  ),
+                ),
+              ),
+            ),
             // Progress bars
             Positioned(
-              top: 8,
+              top: pad.top + 8,
               left: 10,
               right: 10,
               child: Row(
@@ -538,7 +589,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             ),
             // Header
             Positioned(
-              top: 20,
+              top: pad.top + 20,
               left: 14,
               right: 14,
               child: Row(
@@ -558,7 +609,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const Text('anonymous', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-                                  Text(timeAgoLabel(story.t), style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
+                                  Text(whenLabel, style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
                                 ],
                               ),
                             ],
@@ -581,7 +632,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                                         text: '@${person.handle}',
                                         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                                       ),
-                                      Text(timeAgoLabel(story.t), style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
+                                      Text(whenLabel, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600)),
                                     ],
                                   ),
                                 ),
@@ -608,7 +659,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             ),
             // Like button
             Positioned(
-              bottom: 24,
+              bottom: pad.bottom + 24,
               right: 18,
               child: IconButton(
                 onPressed: () => store.likeStory(story.id),
@@ -619,7 +670,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             // no tap target of its own (the whole-screen GestureDetector
             // above already handles the real gesture), just a nudge.
             Positioned(
-              bottom: 28,
+              bottom: pad.bottom + 28,
               left: 0,
               right: 70,
               child: IgnorePointer(

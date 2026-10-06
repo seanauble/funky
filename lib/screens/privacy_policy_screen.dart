@@ -30,6 +30,14 @@ class PrivacyPolicyScreen extends StatelessWidget {
               'nobody else can.',
         ),
         InfoSection(
+          'Notifications',
+          'If you allow notifications, your phone\'s push token is stored with your account so we can alert you '
+              'about new messages, friend requests, new verified places near you, and reports at places you\'re '
+              'going to. To work out which places are near you, your approximate location from when you last '
+              'opened the app is kept privately on your account (no one else can see it). Turn any kind off in '
+              'Settings; turning off new-place alerts removes the stored location.',
+        ),
+        InfoSection(
           'What gets deleted',
           'Most activity — chat, Stories, poll votes, place reports, who\'s "going" where — is wiped every day '
               'at 2 PM, by design. Your screen name, bio, points, and friends list are not wiped.',

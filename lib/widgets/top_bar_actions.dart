@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
-import '../screens/friend_requests_screen.dart';
+import '../screens/notifications_screen.dart';
 import '../screens/settings_screen.dart';
 import 'ui_widgets.dart';
 
-/// The friend-request bell with its live badge count — shared so it shows
+/// The notifications bell with its live unread count — shared so it shows
 /// up the same way on every main tab's AppBar (Home, Chat, Places,
 /// Profile), not just Profile.
 class NotificationBell extends StatelessWidget {
@@ -14,10 +14,13 @@ class NotificationBell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final pending = context.watch<AppStore>().pendingFriendRequestCount;
+    final store = context.watch<AppStore>();
+    // Unread notifications, plus any friend requests still waiting that
+    // predate the notifications feature (so an old request still shows).
+    final pending = store.unreadNotificationCount > 0 ? store.unreadNotificationCount : store.pendingFriendRequestCount;
     return IconButton(
-      tooltip: 'Friend requests',
-      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen())),
+      tooltip: 'Notifications',
+      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
       icon: Stack(
         clipBehavior: Clip.none,
         children: [
@@ -32,7 +35,7 @@ class NotificationBell extends StatelessWidget {
                 decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 1.5)),
                 alignment: Alignment.center,
                 child: Text(
-                  '$pending',
+                  pending > 99 ? '99+' : '$pending',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800),
                 ),

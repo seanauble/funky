@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
+import '../services/address_search.dart';
 import '../theme/colors.dart';
 import '../widgets/kind_picker.dart';
 import '../widgets/ui_widgets.dart';
@@ -337,7 +338,11 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     // that stale level reads as a sudden zoom-in on whichever lens you
     // land on. This is what actually fixes the flip — not awaited against
     // the UI, it can finish a beat after the preview's already showing.
-    unawaited(controller.setZoomLevel(minZoom).catchError((_) {}));
+    // (Awaited, so a caller that needs the lens really at 1x — a flip in the
+    // middle of a recording — can wait for it.)
+    try {
+      await controller.setZoomLevel(minZoom);
+    } catch (_) {}
     // A later flip may have already moved on to a different controller by
     // the time these round-trips come back — don't let a stale result
     // clobber whatever lens is actually current now.
@@ -713,6 +718,13 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       final savedSegment = await File(raw.path).copy(dest);
       _segmentPaths.add(savedSegment.path);
 
+      // The phone remembers each physical camera's zoom even after it's
+      // closed, so put the lens we're leaving back at 1x now — otherwise
+      // flipping back to it later brings up whatever zoom it was left at.
+      try {
+        await controller.setZoomLevel(_minZoom);
+      } catch (_) {}
+
       final nextIndex = (_cameraIndex + 1) % _cameras.length;
       await _openCamera(nextIndex); // rebuilds _controller on the other lens
       final newController = _controller;
@@ -724,6 +736,10 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         await _finishRecording();
         return;
       }
+      // Make sure the new lens really is at 1x BEFORE it starts recording
+      // (this is the "flip twice and it's zoomed in" fix).
+      await _primeZoom(newController);
+      if (!mounted) return;
       await _beginSegmentRecording(newController);
       if (mounted) setState(() => _busy = false);
     } catch (e) {
@@ -1579,11 +1595,61 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   // PlaceMediaThumbnail) until someone actually posts a Story there.
   File? _coverPhoto;
 
+  // Address search: suggestions as you type, and the one you picked (whose
+  // coordinates the pin drops at).
+  Timer? _addressDebounce;
+  List<AddressResult> _suggestions = const [];
+  AddressResult? _pickedAddress;
+  bool _searchingAddress = false;
+  bool _addressSearched = false;
+
   @override
   void dispose() {
+    _addressDebounce?.cancel();
     _nameController.dispose();
     _addressController.dispose();
     super.dispose();
+  }
+
+  void _onAddressChanged(String value) {
+    // Typing again after picking a suggestion un-picks it.
+    if (_pickedAddress != null && value.trim() != _pickedAddress!.address) _pickedAddress = null;
+    _addressDebounce?.cancel();
+    if (value.trim().length < 3) {
+      setState(() {
+        _suggestions = const [];
+        _searchingAddress = false;
+        _addressSearched = false;
+      });
+      return;
+    }
+    setState(() => _searchingAddress = true);
+    _addressDebounce = Timer(const Duration(milliseconds: 500), () async {
+      final here = context.read<AppStore>().location;
+      final results = await AddressSearch.search(value, nearLat: here?.lat, nearLng: here?.lng);
+      if (!mounted || _addressController.text != value || _pickedAddress != null) return;
+      setState(() {
+        _suggestions = results;
+        _searchingAddress = false;
+        _addressSearched = true;
+      });
+    });
+  }
+
+  void _pickAddress(AddressResult r) {
+    _addressDebounce?.cancel();
+    setState(() {
+      _pickedAddress = r;
+      _addressController.text = r.address;
+      _suggestions = const [];
+      _searchingAddress = false;
+      _addressSearched = false;
+      // A venue result also fills in the name if you hadn't typed one.
+      if (r.isVenue && _nameController.text.trim().isEmpty) {
+        _nameController.text = r.title.length > 40 ? r.title.substring(0, 40) : r.title;
+      }
+    });
+    FocusScope.of(context).unfocus();
   }
 
   Future<void> _addCoverPhoto() async {
@@ -1646,7 +1712,8 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     // Same name-normalizing check addPlace itself backstops — surfaced
     // live as you type so you find out before you even try to submit,
     // not after.
-    final duplicate = trimmedName.isEmpty ? null : store.similarNearbyPlace(trimmedName);
+    final picked = _pickedAddress;
+    final duplicate = trimmedName.isEmpty ? null : store.similarNearbyPlace(trimmedName, at: picked == null ? null : LatLng(picked.lat, picked.lng));
     final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null;
 
     return SingleChildScrollView(
@@ -1705,20 +1772,71 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
           const SizedBox(height: 6),
           TextField(
             controller: _addressController,
+            onChanged: _onAddressChanged,
+            textInputAction: TextInputAction.search,
             decoration: InputDecoration(
-              hintText: 'Street address',
+              hintText: 'Search an address or venue',
               hintStyle: TextStyle(color: tokens.mute),
               filled: true,
               fillColor: tokens.raised,
+              prefixIcon: Icon(Icons.search, color: tokens.mute, size: 20),
+              suffixIcon: _searchingAddress
+                  ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))
+                  : (picked != null ? Icon(Icons.check_circle, color: tokens.brand, size: 20) : null),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
             ),
             style: TextStyle(color: tokens.ink),
           ),
+          if (_suggestions.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Container(
+              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+              child: Column(
+                children: [
+                  for (var i = 0; i < _suggestions.length; i++) ...[
+                    if (i > 0) Divider(height: 1, thickness: 1, color: tokens.bg),
+                    InkWell(
+                      onTap: () => _pickAddress(_suggestions[i]),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: Row(
+                          children: [
+                            Icon(_suggestions[i].isVenue ? Icons.storefront_outlined : Icons.place_outlined, color: tokens.brand, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(_suggestions[i].title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14)),
+                                  Text(
+                                    _suggestions[i].isVenue ? _suggestions[i].address : '',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: tokens.mute, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ] else if (_addressSearched && !_searchingAddress && picked == null) ...[
+            const SizedBox(height: 6),
+            Text('No matches — try adding the city or ZIP code.', style: TextStyle(color: tokens.mute, fontSize: 12)),
+          ],
           const SizedBox(height: 6),
           Text(
-            store.locationStatus == LocationStatus.granted
-                ? 'The pin drops at your current location — address lookup is a near-term follow-up (see HANDOFF.md).'
-                : 'Enable location first so this place can be placed on the map.',
+            picked != null
+                ? 'The pin drops at this address.'
+                : (store.locationStatus == LocationStatus.granted
+                    ? 'Pick a suggestion to put the pin at that address — otherwise it drops at your current location.'
+                    : 'Pick a suggestion to put the pin at that address, or enable location to use where you are.'),
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
           const SizedBox(height: 14),
@@ -1768,11 +1886,22 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                   ? () => requireAccountThen(context, store, () async {
                         // Places are shared with everyone, so this waits on
                         // the server for the new place's real id.
+                        // Typed an address but never tapped a suggestion?
+                        // Use the best match for it so the pin still lands
+                        // in the right place.
+                        var pin = _pickedAddress;
+                        final typed = _addressController.text.trim();
+                        if (pin == null && typed.length >= 3) {
+                          final here = store.location;
+                          final found = await AddressSearch.search(typed, nearLat: here?.lat, nearLng: here?.lng);
+                          if (found.isNotEmpty) pin = found.first;
+                        }
                         final place = await store.addPlace(
                           _nameController.text.trim(),
                           _kind,
-                          _addressController.text.trim().isEmpty ? 'Address not given' : _addressController.text.trim(),
+                          typed.isEmpty ? 'Address not given' : typed,
                           coverPhotoPath: _coverPhoto?.path,
+                          at: pin == null ? null : LatLng(pin.lat, pin.lng),
                         );
                         if (!context.mounted) return;
                         if (place == null) {

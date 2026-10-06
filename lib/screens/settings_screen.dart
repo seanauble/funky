@@ -35,6 +35,23 @@ class SettingsScreen extends StatelessWidget {
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen())),
             ),
           ),
+          if (store.signedIn) ...[
+            const SectionHeader(title: 'Notifications'),
+            FunkyCard(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  _SwitchRow(label: 'Direct messages', value: store.notifPrefs.dm, onChanged: (v) => store.setNotifPref('dm', v)),
+                  Divider(height: 1, color: tokens.line),
+                  _SwitchRow(label: 'Friend requests', value: store.notifPrefs.friend, onChanged: (v) => store.setNotifPref('friend', v)),
+                  Divider(height: 1, color: tokens.line),
+                  _SwitchRow(label: 'New verified places near me', value: store.notifPrefs.place, onChanged: (v) => store.setNotifPref('place', v)),
+                  Divider(height: 1, color: tokens.line),
+                  _SwitchRow(label: 'Reports at places I\'m going to', value: store.notifPrefs.report, onChanged: (v) => store.setNotifPref('report', v)),
+                ],
+              ),
+            ),
+          ],
           const SectionHeader(title: 'Appearance'),
           Container(
             padding: const EdgeInsets.all(3),
@@ -122,6 +139,27 @@ class _SettingsRow extends StatelessWidget {
             Text('›', style: TextStyle(color: tokens.mute)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SwitchRow extends StatelessWidget {
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _SwitchRow({required this.label, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Padding(
+      padding: const EdgeInsets.only(left: 14, right: 8),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700))),
+          Switch(value: value, activeColor: tokens.brand, onChanged: onChanged),
+        ],
       ),
     );
   }

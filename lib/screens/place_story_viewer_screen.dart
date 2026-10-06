@@ -122,9 +122,15 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
 
     _ensureVideoFor(story, advance);
 
+    // Edge-to-edge media (no black bars); overlays are pushed in by the
+    // notch / home-bar insets instead.
+    final pad = MediaQuery.paddingOf(context);
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
+        top: false,
+        bottom: false,
         child: GestureDetector(
           onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
           onVerticalDragEnd: (details) {
@@ -141,18 +147,23 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               child: Stack(
           children: [
             if (story.videoPath != null || story.videoUrl != null)
-              Center(
-                child: _videoController != null && _videoController!.value.isInitialized
-                    ? AspectRatio(
-                        aspectRatio: _videoController!.value.aspectRatio,
-                        child: VideoPlayer(_videoController!),
-                      )
-                    : const CircularProgressIndicator(color: Colors.white),
-              )
+              (_videoController != null && _videoController!.value.isInitialized
+                  ? SizedBox.expand(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        clipBehavior: Clip.hardEdge,
+                        child: SizedBox(
+                          width: _videoController!.value.size.width,
+                          height: _videoController!.value.size.height,
+                          child: VideoPlayer(_videoController!),
+                        ),
+                      ),
+                    )
+                  : const Center(child: CircularProgressIndicator(color: Colors.white)))
             else if (story.imagePath != null)
-              Center(child: Image.file(File(story.imagePath!), fit: BoxFit.contain))
+              SizedBox.expand(child: Image.file(File(story.imagePath!), fit: BoxFit.cover))
             else if (story.imageUrl != null)
-              Center(child: Image.network(story.imageUrl!, fit: BoxFit.contain))
+              SizedBox.expand(child: Image.network(story.imageUrl!, fit: BoxFit.cover))
             else
               Center(
                 child: Padding(
@@ -172,7 +183,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               Positioned(
                 left: 16,
                 right: 16,
-                bottom: 72,
+                bottom: pad.bottom + 72,
                 child: Text(
                   story.text!,
                   textAlign: TextAlign.center,
@@ -186,7 +197,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               ],
             ),
             Positioned(
-              top: 8,
+              top: pad.top + 8,
               left: 10,
               right: 10,
               child: Row(
@@ -205,7 +216,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               ),
             ),
             Positioned(
-              top: 20,
+              top: pad.top + 20,
               left: 14,
               right: 14,
               child: Row(
@@ -224,7 +235,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                         ),
                         Text(
-                          '${widget.placeName} · ${timeAgoLabel(story.t)}',
+                          '${timeAgoLabel(story.t)} · 📍 ${widget.placeName}',
                           style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w600),
                         ),
                       ],
@@ -238,7 +249,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               ),
             ),
             Positioned(
-              bottom: 24,
+              bottom: pad.bottom + 24,
               right: 18,
               child: IconButton(
                 onPressed: () => store.likeStory(story.id),

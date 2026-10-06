@@ -110,3 +110,28 @@ as $$
 $$;
 
 grant execute on function public.backend_status() to authenticated;
+
+-- 6. Admins can take points away too. The bonus can now go negative (down to
+--    wherever the person's total hits 0) — before, it was floored at 0, so
+--    removing points from someone with no gifted bonus did nothing.
+
+create or replace function public.admin_give_points(target uuid, amount integer)
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  new_total integer;
+begin
+  if not public.is_admin() then
+    raise exception 'admin only';
+  end if;
+  update public.profiles
+  set bonus_points = greatest(-points, bonus_points + amount)
+  where id = target
+  returning bonus_points into new_total;
+  return new_total;
+end;
+$$;
+
+grant execute on function public.admin_give_points(uuid, integer) to authenticated;

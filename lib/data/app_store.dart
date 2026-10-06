@@ -6,9 +6,11 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/push_service.dart';
 import 'geo.dart';
 import 'mock_data.dart';
 import 'models.dart';
+import 'notification_models.dart';
 import 'session.dart';
 
 const _storageKey = 'funky.store.v1';
@@ -954,6 +956,7 @@ class AppStore extends ChangeNotifier {
       location = LatLng(pos.latitude, pos.longitude);
       locationStatus = LocationStatus.granted;
       notifyListeners();
+      _syncLocationUp();
     } catch (_) {
       locationStatus = LocationStatus.denied;
       notifyListeners();
@@ -1429,10 +1432,10 @@ class AppStore extends ChangeNotifier {
   /// name looks like a duplicate of [name], or null if there isn't one.
   /// Lets the Add Place form warn before you even try to submit, and
   /// backstops [addPlace] itself in case something slips past that check.
-  Place? similarNearbyPlace(String name) {
+  Place? similarNearbyPlace(String name, {LatLng? at}) {
     final target = _normalizedPlaceName(name);
     if (target.isEmpty) return null;
-    final here = location ?? defaultLocation;
+    final here = at ?? location ?? defaultLocation;
     for (final p in places) {
       if (!near(here, LatLng(p.lat, p.lng))) continue;
       final existing = _normalizedPlaceName(p.name);
@@ -1449,7 +1452,9 @@ class AppStore extends ChangeNotifier {
   /// after.
   String? lastPlaceError;
 
-  Future<Place?> addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath}) async {
+  /// [at] is where the pin goes (an address picked in the Add Place form);
+  /// without it the pin drops at your current location.
+  Future<Place?> addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath, LatLng? at}) async {
     lastPlaceError = null;
     if (selfBanned) {
       lastPlaceError = _bannedMessage;
@@ -1462,13 +1467,20 @@ class AppStore extends ChangeNotifier {
     final cleanName = name.trim().length > maxPlaceNameLength ? name.trim().substring(0, maxPlaceNameLength) : name.trim();
     final cleanAddress = address.trim().length > maxPlaceAddressLength ? address.trim().substring(0, maxPlaceAddressLength) : address.trim();
     if (cleanName.isEmpty) return null;
-    if (similarNearbyPlace(cleanName) != null) return null;
+    if (similarNearbyPlace(cleanName, at: at) != null) return null;
     final uid = supabaseUserId;
     if (!signedIn || uid == null) {
       lastPlaceError = 'Log in to add a place.';
       return null;
     }
-    final here = location ?? defaultLocation;
+    final here = at ?? location ?? defaultLocation;
+    // A place has to be in your own area (the 25 miles around you) — an
+    // address picked from search can be anywhere, so check it.
+    final myLocation = location;
+    if (at != null && myLocation != null && !isAdmin && !near(myLocation, at)) {
+      lastPlaceError = 'That address is more than ${rangeMiles.round()} miles from you — places have to be in your area.';
+      return null;
+    }
     // The cover photo goes up first (best-effort — a failed upload just
     // means the place is added without a shared photo) so its public URL
     // can ride along on the place row for everyone else to see.
@@ -2478,6 +2490,9 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
+    // Stop this phone's pushes for the account that's leaving (while we're
+    // still allowed to), so the next person to log in here doesn't get them.
+    await _unregisterPush();
     try {
       await Supabase.instance.client.auth.signOut();
     } catch (_) {
@@ -2616,8 +2631,26 @@ class AppStore extends ChangeNotifier {
     unawaited(_fetchRemoteReports());
     unawaited(_fetchRemoteStories());
     unawaited(_fetchRemoteMessages());
+    unawaited(_fetchNotifications());
+    unawaited(_fetchNotifPrefs());
+    unawaited(_registerPush());
 
     final client = Supabase.instance.client;
+    _notificationsChannel = client.channel('public:notifications:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'notifications',
+        callback: (payload) => _onRemoteNotification(payload.newRecord),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'notifications',
+        callback: (payload) => _onRemoteNotification(payload.newRecord),
+      )
+      ..subscribe();
+
     _storiesChannel = client.channel('public:stories:sync')
       ..onPostgresChanges(
         event: PostgresChangeEvent.insert,
@@ -2805,6 +2838,7 @@ class AppStore extends ChangeNotifier {
       _pollVotesChannel,
       _reportsChannel,
       _reportConfirmationsChannel,
+      _notificationsChannel,
     ]) {
       if (channel != null) client.removeChannel(channel);
     }
@@ -2822,6 +2856,7 @@ class AppStore extends ChangeNotifier {
     _pollVotesChannel = null;
     _reportsChannel = null;
     _reportConfirmationsChannel = null;
+    _notificationsChannel = null;
     _placesRefreshTimer?.cancel();
     _placesRefreshTimer = null;
     _pollsRefreshTimer?.cancel();
@@ -2831,6 +2866,11 @@ class AppStore extends ChangeNotifier {
   }
 
   void _clearRemoteData() {
+    notifications = [];
+    notifPrefs = const NotificationPrefs();
+    _syncedLocation = null;
+    _syncedLocationAt = null;
+    unawaited(PushService.setBadge(0));
     stories = stories.where((s) => !_remoteStoryIds.contains(s.id)).toList();
     messages = messages.where((m) => !_remoteMessageIds.contains(m.id) && !_remoteChatIds.contains(m.id)).toList();
     people = {for (final entry in people.entries) if (!_remotePersonIds.contains(entry.key)) entry.key: entry.value};
@@ -3025,7 +3065,8 @@ class AppStore extends ChangeNotifier {
     final localEarned = me.points - _appliedBonus;
     final earned = localEarned > remoteEarned ? localEarned : remoteEarned;
     var next = me;
-    if (earned + bonus != me.points) next = next.copyWith(points: earned + bonus);
+    final total = earned + bonus < 0 ? 0 : earned + bonus;
+    if (total != me.points) next = next.copyWith(points: total);
     _appliedBonus = bonus;
 
     // A device that's never set a handle/bio/photo/style adopts what the
@@ -3078,6 +3119,8 @@ class AppStore extends ChangeNotifier {
     _persist();
     _maybePushProfile();
   }
+
+  int _nonNegative(int n) => n < 0 ? 0 : n;
 
   Map<String, dynamic> _profilePayload() {
     final earned = me.points - _appliedBonus;
@@ -3540,7 +3583,7 @@ class AppStore extends ChangeNotifier {
       bio: (row['bio'] as String?) ?? '',
       since: 0,
       // Earned points plus any admin-gifted bonus — what everyone sees.
-      points: ((row['points'] as num?)?.toInt() ?? 0) + ((row['bonus_points'] as num?)?.toInt() ?? 0),
+      points: _nonNegative(((row['points'] as num?)?.toInt() ?? 0) + ((row['bonus_points'] as num?)?.toInt() ?? 0)),
       friends: const [],
       friendRequestsSent: const [],
       friendRequestsReceived: const [],
@@ -3819,6 +3862,194 @@ class AppStore extends ChangeNotifier {
     final i = messages.indexWhere((m) => m.id == id);
     if (i == -1 || messages[i].uid != 'me' || messages[i].status == 'seen') return;
     _setMessageStatus(id, 'seen');
+  }
+
+
+  // ---------------------------------------------------------------------
+  // Notifications (DMs, friend requests, new verified places nearby,
+  // reports at the place you're going to). The server creates them with
+  // triggers (supabase/phase7.sql); this just reads them, keeps them live,
+  // and registers this phone for iPhone pushes (supabase/functions/send-push).
+  // ---------------------------------------------------------------------
+
+  List<AppNotification> notifications = [];
+  NotificationPrefs notifPrefs = const NotificationPrefs();
+  RealtimeChannel? _notificationsChannel;
+  String? _pushToken;
+  LatLng? _syncedLocation;
+  DateTime? _syncedLocationAt;
+
+  int get unreadNotificationCount => notifications.where((n) => !n.read).length;
+
+  void _syncBadge() => unawaited(PushService.setBadge(unreadNotificationCount));
+
+  Future<void> _fetchNotifications() async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('notifications').select().order('created_at', ascending: false).limit(100);
+      final list = <AppNotification>[];
+      for (final row in rows) {
+        final n = AppNotification.fromRow(row);
+        if (n != null) list.add(n);
+      }
+      notifications = list;
+      _syncBadge();
+      notifyListeners();
+    } catch (_) {
+      // Not set up yet (phase 7 SQL not run) or offline — the bell just stays empty.
+    }
+  }
+
+  void _onRemoteNotification(Map<String, dynamic> row) {
+    final n = AppNotification.fromRow(row);
+    if (n == null) return;
+    final i = notifications.indexWhere((x) => x.id == n.id);
+    if (i == -1) {
+      notifications = [n, ...notifications];
+    } else {
+      final next = List<AppNotification>.from(notifications);
+      next[i] = n;
+      notifications = next;
+    }
+    _syncBadge();
+    notifyListeners();
+  }
+
+  Future<void> markNotificationRead(String id) async {
+    final i = notifications.indexWhere((n) => n.id == id);
+    if (i == -1 || notifications[i].read) return;
+    final next = List<AppNotification>.from(notifications);
+    next[i] = next[i].copyWith(read: true);
+    notifications = next;
+    _syncBadge();
+    notifyListeners();
+    try {
+      await Supabase.instance.client.from('notifications').update({'read_at': DateTime.now().toUtc().toIso8601String()}).eq('id', id);
+    } catch (_) {}
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    final uid = supabaseUserId;
+    if (uid == null || unreadNotificationCount == 0) return;
+    notifications = notifications.map((n) => n.read ? n : n.copyWith(read: true)).toList();
+    _syncBadge();
+    notifyListeners();
+    try {
+      await Supabase.instance.client
+          .from('notifications')
+          .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('user_id', uid)
+          .filter('read_at', 'is', null);
+    } catch (_) {}
+  }
+
+  Future<void> clearAllNotifications() async {
+    final uid = supabaseUserId;
+    if (uid == null || notifications.isEmpty) return;
+    notifications = [];
+    _syncBadge();
+    notifyListeners();
+    try {
+      await Supabase.instance.client.from('notifications').delete().eq('user_id', uid);
+    } catch (_) {}
+  }
+
+  /// Makes sure [id]'s profile is loaded so a screen opened from a
+  /// notification (a DM thread, a profile) has someone to show.
+  Future<void> ensurePerson(String id) => _ensurePeopleFor([id]);
+
+  Future<void> _fetchNotifPrefs() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final row = await Supabase.instance.client.from('notification_prefs').select().eq('user_id', uid).maybeSingle();
+      if (row != null) {
+        notifPrefs = NotificationPrefs.fromRow(row);
+        notifyListeners();
+      }
+    } catch (_) {}
+    _syncLocationUp();
+  }
+
+  Future<void> setNotifPref(String kind, bool on) async {
+    final uid = supabaseUserId;
+    final next = switch (kind) {
+      'dm' => notifPrefs.copyWith(dm: on),
+      'friend' => notifPrefs.copyWith(friend: on),
+      'place' => notifPrefs.copyWith(place: on),
+      'report' => notifPrefs.copyWith(report: on),
+      _ => notifPrefs,
+    };
+    notifPrefs = next;
+    notifyListeners();
+    if (uid == null) return;
+    try {
+      await Supabase.instance.client.from('notification_prefs').upsert(next.toRow(uid));
+    } catch (_) {}
+    if (kind == 'place') {
+      if (on) {
+        _syncedLocationAt = null;
+        _syncLocationUp();
+      } else {
+        // No new-place alerts means no reason to keep a location on file.
+        _syncedLocation = null;
+        _syncedLocationAt = null;
+        try {
+          await Supabase.instance.client.from('user_locations').delete().eq('user_id', uid);
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<void> _registerPush() async {
+    if (!Platform.isIOS) return;
+    await PushService.start((token) {
+      _pushToken = token;
+      unawaited(_uploadPushToken(token));
+    });
+  }
+
+  Future<void> _uploadPushToken(String token) async {
+    if (supabaseUserId == null) return;
+    try {
+      await Supabase.instance.client.rpc('register_device_token', params: {'p_token': token, 'p_platform': 'ios'});
+    } catch (_) {}
+  }
+
+  Future<void> _unregisterPush() async {
+    final token = _pushToken;
+    _pushToken = null;
+    if (token == null || supabaseUserId == null) return;
+    try {
+      await Supabase.instance.client.from('device_tokens').delete().eq('token', token);
+    } catch (_) {}
+  }
+
+  /// Tells the server roughly where you last opened the app — only used to
+  /// work out whether a newly verified place is within 25 miles of you, and
+  /// only visible to you. Throttled: at most every 30 min unless you moved
+  /// more than a mile.
+  void _syncLocationUp() {
+    final uid = supabaseUserId;
+    final loc = location;
+    if (uid == null || loc == null || !notifPrefs.place) return;
+    final prev = _syncedLocation;
+    final at = _syncedLocationAt;
+    if (prev != null && at != null && DateTime.now().difference(at) < const Duration(minutes: 30) && milesBetween(prev, loc) < 1) return;
+    _syncedLocation = loc;
+    _syncedLocationAt = DateTime.now();
+    unawaited(() async {
+      try {
+        await Supabase.instance.client.from('user_locations').upsert({
+          'user_id': uid,
+          'lat': loc.lat,
+          'lng': loc.lng,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      } catch (_) {
+        _syncedLocationAt = null;
+      }
+    }());
   }
 
   @override
