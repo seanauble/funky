@@ -498,7 +498,9 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
         duration: const Duration(milliseconds: 300),
         alignment: Alignment.topLeft,
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 450),
+          duration: const Duration(milliseconds: 700),
+          reverseDuration: const Duration(milliseconds: 220),
+          transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: child),
           layoutBuilder: (current, previous) => Stack(
             alignment: Alignment.topLeft,
             children: [...previous, if (current != null) current],
@@ -506,9 +508,13 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
           child: Column(
             key: ValueKey(windowKey),
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: shown.map((m) {
+            children: shown.asMap().entries.map((entry) {
+              final m = entry.value;
               final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
-              return Padding(
+              return _SwoopIn(
+                delay: Duration(milliseconds: 130 * entry.key),
+                animate: windowKey != 'live',
+                child: Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -519,11 +525,64 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
                     filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
                   ],
                 ),
+              ),
               );
             }).toList(),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Slides a row in from the right with a little overshoot-free swoop and a
+/// fade, each row starting a beat after the one above it.
+class _SwoopIn extends StatefulWidget {
+  final Widget child;
+  final Duration delay;
+  final bool animate;
+  const _SwoopIn({required this.child, required this.delay, required this.animate});
+
+  @override
+  State<_SwoopIn> createState() => _SwoopInState();
+}
+
+class _SwoopInState extends State<_SwoopIn> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 560));
+  late final Animation<double> _curve = CurvedAnimation(parent: _c, curve: Curves.easeOutCubic);
+  Timer? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.animate) {
+      _c.value = 1;
+    } else {
+      _t = Timer(widget.delay, () {
+        if (mounted) _c.forward();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _curve,
+      builder: (_, child) {
+        final v = _curve.value;
+        return Opacity(
+          opacity: v.clamp(0.0, 1.0),
+          child: Transform.translate(offset: Offset((1 - v) * 90, (1 - v) * 10), child: child),
+        );
+      },
+      child: widget.child,
     );
   }
 }
