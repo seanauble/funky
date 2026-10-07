@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../data/models.dart';
+import '../widgets/place_rating_card.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'place_story_viewer_screen.dart';
@@ -48,6 +50,51 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       return;
     }
     store.submitReport(widget.placeId, kind, detail: detail);
+  }
+
+  bool _uploadingPhoto = false;
+
+  /// Anyone signed in can suggest a picture for the place; a FUNKY Admin has
+  /// to approve it before it shows up for everyone (an admin's own goes
+  /// live right away).
+  Future<void> _addPicture(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: tokens.surface,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
+              title: Text('Choose from library', style: TextStyle(color: tokens.ink)),
+              onTap: () => Navigator.of(sheetContext).pop(ImageSource.gallery),
+            ),
+            ListTile(
+              leading: Icon(Icons.photo_camera_outlined, color: tokens.ink),
+              title: Text('Take a photo', style: TextStyle(color: tokens.ink)),
+              onTap: () => Navigator.of(sheetContext).pop(ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+    try {
+      final picked = await ImagePicker().pickImage(source: source, maxWidth: 1600, imageQuality: 85);
+      if (picked == null || !mounted) return;
+      setState(() => _uploadingPhoto = true);
+      final message = await store.suggestPlacePhoto(widget.placeId, picked.path);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't open that picture.")));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+    }
   }
 
   void _confirm(AppStore store, String reportId) {
@@ -150,7 +197,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   // preview of the latest photo/video posted here the
                   // moment someone posts a Story at this place.
                   Positioned.fill(
-                    child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, coverUrl: place.coverUrl, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
+                    child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, coverUrl: place.coverUrl, photoUrl: place.photoUrl, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
                   ),
                   if (venueStories.isNotEmpty)
                     Positioned(
@@ -181,6 +228,8 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           Text(place.name, style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
           Text('${place.address} · ${formatMiles(place.distance)}', style: TextStyle(color: tokens.mute)),
+          const SizedBox(height: 6),
+          RatingSummaryLine(placeId: place.id, fontSize: 13),
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
@@ -200,6 +249,15 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           const SizedBox(height: 8),
           Text('🔥 ${place.going} going tonight', style: TextStyle(color: tokens.mute)),
           const SizedBox(height: 20),
+          _PicturePrompt(
+            pending: store.myPendingPhotoPlaces.contains(place.id),
+            uploading: _uploadingPhoto,
+            hasPicture: place.photoUrl != null,
+            isAdmin: store.isAdmin,
+            onAdd: () => requireAccountThen(context, store, () => _addPicture(store)),
+            onClear: () => store.clearPlacePhoto(place.id),
+          ),
+          PlaceRatingCard(placeId: place.id),
           FunkyCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -494,6 +552,69 @@ class _ReportTile extends StatelessWidget {
           ),
         trailing,
       ],
+    );
+  }
+}
+
+/// "Add a picture" under the place's details — anyone can suggest one, an
+/// admin approves it.
+class _PicturePrompt extends StatelessWidget {
+  final bool pending;
+  final bool uploading;
+  final bool hasPicture;
+  final bool isAdmin;
+  final VoidCallback onAdd;
+  final VoidCallback onClear;
+  const _PicturePrompt({
+    required this.pending,
+    required this.uploading,
+    required this.hasPicture,
+    required this.isAdmin,
+    required this.onAdd,
+    required this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (pending)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Your picture is waiting for admin approval.',
+                style: TextStyle(color: tokens.mute, fontSize: 12.5),
+              ),
+            ),
+          Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: uploading ? null : onAdd,
+              icon: uploading
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(Icons.add_a_photo_outlined, size: 18, color: tokens.ink),
+              label: Text(
+                uploading ? 'Uploading…' : (hasPicture ? 'Suggest a new picture' : 'Add a picture'),
+                style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: tokens.line),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+          if (isAdmin && hasPicture)
+            TextButton(onPressed: onClear, child: Text('Remove', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700))),
+        ],
+          ),
+        ],
+      ),
     );
   }
 }

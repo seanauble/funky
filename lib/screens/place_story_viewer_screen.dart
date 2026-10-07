@@ -202,14 +202,47 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               right: 10,
               child: Row(
                 children: List.generate(stories.length, (i) {
+                  Widget fill(double f) => FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: f.clamp(0.0, 1.0),
+                        child: Container(color: Colors.white),
+                      );
+                  // Finished stories are full, upcoming ones empty, and the
+                  // one playing a video fills up in step with the video;
+                  // a photo/text story just shows full while it's on screen.
+                  final videoController = _videoController;
+                  final Widget inner;
+                  if (i < _i) {
+                    inner = fill(1);
+                  } else if (i > _i) {
+                    inner = const SizedBox.shrink();
+                  } else if (videoController != null && _videoForStoryId == story.id) {
+                    inner = ValueListenableBuilder<VideoPlayerValue>(
+                      key: ValueKey('progress_${story.id}'),
+                      valueListenable: videoController,
+                      builder: (_, v, __) {
+                        final total = v.duration.inMilliseconds;
+                        final f = v.isInitialized && total > 0 ? v.position.inMilliseconds / total : 0.0;
+                        return TweenAnimationBuilder<double>(
+                          tween: Tween<double>(end: f.clamp(0.0, 1.0)),
+                          duration: const Duration(milliseconds: 500),
+                          builder: (_, value, __) => fill(value),
+                        );
+                      },
+                    );
+                  } else {
+                    inner = fill(1);
+                  }
                   return Expanded(
                     child: Container(
                       height: 3,
                       margin: const EdgeInsets.symmetric(horizontal: 2),
+                      clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
-                        color: i <= _i ? Colors.white : Colors.white24,
+                        color: Colors.white24,
                         borderRadius: BorderRadius.circular(2),
                       ),
+                      child: inner,
                     ),
                   );
                 }),

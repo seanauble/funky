@@ -137,6 +137,9 @@ class Place {
   // The same photo as a public URL on the backend — what everyone ELSE sees
   // (coverPhotoPath is only a file on the device that added the place).
   final String? coverUrl;
+  // The admin-approved picture for this place (see place_photo_suggestions
+  // in supabase/phase10.sql) — what the map pin and thumbnails prefer.
+  final String? photoUrl;
 
   const Place({
     required this.id,
@@ -150,6 +153,7 @@ class Place {
     required this.session,
     this.coverPhotoPath,
     this.coverUrl,
+    this.photoUrl,
   });
 
   Map<String, dynamic> toJson() => {
@@ -164,6 +168,7 @@ class Place {
         'session': session,
         'coverPhotoPath': coverPhotoPath,
         'coverUrl': coverUrl,
+        'photoUrl': photoUrl,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -178,6 +183,7 @@ class Place {
         session: json['session'] as String,
         coverPhotoPath: json['coverPhotoPath'] as String?,
         coverUrl: json['coverUrl'] as String?,
+        photoUrl: json['photoUrl'] as String?,
       );
 }
 

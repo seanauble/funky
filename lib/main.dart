@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'data/app_store.dart';
 import 'data/supabase_config.dart';
+import 'push_router.dart';
+import 'services/push_service.dart';
 import 'root_shell.dart';
 import 'theme/colors.dart';
 import 'theme/theme_provider.dart';
@@ -77,6 +79,7 @@ class _FunkyAppState extends State<FunkyApp> with WidgetsBindingObserver {
         builder: (context, theme, _) {
           final tokens = theme.tokens;
           return MaterialApp(
+            navigatorKey: appNavigatorKey,
             title: 'FUNKY',
             debugShowCheckedModeBanner: false,
             theme: ThemeData(
@@ -107,12 +110,23 @@ class _AppRoot extends StatefulWidget {
 
 class _AppRootState extends State<_AppRoot> {
   bool _splashElapsed = false;
+  bool _tapsHooked = false;
 
   @override
   void initState() {
     super.initState();
     Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _splashElapsed = true);
+    });
+  }
+
+  /// Once the app is actually on screen, start honoring taps on push
+  /// notifications (including the one that launched the app).
+  void _hookPushTaps(AppStore store) {
+    if (_tapsHooked) return;
+    _tapsHooked = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PushService.listenForTaps((kind, data) => openPushTarget(store, kind, data));
     });
   }
 
@@ -138,6 +152,7 @@ class _AppRootState extends State<_AppRoot> {
         ),
       );
     }
+    _hookPushTaps(store);
     return const Stack(
       children: [
         RootShell(),

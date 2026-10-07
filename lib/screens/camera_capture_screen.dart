@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import '../services/video_filter_service.dart';
 import '../widgets/ui_widgets.dart';
 
 /// What `CameraCaptureScreen` hands back once the user has captured
@@ -321,7 +322,18 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
       final raw = await controller.stopVideoRecording();
       final dir = await _storiesDir();
       final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.mp4';
-      final savedFile = await File(raw.path).copy(dest);
+      var savedFile = await File(raw.path).copy(dest);
+      // A filtered take gets the filter baked into the file itself (the
+      // live preview alone never reaches the saved video).
+      final matrix = cameraFilters[_filterIndex].matrix;
+      if (matrix != null) {
+        final baked = await VideoFilterService.apply(
+          savedFile.path,
+          '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}_f.mp4',
+          matrix,
+        );
+        if (baked != null) savedFile = File(baked);
+      }
       if (!mounted) return;
       Navigator.of(context).pop(CapturedMedia(file: savedFile, isVideo: true));
     } catch (e) {

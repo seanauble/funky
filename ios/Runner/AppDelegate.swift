@@ -1,6 +1,8 @@
 import Flutter
 import UIKit
 import UserNotifications
+import AVFoundation
+import CoreImage
 
 /// Hand-written push-notification bridge (no third-party plugin): asks for
 /// permission, registers with APNs, and hands the device token to Dart
@@ -11,6 +13,10 @@ final class FunkyPushPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDe
 
   private let channel: FlutterMethodChannel
   private var latestToken: String?
+  // A tapped notification waits here until Dart is up and asks for it
+  // (cold start); once Dart has asked, taps are delivered live.
+  private var pendingOpen: [String: Any]?
+  private var dartReady = false
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
@@ -44,6 +50,11 @@ final class FunkyPushPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDe
       }
     case "getToken":
       result(latestToken)
+    case "takePendingOpen":
+      dartReady = true
+      let p = pendingOpen
+      pendingOpen = nil
+      result(p)
     case "setBadge":
       let count = (call.arguments as? Int) ?? 0
       DispatchQueue.main.async {
@@ -89,7 +100,105 @@ final class FunkyPushPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDe
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
+    let info = response.notification.request.content.userInfo
+    var payload: [String: Any] = [:]
+    if let kind = info["kind"] as? String { payload["kind"] = kind }
+    if let data = info["data"] as? [String: Any] { payload["data"] = data }
+    if !payload.isEmpty {
+      if dartReady {
+        channel.invokeMethod("onOpen", arguments: payload)
+      } else {
+        pendingOpen = payload
+      }
+    }
     completionHandler()
+  }
+}
+
+/// Bakes a 5x4 color matrix (the same numbers Flutter's ColorFilter.matrix
+/// uses for the live preview) into a video, keeping its audio — so the
+/// filter picked on the camera / review screen is what actually gets posted.
+/// Called from lib/services/video_filter_service.dart.
+final class FunkyVideoFilterPlugin: NSObject, FlutterPlugin {
+  static var shared: FunkyVideoFilterPlugin?
+
+  static func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: "com.funkyapp.funky/videofilter",
+      binaryMessenger: registrar.messenger()
+    )
+    let instance = FunkyVideoFilterPlugin()
+    shared = instance
+    registrar.addMethodCallDelegate(instance, channel: channel)
+  }
+
+  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard call.method == "apply",
+          let args = call.arguments as? [String: Any],
+          let input = args["input"] as? String,
+          let output = args["output"] as? String,
+          let rawMatrix = args["matrix"] as? [Any],
+          rawMatrix.count == 20 else {
+      result(FlutterMethodNotImplemented)
+      return
+    }
+
+    let m: [Double] = rawMatrix.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+    let asset = AVURLAsset(url: URL(fileURLWithPath: input))
+    // Flutter's matrix works on 0-255 values (bias included); Core Image on 0-1.
+    let r = CIVector(x: CGFloat(m[0]), y: CGFloat(m[1]), z: CGFloat(m[2]), w: CGFloat(m[3]))
+    let g = CIVector(x: CGFloat(m[5]), y: CGFloat(m[6]), z: CGFloat(m[7]), w: CGFloat(m[8]))
+    let b = CIVector(x: CGFloat(m[10]), y: CGFloat(m[11]), z: CGFloat(m[12]), w: CGFloat(m[13]))
+    let a = CIVector(x: CGFloat(m[15]), y: CGFloat(m[16]), z: CGFloat(m[17]), w: CGFloat(m[18]))
+    let bias = CIVector(
+      x: CGFloat(m[4] / 255.0),
+      y: CGFloat(m[9] / 255.0),
+      z: CGFloat(m[14] / 255.0),
+      w: CGFloat(m[19] / 255.0)
+    )
+    // No color-space conversion, so the math lands the same way it does in
+    // the Flutter preview (which applies the matrix to the encoded values).
+    let context = CIContext(options: [CIContextOption.workingColorSpace: NSNull()])
+
+    let composition = AVMutableVideoComposition(asset: asset, applyingCIFiltersWithHandler: { request in
+      let source = request.sourceImage
+      guard let filter = CIFilter(name: "CIColorMatrix") else {
+        request.finish(with: source, context: nil)
+        return
+      }
+      filter.setValue(source, forKey: kCIInputImageKey)
+      filter.setValue(r, forKey: "inputRVector")
+      filter.setValue(g, forKey: "inputGVector")
+      filter.setValue(b, forKey: "inputBVector")
+      filter.setValue(a, forKey: "inputAVector")
+      filter.setValue(bias, forKey: "inputBiasVector")
+      let filtered = filter.outputImage ?? source
+      request.finish(with: filtered.cropped(to: source.extent), context: context)
+    })
+
+    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+      result(FlutterError(code: "export_unavailable", message: "Could not start the video export", details: nil))
+      return
+    }
+    let outputURL = URL(fileURLWithPath: output)
+    try? FileManager.default.removeItem(at: outputURL)
+    export.outputURL = outputURL
+    export.outputFileType = .mp4
+    export.videoComposition = composition
+    export.shouldOptimizeForNetworkUse = true
+    export.exportAsynchronously {
+      DispatchQueue.main.async {
+        if export.status == .completed {
+          result(output)
+        } else {
+          result(FlutterError(
+            code: "export_failed",
+            message: export.error?.localizedDescription ?? "The video export failed",
+            details: nil
+          ))
+        }
+      }
+    }
   }
 }
 
@@ -107,6 +216,10 @@ final class FunkyPushPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDe
 
     if let pushRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "FunkyPushPlugin") {
       FunkyPushPlugin.register(with: pushRegistrar)
+    }
+
+    if let filterRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "FunkyVideoFilterPlugin") {
+      FunkyVideoFilterPlugin.register(with: filterRegistrar)
     }
 
     // Story-viewer screenshot detection — a hand-written channel (no

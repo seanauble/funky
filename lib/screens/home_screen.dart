@@ -5,6 +5,7 @@ import '../data/models.dart';
 import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
+import '../widgets/place_rating_card.dart';
 import '../widgets/poll_bars.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
@@ -175,7 +176,7 @@ class HomeScreen extends StatelessWidget {
             )
           else
             SizedBox(
-              height: 138,
+              height: 156,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: verifiedPlaces.take(8).map((p) {
@@ -205,6 +206,7 @@ class HomeScreen extends StatelessWidget {
                                 story: store.latestMediaStoryFor(p.id),
                                 coverPhotoPath: p.coverPhotoPath,
                                 coverUrl: p.coverUrl,
+                                photoUrl: p.photoUrl,
                                 fallbackLabel: p.name.substring(0, 1),
                                 fontSize: 22,
                               ),
@@ -212,6 +214,8 @@ class HomeScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 8),
                           Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 2),
+                          RatingSummaryLine(placeId: p.id),
                           const SizedBox(height: 2),
                           Text('🔥 ${p.going} going', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12)),
                         ],
@@ -283,7 +287,7 @@ class HomeScreen extends StatelessWidget {
                         m.anon
                             ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
                             : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
-                        filteredMessageText(m.text, TextStyle(color: tokens.ink)),
+                        filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
                       ],
                     ),
                   );

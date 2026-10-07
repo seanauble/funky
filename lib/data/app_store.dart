@@ -8,9 +8,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/push_service.dart';
 import 'geo.dart';
+import 'group_models.dart';
 import 'mock_data.dart';
 import 'models.dart';
 import 'notification_models.dart';
+import 'place_photo.dart';
+import 'place_rating.dart';
 import 'session.dart';
 
 const _storageKey = 'funky.store.v1';
@@ -50,6 +53,7 @@ class RankedPlace {
   String get address => place.address;
   String? get coverPhotoPath => place.coverPhotoPath;
   String? get coverUrl => place.coverUrl;
+  String? get photoUrl => place.photoUrl;
 }
 
 /// The canonical chat "room" key for a DM thread between two people — the
@@ -284,6 +288,9 @@ class AppStore extends ChangeNotifier {
     await table('DM photo/video columns', 'messages', 'id,media_path,read_at');
     await table('Chat reactions (phase 3)', 'chat_reactions', 'message_id');
     await table('Place cover photos (phase 3)', 'places', 'cover_url');
+    await table('Place ratings (phase 9)', 'place_ratings', 'place_id');
+    await table('Place pictures + profile reports (phase 10)', 'profile_reports', 'id');
+    await table('Place approved picture (phase 10)', 'places', 'photo_url');
     try {
       await client.rpc('is_admin');
       results.add(('Admin functions', true, ''));
@@ -802,7 +809,7 @@ class AppStore extends ChangeNotifier {
           // so this merge is always just your own history.
           stories = _dedupeById([...stories, ...parsedStories], (s) => s.id);
           // DMs stay across the reset (only tonight's live chat is wiped).
-          messages = _dedupeById([...messages, ...parsedMessagesFixed.where((m) => m.room.startsWith('dm_'))], (m) => m.id);
+          messages = _dedupeById([...messages, ...parsedMessagesFixed.where((m) => m.room.startsWith('dm_') || m.room.startsWith('grp_'))], (m) => m.id);
           justReset = true;
         }
 
@@ -1039,7 +1046,9 @@ class AppStore extends ChangeNotifier {
     Story? latest;
     for (final s in stories) {
       if (s.place != placeId) continue;
-      if (s.videoPath == null && s.imagePath == null) continue;
+      // Others' Stories arrive as signed URLs rather than local files —
+      // those count too (before, only your own device's media ever did).
+      if (s.videoPath == null && s.imagePath == null && s.videoUrl == null && s.imageUrl == null) continue;
       if (latest == null || s.t > latest.t) latest = s;
     }
     return latest;
@@ -1803,11 +1812,11 @@ class AppStore extends ChangeNotifier {
   /// subscription will also see — see _onRemoteMessageInsert's no-op-if-
   /// already-present check, which is what stops that from double-posting.
   /// Returns null on success, same contract as sendMessage.
-  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType}) async {
+  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false}) async {
     if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
-    if (last != null && now - last < _messageCooldownMs) {
+    if (!skipCooldown && last != null && now - last < _messageCooldownMs) {
       return 'Slow down a sec before sending another message.';
     }
     final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
@@ -1816,7 +1825,7 @@ class AppStore extends ChangeNotifier {
     final hasMedia = mp != null && mt != null;
     if (capped.trim().isEmpty && !hasMedia) return null;
     if (hasMedia) {
-      if (_tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
+      if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
         final bytes = await File(mp!).length();
         if (mt == 'video' && bytes > maxDmVideoBytes) {
@@ -1912,6 +1921,11 @@ class AppStore extends ChangeNotifier {
     final i = messages.indexWhere((m) => m.id == messageId && m.status == 'failed' && m.uid == 'me');
     if (i == -1) return;
     final m = messages[i];
+    if (m.room.startsWith('grp_')) {
+      _setMessageStatus(m.id, 'sending');
+      unawaited(_deliverGroupMessage(m.copyWith(status: 'sending'), m.room.substring(4)));
+      return;
+    }
     if (!m.room.startsWith('dm_')) return;
     final ids = m.room.substring(3).split('_');
     final other = ids.length == 2 ? (ids[0] == 'me' ? ids[1] : ids[0]) : null;
@@ -2597,6 +2611,11 @@ class AppStore extends ChangeNotifier {
   RealtimeChannel? _messagesChannel;
   RealtimeChannel? _placesChannel;
   RealtimeChannel? _placeConfirmationsChannel;
+  RealtimeChannel? _placeRatingsChannel;
+  RealtimeChannel? _photoSuggestionsChannel;
+  RealtimeChannel? _profileReportsChannel;
+  RealtimeChannel? _groupMessagesChannel;
+  RealtimeChannel? _groupsChannel;
   RealtimeChannel? _chatChannel;
   RealtimeChannel? _chatReactionsChannel;
   RealtimeChannel? _friendshipsChannel;
@@ -2627,6 +2646,10 @@ class AppStore extends ChangeNotifier {
     unawaited(_fetchRemoteProfiles());
     unawaited(_fetchRemoteFriendships());
     unawaited(_fetchRemotePlaces(purge: true));
+    unawaited(_fetchPlaceRatings());
+    unawaited(_fetchPhotoSuggestions());
+    unawaited(_fetchProfileReports());
+    unawaited(_fetchGroups());
     unawaited(_fetchRemoteChat());
     unawaited(_fetchRemotePolls());
     unawaited(_fetchRemoteReports());
@@ -2691,6 +2714,30 @@ class AppStore extends ChangeNotifier {
       )
       ..subscribe();
 
+    _groupMessagesChannel = client.channel('public:group_messages:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'group_messages',
+        callback: (payload) => _onRemoteGroupMessageInsert(payload.newRecord),
+      )
+      ..subscribe();
+
+    _groupsChannel = client.channel('public:groups:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'group_members',
+        callback: (_) => _scheduleGroupsRefresh(),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'group_chats',
+        callback: (_) => _scheduleGroupsRefresh(),
+      )
+      ..subscribe();
+
     _messagesChannel = client.channel('public:messages:sync')
       ..onPostgresChanges(
         event: PostgresChangeEvent.insert,
@@ -2724,6 +2771,33 @@ class AppStore extends ChangeNotifier {
         schema: 'public',
         table: 'place_confirmations',
         callback: (_) => _schedulePlacesRefresh(),
+      )
+      ..subscribe();
+
+    _placeRatingsChannel = client.channel('public:place_ratings:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'place_ratings',
+        callback: (_) => _scheduleRatingsRefresh(),
+      )
+      ..subscribe();
+
+    _photoSuggestionsChannel = client.channel('public:place_photo_suggestions:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'place_photo_suggestions',
+        callback: (_) => unawaited(_fetchPhotoSuggestions()),
+      )
+      ..subscribe();
+
+    _profileReportsChannel = client.channel('public:profile_reports:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'profile_reports',
+        callback: (_) => unawaited(_fetchProfileReports()),
       )
       ..subscribe();
 
@@ -2831,6 +2905,11 @@ class AppStore extends ChangeNotifier {
       _messagesChannel,
       _placesChannel,
       _placeConfirmationsChannel,
+      _placeRatingsChannel,
+      _photoSuggestionsChannel,
+      _profileReportsChannel,
+      _groupMessagesChannel,
+      _groupsChannel,
       _chatChannel,
       _chatReactionsChannel,
       _friendshipsChannel,
@@ -2849,6 +2928,11 @@ class AppStore extends ChangeNotifier {
     _messagesChannel = null;
     _placesChannel = null;
     _placeConfirmationsChannel = null;
+    _placeRatingsChannel = null;
+    _photoSuggestionsChannel = null;
+    _profileReportsChannel = null;
+    _groupMessagesChannel = null;
+    _groupsChannel = null;
     _chatChannel = null;
     _chatReactionsChannel = null;
     _friendshipsChannel = null;
@@ -2862,12 +2946,21 @@ class AppStore extends ChangeNotifier {
     _placesRefreshTimer = null;
     _pollsRefreshTimer?.cancel();
     _pollsRefreshTimer = null;
+    _ratingsRefreshTimer?.cancel();
+    _ratingsRefreshTimer = null;
+    _groupsRefreshTimer?.cancel();
+    _groupsRefreshTimer = null;
     _reportsRefreshTimer?.cancel();
     _reportsRefreshTimer = null;
   }
 
   void _clearRemoteData() {
     notifications = [];
+    placeRatings = {};
+    pendingPhotoSuggestions = [];
+    myPendingPhotoPlaces = {};
+    openProfileReports = [];
+    groups = [];
     notifPrefs = const NotificationPrefs();
     _syncedLocation = null;
     _syncedLocationAt = null;
@@ -3062,7 +3155,13 @@ class AppStore extends ChangeNotifier {
 
   void _applyOwnProfileRow(Map<String, dynamic> row) {
     selfBanned = row['banned'] as bool? ?? false;
+    final wasRemoteAdmin = _remoteAdmin;
     _remoteAdmin = row['is_admin'] as bool? ?? false;
+    if (_remoteAdmin && !wasRemoteAdmin) {
+      // Just learned this account is an admin — pull in what's waiting.
+      unawaited(_fetchProfileReports());
+      unawaited(_fetchPhotoSuggestions());
+    }
     final remoteEarned = (row['points'] as num?)?.toInt() ?? 0;
     final bonus = (row['bonus_points'] as num?)?.toInt() ?? 0;
     final localEarned = me.points - _appliedBonus;
@@ -3223,6 +3322,576 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  // --- Place picture suggestions ------------------------------------------
+
+  /// Every picture waiting for approval — only ever filled for the admin.
+  List<PlacePhotoSuggestion> pendingPhotoSuggestions = [];
+
+  /// Places where YOU have a picture waiting for approval.
+  Set<String> myPendingPhotoPlaces = {};
+
+  Future<void> _fetchPhotoSuggestions() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('place_photo_suggestions')
+          .select()
+          .eq('status', 'pending')
+          .order('created_at');
+      final all = <PlacePhotoSuggestion>[];
+      final mine = <String>{};
+      for (final raw in rows) {
+        final r = raw as Map<String, dynamic>;
+        final id = r['id'] as String?;
+        final placeId = r['place_id'] as String?;
+        final url = r['url'] as String?;
+        final by = r['user_id'] as String?;
+        if (id == null || placeId == null || url == null || by == null) continue;
+        if (by == uid) mine.add(placeId);
+        all.add(PlacePhotoSuggestion(id: id, placeId: placeId, userId: by == uid ? 'me' : by, url: url));
+      }
+      myPendingPhotoPlaces = mine;
+      pendingPhotoSuggestions = isAdmin ? all : [];
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 10 not run yet.
+    }
+  }
+
+  /// Uploads [path] as a suggested picture for a place. Returns a message to
+  /// show: for an admin it goes live right away, for everyone else it waits
+  /// for approval. The result is [photoSuggestedMessage], [photoLiveMessage],
+  /// or a plain-sentence error.
+  static const photoSuggestedMessage = 'Thanks! Your picture is waiting for admin approval.';
+  static const photoLiveMessage = 'Picture added.';
+
+  Future<String> suggestPlacePhoto(String placeId, String path) async {
+    final uid = supabaseUserId;
+    if (uid == null) return 'Sign in to add a picture.';
+    final url = await _uploadPlaceCover(uid, path);
+    if (url == null) return "Couldn't upload that picture — try a smaller one.";
+    try {
+      final res = await Supabase.instance.client.rpc('suggest_place_photo', params: {'p_place': placeId, 'p_url': url}) as String?;
+      await _fetchPhotoSuggestions();
+      if (res == 'approved') {
+        unawaited(_fetchRemotePlaces());
+        return photoLiveMessage;
+      }
+      if (res == 'pending') return photoSuggestedMessage;
+      if (res != null && res.startsWith('!')) return res.substring(1);
+      return "Couldn't add that picture.";
+    } catch (_) {
+      return "Couldn't add that picture — check your connection and try again. (If this keeps happening, the latest database update may not have been run yet.)";
+    }
+  }
+
+  Future<void> reviewPlacePhoto(String suggestionId, bool approve) async {
+    if (!isAdmin) return;
+    try {
+      await Supabase.instance.client.rpc('review_place_photo', params: {'p_id': suggestionId, 'p_approve': approve});
+    } catch (_) {}
+    await _fetchPhotoSuggestions();
+    if (approve) await _fetchRemotePlaces();
+  }
+
+  Future<void> clearPlacePhoto(String placeId) async {
+    if (!isAdmin) return;
+    try {
+      await Supabase.instance.client.rpc('clear_place_photo', params: {'p_place': placeId});
+    } catch (_) {}
+    await _fetchRemotePlaces();
+  }
+
+  // --- Group chats ---------------------------------------------------------
+
+  /// The groups you're in. Their messages live in [messages] under
+  /// GroupChat.room ('grp_<id>'), same as DMs live under a dm_ room.
+  List<GroupChat> groups = [];
+
+  GroupChat? groupById(String id) {
+    for (final g in groups) {
+      if (g.id == id) return g;
+    }
+    return null;
+  }
+
+  /// Newest activity first — what the Messages tab lists.
+  List<GroupChat> get groupConversations {
+    int lastAt(GroupChat g) {
+      var t = g.createdAt.millisecondsSinceEpoch;
+      for (final m in messages) {
+        if (m.room == g.room && m.t > t) t = m.t;
+      }
+      return t;
+    }
+
+    final list = [...groups];
+    final at = {for (final g in list) g.id: lastAt(g)};
+    list.sort((a, b) => at[b.id]!.compareTo(at[a.id]!));
+    return list;
+  }
+
+  /// Friends who can be put in a group — real accounts only.
+  List<Person> get groupablePeople {
+    final out = <Person>[];
+    for (final id in me.friends) {
+      if (!_remotePersonIds.contains(id) || isBanned(id)) continue;
+      final p = personById(id);
+      if (p != null) out.add(p);
+    }
+    out.sort((a, b) => a.handle.toLowerCase().compareTo(b.handle.toLowerCase()));
+    return out;
+  }
+
+  Timer? _groupsRefreshTimer;
+  void _scheduleGroupsRefresh() {
+    _groupsRefreshTimer?.cancel();
+    _groupsRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchGroups()));
+  }
+
+  String _rpcMessage(Object e) {
+    if (e is PostgrestException && e.message.isNotEmpty) return e.message;
+    return "Couldn't do that — check your connection and try again.";
+  }
+
+  Future<void> _fetchGroups() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final client = Supabase.instance.client;
+      final chatRows = await client.from('group_chats').select();
+      final memberRows = await client.from('group_members').select();
+      final membersByGroup = <String, List<String>>{};
+      final others = <String>{};
+      for (final raw in memberRows) {
+        final r = raw as Map<String, dynamic>;
+        final gid = r['group_id'] as String?;
+        final u = r['user_id'] as String?;
+        if (gid == null || u == null) continue;
+        (membersByGroup[gid] ??= []).add(u == uid ? 'me' : u);
+        if (u != uid) others.add(u);
+      }
+      final next = <GroupChat>[];
+      for (final raw in chatRows) {
+        final r = raw as Map<String, dynamic>;
+        final id = r['id'] as String?;
+        if (id == null) continue;
+        final by = r['created_by'] as String?;
+        next.add(GroupChat(
+          id: id,
+          name: (r['name'] as String?) ?? 'Group',
+          memberIds: membersByGroup[id] ?? const ['me'],
+          createdBy: by == uid ? 'me' : (by ?? ''),
+          createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+      }
+      if (others.isNotEmpty) await _ensurePeopleFor(others);
+      groups = next;
+      notifyListeners();
+      await _fetchGroupMessages();
+    } catch (_) {
+      // Offline, or phase 11 not run yet.
+    }
+  }
+
+  ChatMessage? _groupMessageFromRow(Map<String, dynamic> row) {
+    final uid = supabaseUserId;
+    if (uid == null) return null;
+    final id = row['id'] as String?;
+    final gid = row['group_id'] as String?;
+    final sender = row['sender_id'] as String?;
+    if (id == null || gid == null || sender == null) return null;
+    final createdAt = DateTime.tryParse((row['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+    return ChatMessage(
+      id: id,
+      t: createdAt.millisecondsSinceEpoch,
+      room: 'grp_$gid',
+      uid: sender == uid ? 'me' : sender,
+      text: row['text'] as String? ?? '',
+      anon: false,
+      mediaType: row['media_path'] != null ? (row['media_type'] as String? ?? 'image') : null,
+    );
+  }
+
+  Future<String?> _signedGroupMediaUrl(Map<String, dynamic> row) async {
+    final path = row['media_path'] as String?;
+    if (path == null) return null;
+    try {
+      return await Supabase.instance.client.storage.from('group_media').createSignedUrl(path, 6 * 3600);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _fetchGroupMessages() async {
+    if (supabaseUserId == null || groups.isEmpty) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('group_messages')
+          .select()
+          .order('created_at', ascending: false)
+          .limit(500);
+      final fetched = <ChatMessage>[];
+      final senders = <String>{};
+      var signed = 0;
+      // Newest first, so the 40 media signings go to the newest ones.
+      for (final raw in rows) {
+        final row = raw as Map<String, dynamic>;
+        var msg = _groupMessageFromRow(row);
+        if (msg == null) continue;
+        final mid = msg.id;
+        final already = messages.any((m) => m.id == mid && m.mediaUrl != null);
+        if (row['media_path'] != null && signed < 40 && !already) {
+          final url = await _signedGroupMediaUrl(row);
+          signed++;
+          if (url != null) msg = msg.copyWith(mediaUrl: url);
+        }
+        fetched.add(msg);
+        _remoteMessageIds.add(msg.id);
+        if (msg.uid != 'me') senders.add(msg.uid);
+      }
+      if (senders.isNotEmpty) await _ensurePeopleFor(senders);
+      final byId = {for (final m in fetched) m.id: m};
+      var changed = false;
+      messages = messages.map((m) {
+        final f = byId[m.id];
+        if (f == null || f.mediaUrl == null || m.mediaUrl != null) return m;
+        changed = true;
+        return m.copyWith(mediaUrl: f.mediaUrl);
+      }).toList();
+      final existing = messages.map((m) => m.id).toSet();
+      final fresh = fetched.where((m) => !existing.contains(m.id)).toList().reversed.toList();
+      if (fresh.isNotEmpty || changed) {
+        messages = _capMessages([...messages, ...fresh]);
+        notifyListeners();
+        _persist();
+      }
+    } catch (_) {}
+  }
+
+  void _onRemoteGroupMessageInsert(Map<String, dynamic> row) {
+    final base = _groupMessageFromRow(row);
+    if (base == null) return;
+    _remoteMessageIds.add(base.id);
+    if (messages.any((m) => m.id == base.id)) return;
+    unawaited(() async {
+      var msg = base;
+      final url = await _signedGroupMediaUrl(row);
+      if (url != null) msg = msg.copyWith(mediaUrl: url);
+      if (msg.uid != 'me') await _ensurePeopleFor([msg.uid]);
+      if (messages.any((m) => m.id == msg.id)) return;
+      messages = _capMessages([...messages, msg]);
+      notifyListeners();
+      _persist();
+      // A message for a group we haven't heard of yet (we were just added).
+      if (groupById(msg.room.substring(4)) == null) _scheduleGroupsRefresh();
+    }());
+  }
+
+  /// Sends a text and/or photo/video to a group. Returns null on success,
+  /// otherwise a message to show — same contract as sendDirectMessage.
+  Future<String?> sendGroupMessage(String groupId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false}) async {
+    if (selfBanned) return _bannedMessage;
+    if (supabaseUserId == null) return 'Sign in to message a group.';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastMessageAt;
+    if (!skipCooldown && last != null && now - last < _messageCooldownMs) {
+      return 'Slow down a sec before sending another message.';
+    }
+    final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
+    final mp = mediaPath;
+    final mt = mediaType;
+    final hasMedia = mp != null && mt != null;
+    if (capped.trim().isEmpty && !hasMedia) return null;
+    if (hasMedia) {
+      if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
+      try {
+        final bytes = await File(mp!).length();
+        if (mt == 'video' && bytes > maxDmVideoBytes) {
+          return 'That video is too big — keep it under ${maxDmVideoBytes ~/ (1024 * 1024)} MB.';
+        }
+        if (mt != 'video' && bytes > maxDmImageBytes) {
+          return 'That photo is too big — keep it under ${maxDmImageBytes ~/ (1024 * 1024)} MB.';
+        }
+      } catch (_) {
+        return "Couldn't read that file.";
+      }
+    }
+    final local = ChatMessage(
+      id: 'grp_${DateTime.now().microsecondsSinceEpoch}',
+      t: now,
+      room: 'grp_$groupId',
+      uid: 'me',
+      text: capped,
+      anon: false,
+      status: 'sending',
+      mediaType: hasMedia ? mt : null,
+      mediaPath: hasMedia ? mp : null,
+    );
+    messages = _capMessages([...messages, local]);
+    _lastMessageAt = now;
+    notifyListeners();
+    _persist();
+    unawaited(_deliverGroupMessage(local, groupId));
+    return null;
+  }
+
+  Future<void> _deliverGroupMessage(ChatMessage local, String groupId) async {
+    final uid = supabaseUserId;
+    if (uid == null) {
+      _setMessageStatus(local.id, 'failed');
+      return;
+    }
+    try {
+      final client = Supabase.instance.client;
+      String? storagePath;
+      final localFile = local.mediaPath;
+      if (localFile != null) {
+        final bytes = await File(localFile).readAsBytes();
+        final isVideo = local.mediaType == 'video';
+        final dot = localFile.lastIndexOf('.');
+        var ext = dot == -1 ? (isVideo ? 'mp4' : 'jpg') : localFile.substring(dot + 1).toLowerCase();
+        if (ext.length > 5) ext = isVideo ? 'mp4' : 'jpg';
+        storagePath = '$groupId/${uid}_${local.t}_${local.id.hashCode.abs()}.$ext';
+        await client.storage.from('group_media').uploadBinary(
+              storagePath,
+              bytes,
+              fileOptions: FileOptions(
+                upsert: true,
+                contentType: isVideo ? (ext == 'mov' ? 'video/quicktime' : 'video/mp4') : (ext == 'png' ? 'image/png' : 'image/jpeg'),
+              ),
+            );
+      }
+      final rows = await client.from('group_messages').insert({
+        'group_id': groupId,
+        'sender_id': uid,
+        'text': local.text,
+        if (storagePath != null) 'media_path': storagePath,
+        if (storagePath != null) 'media_type': local.mediaType,
+      }).select();
+      final serverId = rows.first['id'] as String;
+      _remoteMessageIds.add(serverId);
+      messages = messages
+          .where((m) => m.id != serverId)
+          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
+          .toList();
+    } catch (e) {
+      _sendErrors[local.id] = _friendlySendError(e);
+      messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
+    }
+    notifyListeners();
+    _persist();
+  }
+
+  /// Why the last createGroup call failed (null when it worked).
+  String? lastGroupError;
+
+  /// Makes a named group out of [memberIds] (your friends) and returns its
+  /// id, or null with [lastGroupError] set.
+  Future<String?> createGroup(String name, List<String> memberIds) async {
+    lastGroupError = null;
+    if (selfBanned) {
+      lastGroupError = _bannedMessage;
+      return null;
+    }
+    if (supabaseUserId == null) {
+      lastGroupError = 'Sign in to start a group.';
+      return null;
+    }
+    try {
+      final res = await Supabase.instance.client.rpc('create_group', params: {'p_name': name.trim(), 'p_members': memberIds});
+      final id = res as String?;
+      await _fetchGroups();
+      if (id == null) {
+        lastGroupError = "Couldn't start that group.";
+        return null;
+      }
+      if (groupById(id) == null) {
+        // The refresh didn't land — show it from what we know.
+        groups = [
+          ...groups,
+          GroupChat(id: id, name: name.trim(), memberIds: ['me', ...memberIds], createdBy: 'me', createdAt: DateTime.now()),
+        ];
+        notifyListeners();
+      }
+      return id;
+    } catch (e) {
+      lastGroupError = _rpcMessage(e);
+      return null;
+    }
+  }
+
+  /// Returns null on success, otherwise a message to show.
+  Future<String?> renameGroup(String groupId, String name) async {
+    try {
+      await Supabase.instance.client.rpc('rename_group', params: {'p_group': groupId, 'p_name': name.trim()});
+      await _fetchGroups();
+      return null;
+    } catch (e) {
+      return _rpcMessage(e);
+    }
+  }
+
+  Future<String?> addGroupMembers(String groupId, List<String> memberIds) async {
+    try {
+      await Supabase.instance.client.rpc('add_group_members', params: {'p_group': groupId, 'p_members': memberIds});
+      await _fetchGroups();
+      return null;
+    } catch (e) {
+      return _rpcMessage(e);
+    }
+  }
+
+  Future<String?> leaveGroup(String groupId) async {
+    try {
+      await Supabase.instance.client.rpc('leave_group', params: {'p_group': groupId});
+      groups = groups.where((g) => g.id != groupId).toList();
+      messages = messages.where((m) => m.room != 'grp_$groupId').toList();
+      notifyListeners();
+      _persist();
+      return null;
+    } catch (e) {
+      return _rpcMessage(e);
+    }
+  }
+
+  // --- Profile reports ----------------------------------------------------
+
+  /// Reports of profiles still waiting on the admin — only ever filled for
+  /// the admin (the server won't hand them to anyone else).
+  List<ProfileReport> openProfileReports = [];
+
+  static const profileReportReasons = [
+    'Spam or fake account',
+    'Harassment or bullying',
+    'Inappropriate photos',
+    'Pretending to be someone',
+    'Under 18',
+    'Something else',
+  ];
+
+  Future<void> _fetchProfileReports() async {
+    final uid = supabaseUserId;
+    if (uid == null || !isAdmin) {
+      if (openProfileReports.isNotEmpty) {
+        openProfileReports = [];
+        notifyListeners();
+      }
+      return;
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .from('profile_reports')
+          .select()
+          .eq('status', 'open')
+          .order('created_at');
+      final out = <ProfileReport>[];
+      final ids = <String>{};
+      for (final raw in rows) {
+        final r = raw as Map<String, dynamic>;
+        final id = r['id'] as String?;
+        final reporter = r['reporter_id'] as String?;
+        final reported = r['reported_id'] as String?;
+        if (id == null || reporter == null || reported == null) continue;
+        ids..add(reporter)..add(reported);
+        out.add(ProfileReport(
+          id: id,
+          reporterId: reporter == uid ? 'me' : reporter,
+          reportedId: reported == uid ? 'me' : reported,
+          reason: (r['reason'] as String?) ?? '',
+          createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+      }
+      ids.remove(uid);
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      openProfileReports = out;
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 10 not run yet.
+    }
+  }
+
+  /// Reports a profile. Returns a message to show the person.
+  Future<String> reportProfile(String personId, String reason) async {
+    if (supabaseUserId == null) return 'Sign in to report someone.';
+    try {
+      final res = await Supabase.instance.client.rpc('report_profile', params: {'p_user': personId, 'p_reason': reason}) as String?;
+      return res ?? "Thanks — we'll take a look.";
+    } catch (_) {
+      return "Couldn't send that report — check your connection and try again.";
+    }
+  }
+
+  Future<void> resolveProfileReport(String id) async {
+    if (!isAdmin) return;
+    try {
+      await Supabase.instance.client.rpc('resolve_profile_report', params: {'p_id': id});
+    } catch (_) {}
+    await _fetchProfileReports();
+  }
+
+  // --- Place star ratings -------------------------------------------------
+
+  /// Everyone's ratings per place (average + count) plus this person's own
+  /// rating and next-allowed date — see supabase/phase9.sql.
+  Map<String, PlaceRatingStats> placeRatings = {};
+
+  PlaceRatingStats? ratingFor(String placeId) => placeRatings[placeId];
+
+  Timer? _ratingsRefreshTimer;
+  void _scheduleRatingsRefresh() {
+    _ratingsRefreshTimer?.cancel();
+    _ratingsRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchPlaceRatings()));
+  }
+
+  Future<void> _fetchPlaceRatings() async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.rpc('place_rating_stats') as List<dynamic>;
+      final next = <String, PlaceRatingStats>{};
+      for (final raw in rows) {
+        final r = raw as Map<String, dynamic>;
+        final id = r['place_id'] as String?;
+        if (id == null) continue;
+        final nextRaw = r['my_next_at'] as String?;
+        next[id] = PlaceRatingStats(
+          avg: (r['avg_stars'] as num?)?.toDouble() ?? 0,
+          count: (r['rating_count'] as num?)?.toInt() ?? 0,
+          mine: (r['my_stars'] as num?)?.toDouble(),
+          nextAt: nextRaw != null ? DateTime.tryParse(nextRaw)?.toLocal() : null,
+        );
+      }
+      placeRatings = next;
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 9 not run yet — keep whatever's showing.
+    }
+  }
+
+  /// Rates a place 0.5–5 stars. Returns null on success, otherwise a message
+  /// to show (e.g. the once-a-month limit).
+  Future<String?> ratePlace(String placeId, double stars) async {
+    if (supabaseUserId == null) return 'Sign in to rate places.';
+    try {
+      final res = await Supabase.instance.client.rpc('rate_place', params: {'p_place': placeId, 'p_stars': stars});
+      await _fetchPlaceRatings();
+      return res as String?;
+    } catch (_) {
+      return "Couldn't save your rating — check your connection and try again.";
+    }
+  }
+
+  /// Takes this person's rating back (they still wait out the month before
+  /// rating the same place again).
+  Future<void> removeMyRating(String placeId) async {
+    if (supabaseUserId == null) return;
+    try {
+      await Supabase.instance.client.rpc('remove_my_rating', params: {'p_place': placeId});
+    } catch (_) {}
+    await _fetchPlaceRatings();
+  }
+
   Place? _placeFromRow(Map<String, dynamic> row) {
     final id = row['id'] as String?;
     final lat = (row['lat'] as num?)?.toDouble();
@@ -3244,6 +3913,7 @@ class AppStore extends ChangeNotifier {
       session: sessionKey(created),
       coverPhotoPath: _localPlaceCovers[id],
       coverUrl: row['cover_url'] as String?,
+      photoUrl: row['photo_url'] as String?,
     );
   }
 
@@ -3886,6 +4556,66 @@ class AppStore extends ChangeNotifier {
   }
 
 
+  // ---------------------------------------------------------------------
+  // @mentions in the live chat: the picker that opens when you type "@".
+  // ---------------------------------------------------------------------
+
+  /// People already known on this device whose @name matches [query] —
+  /// friends first, then names that START with it, then names that merely
+  /// contain it. Instant (no network); see [searchPeopleByHandle] for the
+  /// wider lookup.
+  List<Person> mentionCandidates(String query) {
+    final q = query.toLowerCase();
+    final friendIds = me.friends.toSet();
+    final found = people.values.where((p) {
+      if (!_isRealPersonId(p.id) || p.handle.isEmpty || isBanned(p.id)) return false;
+      return q.isEmpty || p.handle.toLowerCase().contains(q);
+    }).toList();
+    int rank(Person p) {
+      final h = p.handle.toLowerCase();
+      var r = h.startsWith(q) ? 0 : 2;
+      if (friendIds.contains(p.id)) r -= 1;
+      return r;
+    }
+    found.sort((a, b) {
+      final byRank = rank(a).compareTo(rank(b));
+      return byRank != 0 ? byRank : a.handle.toLowerCase().compareTo(b.handle.toLowerCase());
+    });
+    return found.take(6).toList();
+  }
+
+  /// Looks up accounts whose @name starts with [query] on the server (anyone
+  /// signed up, not just people already on this device) and remembers them,
+  /// so the picker can show them. Returns true if anyone new turned up.
+  Future<bool> searchPeopleByHandle(String query) async {
+    final q = query.trim();
+    if (!signedIn || supabaseUserId == null || q.isEmpty) return false;
+    try {
+      final rows = await Supabase.instance.client
+          .from('profiles')
+          .select()
+          .ilike('handle', '${q.replaceAll('_', r'\_')}%')
+          .limit(8);
+      var added = false;
+      final updated = Map<String, Person>.from(people);
+      for (final row in rows) {
+        final id = row['id'] as String?;
+        if (id == null || id == supabaseUserId || updated.containsKey(id)) continue;
+        updated[id] = _personFromProfileRow(row);
+        _remotePersonIds.add(id);
+        if (row['banned'] == true) _remoteBannedIds.add(id);
+        added = true;
+      }
+      if (added) {
+        people = updated;
+        notifyListeners();
+      }
+      return added;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// A server user id as the app writes it locally: 'me' for yourself.
   String _asMe(String id) => id == supabaseUserId ? 'me' : id;
 
@@ -3926,6 +4656,10 @@ class AppStore extends ChangeNotifier {
       _fetchRemoteProfiles(othersOnly: true),
       _fetchRemoteFriendships(),
       _fetchRemotePlaces(),
+      _fetchPlaceRatings(),
+      _fetchPhotoSuggestions(),
+      _fetchProfileReports(),
+      _fetchGroups(),
       _fetchRemoteMessages(),
       _fetchNotifications(),
     ]);
@@ -4044,6 +4778,7 @@ class AppStore extends ChangeNotifier {
       'friend' => notifPrefs.copyWith(friend: on),
       'place' => notifPrefs.copyWith(place: on),
       'report' => notifPrefs.copyWith(report: on),
+      'mention' => notifPrefs.copyWith(mention: on),
       _ => notifPrefs,
     };
     notifPrefs = next;

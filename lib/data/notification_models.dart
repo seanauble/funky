@@ -54,14 +54,16 @@ class NotificationPrefs {
   final bool friend;
   final bool place;
   final bool report;
+  final bool mention;
 
-  const NotificationPrefs({this.dm = true, this.friend = true, this.place = true, this.report = true});
+  const NotificationPrefs({this.dm = true, this.friend = true, this.place = true, this.report = true, this.mention = true});
 
-  NotificationPrefs copyWith({bool? dm, bool? friend, bool? place, bool? report}) => NotificationPrefs(
+  NotificationPrefs copyWith({bool? dm, bool? friend, bool? place, bool? report, bool? mention}) => NotificationPrefs(
         dm: dm ?? this.dm,
         friend: friend ?? this.friend,
         place: place ?? this.place,
         report: report ?? this.report,
+        mention: mention ?? this.mention,
       );
 
   bool forKind(String kind) {
@@ -74,6 +76,8 @@ class NotificationPrefs {
         return place;
       case 'report':
         return report;
+      case 'mention':
+        return mention;
     }
     return true;
   }
@@ -84,6 +88,7 @@ class NotificationPrefs {
         'friend_on': friend,
         'place_on': place,
         'report_on': report,
+        'mention_on': mention,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       };
 
@@ -92,5 +97,6 @@ class NotificationPrefs {
         friend: row['friend_on'] as bool? ?? true,
         place: row['place_on'] as bool? ?? true,
         report: row['report_on'] as bool? ?? true,
+        mention: row['mention_on'] as bool? ?? true,
       );
 }

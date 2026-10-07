@@ -5,9 +5,11 @@ import '../data/app_store.dart';
 import '../data/models.dart';
 import '../data/notification_models.dart';
 import '../widgets/ui_widgets.dart';
+import '../root_shell.dart';
 import 'account_screen.dart';
 import 'dm_thread_screen.dart';
 import 'friend_requests_screen.dart';
+import 'group_thread_screen.dart';
 import 'place_detail_screen.dart';
 
 /// Opened from the bell. Newest first: new DMs, friend requests, new
@@ -25,10 +27,19 @@ class NotificationsScreen extends StatelessWidget {
         if (from == null) return;
         await store.ensurePerson(from);
         navigator.push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: from)));
+      case 'group':
+        final groupId = n.data['group_id'] as String?;
+        if (groupId == null) return;
+        navigator.push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: groupId)));
       case 'friend':
         navigator.push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen()));
+      case 'mention':
+        // Back out to the main tabs and land on Chat.
+        navigator.popUntil((route) => route.isFirst);
+        rootShellTabRequest.value = 1;
       case 'place':
       case 'report':
+      case 'photo':
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
@@ -125,10 +136,16 @@ class _NotificationTile extends StatelessWidget {
     switch (n.kind) {
       case 'dm':
         return Icons.chat_bubble_outline;
+      case 'group':
+        return Icons.groups_outlined;
       case 'friend':
         return Icons.person_add_alt_1_outlined;
       case 'place':
         return Icons.place_outlined;
+      case 'mention':
+        return Icons.alternate_email;
+      case 'photo':
+        return Icons.photo_outlined;
       default:
         return Icons.campaign_outlined;
     }

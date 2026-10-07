@@ -4,6 +4,7 @@ import '../data/app_store.dart';
 import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
 import 'add_friends_screen.dart';
+import 'person_profile_screen.dart';
 
 /// Reached from Settings, only ever shown to the one hardcoded FUNKY Admin
 /// account (store.isAdmin — see app_store.dart) — a single place for the
@@ -20,6 +21,7 @@ class AdminPanelScreen extends StatelessWidget {
     required String title,
     required String body,
     required VoidCallback onConfirm,
+    String confirmLabel = 'Delete',
   }) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -31,7 +33,7 @@ class AdminPanelScreen extends StatelessWidget {
           TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text('Delete', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+            child: Text(confirmLabel, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
           ),
         ],
       ),
@@ -180,7 +182,190 @@ class AdminPanelScreen extends StatelessWidget {
                 ),
               );
             }),
-          const SectionHeader(title: 'Places'),
+          const SectionHeader(title: 'Approvals'),
+          Builder(builder: (context) {
+            final pendingPlaces = store.places.where((p) => !store.isAdminVerified(p.id)).length;
+            Widget count(String label, int n) => Expanded(
+                  child: Column(
+                    children: [
+                      Text('$n', style: TextStyle(color: n > 0 ? tokens.orange : tokens.mute, fontWeight: FontWeight.w800, fontSize: 22)),
+                      const SizedBox(height: 2),
+                      Text(label, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 11.5)),
+                    ],
+                  ),
+                );
+            return FunkyCard(
+              child: Row(
+                children: [
+                  count('Places to verify', pendingPlaces),
+                  count('Pictures', store.pendingPhotoSuggestions.length),
+                  count('Profile reports', store.openProfileReports.length),
+                ],
+              ),
+            );
+          }),
+          const SectionHeader(title: 'Places to verify'),
+          Builder(builder: (context) {
+            final unverified = store.places.where((p) => !store.isAdminVerified(p.id)).toList();
+            if (unverified.isEmpty) return const EmptyNote(text: 'Every place is verified.');
+            return Column(
+              children: [
+                for (final p in unverified)
+                  FunkyCard(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(p.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                              Text(p.address, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12)),
+                              Text(
+                                '${store.venueConfirmationCount(p.id)} of ${AppStore.venueVerificationThreshold} confirmations',
+                                style: TextStyle(color: tokens.mute, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => store.setAdminVerified(p.id, true),
+                          child: Text('Verify', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+                        ),
+                        IconButton(
+                          onPressed: () => _confirmDelete(
+                            context,
+                            tokens,
+                            title: 'Reject ${p.name}?',
+                            body: 'This permanently removes this place, its reports, and its confirmations for everyone.',
+                            confirmLabel: 'Reject',
+                            onConfirm: () => store.deletePlace(p.id),
+                          ),
+                          icon: Icon(Icons.close, color: tokens.danger),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }),
+          SectionHeader(title: 'Place pictures to review (${store.pendingPhotoSuggestions.length})'),
+          if (store.pendingPhotoSuggestions.isEmpty)
+            const EmptyNote(text: 'No pictures waiting for approval.')
+          else
+            ...store.pendingPhotoSuggestions.map((sug) {
+              final placeName = store.places.where((p) => p.id == sug.placeId).map((p) => p.name).firstOrNull ?? 'a place';
+              final who = store.personById(sug.userId)?.handle;
+              return FunkyCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(placeName, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                    if (who != null) Text('from @$who', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: SizedBox(
+                        height: 180,
+                        width: double.infinity,
+                        child: Image.network(
+                          sug.url,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            color: tokens.raised,
+                            alignment: Alignment.center,
+                            child: Text("Couldn't load this picture", style: TextStyle(color: tokens.mute)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () => store.reviewPlacePhoto(sug.id, true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: tokens.brand,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: Text('Approve', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => store.reviewPlacePhoto(sug.id, false),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: tokens.line),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: Text('Reject', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
+          SectionHeader(title: 'Profile reports (${store.openProfileReports.length})'),
+          if (store.openProfileReports.isEmpty)
+            const EmptyNote(text: 'No open profile reports.')
+          else
+            ...store.openProfileReports.map((r) {
+              final reportedHandle = store.personById(r.reportedId)?.handle ?? 'unknown';
+              final reporterHandle = store.personById(r.reporterId)?.handle ?? 'unknown';
+              final alreadyBanned = store.isBanned(r.reportedId);
+              return FunkyCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('@$reportedHandle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16)),
+                    const SizedBox(height: 2),
+                    Text(r.reason, style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700)),
+                    Text('reported by @$reporterHandle', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        OutlinedButton(
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => PersonProfileScreen(personId: r.reportedId)),
+                          ),
+                          style: OutlinedButton.styleFrom(side: BorderSide(color: tokens.line)),
+                          child: Text('View profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                        ),
+                        if (!alreadyBanned)
+                          OutlinedButton(
+                            onPressed: () => _confirmDelete(
+                              context,
+                              tokens,
+                              title: 'Ban @$reportedHandle?',
+                              body: 'They lose access to posting, chat and messages, and the report is closed.',
+              confirmLabel: 'Ban',
+                              onConfirm: () {
+                                store.banUser(r.reportedId);
+                                store.resolveProfileReport(r.id);
+                              },
+                            ),
+                            style: OutlinedButton.styleFrom(side: BorderSide(color: tokens.danger)),
+                            child: Text('Ban', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
+                          ),
+                        TextButton(
+                          onPressed: () => store.resolveProfileReport(r.id),
+                          child: Text('Dismiss', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
+          const SectionHeader(title: 'All places'),
           if (store.places.isEmpty)
             const EmptyNote(text: 'No places right now.')
           else

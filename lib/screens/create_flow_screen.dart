@@ -15,6 +15,9 @@ import '../data/models.dart';
 import '../services/address_search.dart';
 import '../theme/colors.dart';
 import '../widgets/kind_picker.dart';
+import '../widgets/place_destination_picker.dart';
+import '../widgets/send_to_sheet.dart';
+import '../services/video_filter_service.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'camera_capture_screen.dart';
@@ -215,6 +218,12 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   // button — also doubles as a guard against double-taps starting a
   // second save while the first is still running.
   bool _savingToGallery = false;
+  // True while a filter is being baked into the photo/video for Post.
+  bool _baking = false;
+  String _busyLabel = 'Applying filter…';
+  // (original file path | filter index) -> the filtered copy, so Save and
+  // then Post (or flipping back and forth) never bakes the same thing twice.
+  final Map<String, File> _bakedCache = {};
 
   bool _anon = false;
   String _place = 'main';
@@ -388,6 +397,18 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     controller.setZoomLevel(zoom);
   }
 
+  /// Picks a filter from the strip (shows its name briefly).
+  void _selectFilter(int index) {
+    setState(() {
+      _filterIndex = index;
+      _showFilterLabel = true;
+    });
+    _filterLabelTimer?.cancel();
+    _filterLabelTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _showFilterLabel = false);
+    });
+  }
+
   /// Swipe left/right on the open preview to cycle through cameraFilters
   /// (see ui_widgets.dart) — [direction] is +1 for the next filter, -1 for
   /// the previous. Shows the name briefly (Snapchat-style) rather than a
@@ -504,21 +525,11 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     try {
       final shot = await controller.takePicture();
       final dir = await _storiesDir();
-      final filter = cameraFilters[_filterIndex];
-      File savedFile;
-      if (filter.colorFilter == null) {
-        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        savedFile = await File(shot.path).copy(dest);
-      } else {
-        // Bake the filter into the actual saved file — the live preview's
-        // ColorFiltered only ever affected what was on screen while
-        // framing the shot. dart:ui can only re-encode to PNG, hence the
-        // different extension here (see applyCameraFilterToImageBytes).
-        final rawBytes = await File(shot.path).readAsBytes();
-        final filteredBytes = await applyCameraFilterToImageBytes(rawBytes, filter);
-        final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.png';
-        savedFile = await File(dest).writeAsBytes(filteredBytes);
-      }
+      // The raw shot is kept as-is: the chosen filter is previewed live on
+      // the review screen (and can still be changed there), then baked into
+      // the file only when you post or save it (see _finalMedia).
+      final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedFile = await File(shot.path).copy(dest);
       if (!mounted) return;
       setState(() {
         _mediaFile = savedFile;
@@ -781,7 +792,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   /// Timeline archive (AppStore.saveToTimeline) — this one leaves the app
   /// entirely and has nothing to do with whether you ever post it at all.
   Future<void> _saveToCameraRoll() async {
-    if (_mediaFile == null || _savingToGallery) return;
+    if (_mediaFile == null || _savingToGallery || _baking) return;
     setState(() => _savingToGallery = true);
     try {
       var hasAccess = await Gal.hasAccess();
@@ -796,10 +807,19 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         }
         return;
       }
+      final toSave = await _finalMedia();
+      if (toSave == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Couldn't apply that filter to the video — pick Normal or try again.")),
+          );
+        }
+        return;
+      }
       if (_isVideo) {
-        await Gal.putVideo(_mediaFile!.path);
+        await Gal.putVideo(toSave.path);
       } else {
-        await Gal.putImage(_mediaFile!.path);
+        await Gal.putImage(toSave.path);
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to your camera roll.')));
@@ -813,7 +833,35 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     }
   }
 
-  void _post(AppStore store) {
+  /// The file that actually gets posted/saved: the capture itself for
+  /// "Normal", otherwise a copy with the chosen filter baked in — a PNG for
+  /// photos (dart:ui), an MP4 for videos (native Core Image export, with the
+  /// sound kept). Null if a video filter couldn't be applied.
+  Future<File?> _finalMedia() async {
+    final raw = _mediaFile;
+    if (raw == null) return null;
+    final filter = cameraFilters[_filterIndex];
+    final matrix = filter.matrix;
+    if (matrix == null) return raw;
+    final key = '${raw.path}|$_filterIndex';
+    final cached = _bakedCache[key];
+    if (cached != null && cached.existsSync()) return cached;
+    final dir = await _storiesDir();
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    File? baked;
+    if (_isVideo) {
+      final out = await VideoFilterService.apply(raw.path, '${dir.path}/story_${stamp}_f.mp4', matrix);
+      if (out != null) baked = File(out);
+    } else {
+      final bytes = await applyCameraFilterToImageBytes(await raw.readAsBytes(), filter);
+      baked = await File('${dir.path}/story_$stamp.png').writeAsBytes(bytes);
+    }
+    if (baked != null) _bakedCache[key] = baked;
+    return baked;
+  }
+
+  Future<void> _post(AppStore store) async {
+    if (_baking) return;
     // Daily cap / cooldown (see AppStore.storyBlockReason) — checked up
     // front so you see WHY it didn't post instead of it silently vanishing.
     final blocked = store.storyBlockReason();
@@ -821,14 +869,89 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
       return;
     }
+    setState(() {
+      _baking = true;
+      _busyLabel = 'Applying filter…';
+    });
+    File? file;
+    try {
+      file = await _finalMedia();
+    } catch (_) {
+      file = null;
+    }
+    if (!mounted) return;
+    setState(() => _baking = false);
+    if (file == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't apply that filter — pick Normal or try again.")),
+      );
+      return;
+    }
     // Posting (including any real-backend upload) keeps running after this
     // screen closes — fire-and-forget rather than awaiting here, so the
     // camera flow still feels instant even on a slow upload.
     unawaited(store.addStory(
-      imagePath: _isVideo ? null : _mediaFile!.path,
-      videoPath: _isVideo ? _mediaFile!.path : null,
+      imagePath: _isVideo ? null : file.path,
+      videoPath: _isVideo ? file.path : null,
       place: _place,
       anon: _anon,
+    ));
+    Navigator.of(context).pop();
+  }
+
+  /// Sends the shot privately instead of posting it: pick friends and/or
+  /// groups, then it goes to each as a message.
+  Future<void> _sendToFriends(AppStore store) async {
+    if (_baking) return;
+    final targets = await showSendToSheet(context);
+    if (targets == null || targets.count == 0 || !mounted) return;
+    setState(() {
+      _baking = true;
+      _busyLabel = 'Sending…';
+    });
+    File? file;
+    try {
+      file = await _finalMedia();
+    } catch (_) {
+      file = null;
+    }
+    if (file == null) {
+      if (mounted) {
+        setState(() => _baking = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't apply that filter — pick Normal or try again.")),
+        );
+      }
+      return;
+    }
+    final type = _isVideo ? 'video' : 'image';
+    var sent = 0;
+    String? firstError;
+    for (final id in targets.personIds) {
+      final error = await store.sendDirectMessage(id, '', mediaPath: file.path, mediaType: type, skipCooldown: true);
+      if (error == null) {
+        sent++;
+      } else {
+        firstError ??= error;
+      }
+    }
+    for (final id in targets.groupIds) {
+      final error = await store.sendGroupMessage(id, '', mediaPath: file.path, mediaType: type, skipCooldown: true);
+      if (error == null) {
+        sent++;
+      } else {
+        firstError ??= error;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _baking = false);
+    final messenger = ScaffoldMessenger.of(context);
+    if (sent == 0) {
+      messenger.showSnackBar(SnackBar(content: Text(firstError ?? "Couldn't send that.")));
+      return;
+    }
+    messenger.showSnackBar(SnackBar(
+      content: Text(firstError == null ? 'Sent to $sent.' : "Sent to $sent — some didn't go through."),
     ));
     Navigator.of(context).pop();
   }
@@ -1010,9 +1133,16 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                   maintainState: true,
                   maintainAnimation: true,
                   maintainSize: true,
-                  child: const Padding(
-                    padding: EdgeInsets.only(bottom: 14),
-                    child: Text('Tap for a photo · Hold for a video', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FilterStrip(selected: _filterIndex, onSelect: _selectFilter),
+                        const SizedBox(height: 12),
+                        const Text('Tap for a photo · Hold for a video', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
                   ),
                 ),
                 GestureDetector(
@@ -1067,17 +1197,17 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         fit: BoxFit.cover,
         child: SizedBox(width: size.width, height: size.height, child: VideoPlayer(_videoController!)),
       );
-      // A video never gets its filter baked into the saved file (see
-      // applyCameraFilterToImageBytes's doc comment) — this is what makes
-      // good on "you'll still see it in review", using whichever filter
-      // was active when this take was shot (_filterIndex isn't reset
-      // between capture and review).
+      // The filter is previewed live here (starting with whichever one was
+      // active when this take was shot) and baked into the file only when
+      // you post or save — see _finalMedia.
       final filter = cameraFilters[_filterIndex].colorFilter;
       return filter == null ? player : ColorFiltered(colorFilter: filter, child: player);
     }
-    // A photo's chosen filter is already baked into _mediaFile itself (see
-    // _takePhoto), so this just renders the file as-is.
-    return Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+    // The chosen filter is previewed live here and only baked into a file
+    // when you post or save (see _finalMedia), so it can still be changed.
+    final photo = Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+    final photoFilter = cameraFilters[_filterIndex].colorFilter;
+    return photoFilter == null ? photo : ColorFiltered(colorFilter: photoFilter, child: photo);
   }
 
   Widget _buildReview(BuildContext context, ThemeTokens tokens, AppStore store) {
@@ -1157,50 +1287,86 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Post to', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      // Pick or change a filter right here, after the shot —
+                      // the preview above updates instantly.
+                      IgnorePointer(ignoring: _baking, child: FilterStrip(selected: _filterIndex, onSelect: (i) => setState(() => _filterIndex = i), padding: EdgeInsets.zero)),
+                      const SizedBox(height: 14),
+                      // One compact dropdown (a searchable sheet) instead of a
+                      // chip per place — there'll be a lot of places nearby —
+                      // with the anonymous switch on the same line.
+                      Row(
                         children: [
-                          FunkyChip(label: 'Area', active: _place == 'main', onPressed: () => setState(() => _place = 'main')),
-                          ...store.rankedPlaces.take(6).map((p) => FunkyChip(label: p.name, active: _place == p.id, onPressed: () => setState(() => _place = p.id))),
+                          Flexible(
+                            child: PlaceDestinationPill(value: _place, onDark: true, onChanged: (v) => setState(() => _place = v)),
+                          ),
+                          const SizedBox(width: 12),
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => setState(() => _anon = !_anon),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 20,
+                                  height: 20,
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: Colors.white70, width: 1.5),
+                                    borderRadius: BorderRadius.circular(5),
+                                    color: _anon ? tokens.brand : Colors.transparent,
+                                  ),
+                                  child: _anon ? const Icon(Icons.check, size: 14, color: Colors.white) : null,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text('Anonymous', style: TextStyle(color: Colors.white, fontSize: 13)),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      GestureDetector(
-                        onTap: () => setState(() => _anon = !_anon),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 20,
-                              height: 20,
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.white70, width: 1.5),
-                                borderRadius: BorderRadius.circular(5),
-                                color: _anon ? tokens.brand : Colors.transparent,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            const Text('Post anonymously', style: TextStyle(color: Colors.white)),
-                          ],
-                        ),
-                      ),
                       const SizedBox(height: 18),
-                      // No separate Retake button anymore — the corner X
-                      // above does that now, so Post Story is the only
-                      // action down here and gets the full width.
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: () => requireAccountThen(context, store, () => _post(store)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: tokens.brand,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      // The corner X retakes; down here it's either post it as a
+                      // Story, or send it privately to friends / a group.
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: ElevatedButton(
+                              onPressed: _baking ? null : () => requireAccountThen(context, store, () => _post(store)),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: tokens.brand,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              child: _baking
+                                  ? Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tokens.onOrange)),
+                                        const SizedBox(width: 10),
+                                        Flexible(
+                                          child: Text(_busyLabel, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                                        ),
+                                      ],
+                                    )
+                                  : Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                            ),
                           ),
-                          child: Text('Post Story', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-                        ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 2,
+                            child: OutlinedButton.icon(
+                              onPressed: _baking ? null : () => requireAccountThen(context, store, () => _sendToFriends(store)),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                side: const BorderSide(color: Colors.white70),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              icon: const Icon(Icons.send_rounded, size: 16, color: Colors.white),
+                              label: const Text('Send', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -1356,15 +1522,9 @@ class _TextStoryPageState extends State<_TextStoryPage> {
             style: TextStyle(color: tokens.ink),
           ),
           const SizedBox(height: 10),
-          Text('Post to', style: TextStyle(color: tokens.mute, fontSize: 13)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              FunkyChip(label: 'Area', active: _place == 'main', onPressed: () => setState(() => _place = 'main')),
-              ...store.rankedPlaces.take(6).map((p) => FunkyChip(label: p.name, active: _place == p.id, onPressed: () => setState(() => _place = p.id))),
-            ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: PlaceDestinationPill(value: _place, onChanged: (v) => setState(() => _place = v)),
           ),
           const SizedBox(height: 20),
           GestureDetector(

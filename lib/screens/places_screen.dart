@@ -59,6 +59,16 @@ class PlacesScreen extends StatelessWidget {
 
     final here = store.location!;
     final ranked = store.rankedPlaces;
+    // A looping video preview per row is heavy, so only the first few
+    // places whose latest Story is a video get one; the rest show their
+    // picture instead.
+    bool isVideoStory(Story? st) => st != null && (st.videoPath != null || st.videoUrl != null);
+    final videoRows = <String>{};
+    for (final rp in ranked) {
+      if (videoRows.length >= 6) break;
+      if (isVideoStory(store.latestMediaStoryFor(rp.id))) videoRows.add(rp.id);
+    }
+    var markerVideoBudget = 6;
     final maxScore = ranked.isEmpty ? 1 : ranked.map((p) => p.score).reduce((a, b) => a > b ? a : b).clamp(1, 999999);
 
     return Scaffold(
@@ -153,13 +163,17 @@ class PlacesScreen extends StatelessWidget {
                           ),
                         ),
                         ...ranked.map((p) {
-                          const size = 30.0;
-                          final cover = p.coverPhotoPath;
-                          final coverUrl = p.coverUrl;
-                          Widget initial() => Text(
-                                p.name.substring(0, 1),
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
-                              );
+                          const size = 38.0;
+                          final story = store.latestMediaStoryFor(p.id);
+                          // A video frame is the last resort (it spins up a
+                          // player), so only a handful of pins get one.
+                          final needsVideo = p.photoUrl == null &&
+                              p.coverPhotoPath == null &&
+                              p.coverUrl == null &&
+                              story?.imagePath == null &&
+                              story?.imageUrl == null &&
+                              isVideoStory(story);
+                          final allowVideo = needsVideo && markerVideoBudget-- > 0;
                           return Marker(
                             point: ll.LatLng(p.place.lat, p.place.lng),
                             width: size,
@@ -173,31 +187,13 @@ class PlacesScreen extends StatelessWidget {
                                   border: Border.all(color: Colors.white, width: 2),
                                 ),
                                 alignment: Alignment.center,
-                                // The pin shows the place's own uploaded photo
-                                // once it has one, same source as the list/
-                                // detail thumbnails, instead of always just a
-                                // flat colored initial.
-                                child: cover != null
-                                    ? ClipOval(
-                                        child: Image.file(
-                                          File(cover),
-                                          width: size,
-                                          height: size,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) => initial(),
-                                        ),
-                                      )
-                                    : (coverUrl != null
-                                        ? ClipOval(
-                                            child: Image.network(
-                                              coverUrl,
-                                              width: size,
-                                              height: size,
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (_, __, ___) => initial(),
-                                            ),
-                                          )
-                                        : initial()),
+                                child: ClipOval(
+                                  child: SizedBox(
+                                    width: size,
+                                    height: size,
+                                    child: _MarkerPicture(place: p, story: story, allowVideo: allowVideo),
+                                  ),
+                                ),
                               ),
                             ),
                           );
@@ -267,7 +263,8 @@ class PlacesScreen extends StatelessWidget {
                     if (cover != null) bits.add('${cover.detail ?? 'Cover'} cover${cover.verified ? '' : ' (unverified)'}');
                     if (line != null) bits.add('Line ${line.detail ?? ''}${line.verified ? '' : ' (unverified)'}');
 
-                    final latestStory = store.latestMediaStoryFor(p.id);
+                    final rawStory = store.latestMediaStoryFor(p.id);
+                    final latestStory = isVideoStory(rawStory) && !videoRows.contains(p.id) ? null : rawStory;
                     return InkWell(
                       onTap: () => _openPlace(context, p.id),
                       child: Container(
@@ -280,7 +277,7 @@ class PlacesScreen extends StatelessWidget {
                               child: SizedBox(
                                 width: 44,
                                 height: 44,
-                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, coverUrl: p.coverUrl, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
+                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, coverUrl: p.coverUrl, photoUrl: p.photoUrl, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -338,5 +335,57 @@ class PlacesScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// The picture inside a map pin. Tries, in order: the admin-approved picture,
+/// the photo whoever added the place took, the latest photo Story there, and
+/// (for a few pins only) a frame of the latest video Story — falling to the
+/// next one whenever a picture fails to load, and to the place's first
+/// letter only when there's truly nothing.
+class _MarkerPicture extends StatelessWidget {
+  final RankedPlace place;
+  final Story? story;
+  final bool allowVideo;
+  const _MarkerPicture({required this.place, required this.story, required this.allowVideo});
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = <Widget Function(Widget Function() next)>[];
+    Widget Function(Widget Function()) net(String url) => (next) => Image.network(
+          url,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          errorBuilder: (_, __, ___) => next(),
+        );
+    Widget Function(Widget Function()) file(String path) => (next) => Image.file(
+          File(path),
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          errorBuilder: (_, __, ___) => next(),
+        );
+    final photo = place.photoUrl;
+    final coverPath = place.coverPhotoPath;
+    final coverUrl = place.coverUrl;
+    if (photo != null) steps.add(net(photo));
+    if (coverPath != null) steps.add(file(coverPath));
+    if (coverUrl != null) steps.add(net(coverUrl));
+    final st = story;
+    if (st?.imagePath != null) steps.add(file(st!.imagePath!));
+    if (st?.imageUrl != null) steps.add(net(st!.imageUrl!));
+    if (allowVideo && st != null && (st.videoPath != null || st.videoUrl != null)) {
+      steps.add((next) => VideoFrameThumbnail(path: st.videoPath, url: st.videoPath == null ? st.videoUrl : null));
+    }
+
+    Widget initial() => Center(
+          child: Text(
+            place.name.isEmpty ? '?' : place.name.substring(0, 1),
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+          ),
+        );
+    Widget at(int i) => i >= steps.length ? initial() : steps[i](() => at(i + 1));
+    return at(0);
   }
 }

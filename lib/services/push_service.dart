@@ -37,6 +37,37 @@ class PushService {
     }
   }
 
+  /// Hooks up "the person tapped a notification" — [onOpen] gets the
+  /// notification's kind ('dm', 'friend', …) and data. Also delivers a tap
+  /// that launched the app from closed. Call once the app is on screen.
+  static Future<void> listenForTaps(void Function(String kind, Map<String, dynamic> data) onOpen) async {
+    void deliver(dynamic raw) {
+      if (raw is! Map) return;
+      final kind = raw['kind'];
+      if (kind is! String) return;
+      final data = <String, dynamic>{};
+      final d = raw['data'];
+      if (d is Map) {
+        d.forEach((k, v) => data['$k'] = v);
+      }
+      onOpen(kind, data);
+    }
+
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onToken') {
+        final token = call.arguments as String?;
+        if (token != null && token.isNotEmpty) _onToken?.call(token);
+      } else if (call.method == 'onOpen') {
+        deliver(call.arguments);
+      }
+      return null;
+    });
+    _listening = true;
+    try {
+      deliver(await _channel.invokeMethod<dynamic>('takePendingOpen'));
+    } catch (_) {}
+  }
+
   /// The red number on the app icon.
   static Future<void> setBadge(int count) async {
     try {

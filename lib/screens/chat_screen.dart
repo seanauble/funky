@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/group_models.dart';
 import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'dm_thread_screen.dart';
+import 'group_thread_screen.dart';
 import '../widgets/avatar_preview.dart';
 
 // The hold-to-react picker's fixed set — "custom" in the sense that it's
@@ -100,13 +103,83 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   int _segment = 0; // 0 = live chat, 1 = dms
-  final _draftController = TextEditingController();
+  final _draftController = MentionTextController();
   bool _anon = false;
+
+  // The "@" picker: while the word being typed starts with "@", people whose
+  // name matches are listed above the message box; tapping one fills it in.
+  List<Person> _mentionSuggestions = [];
+  String? _mentionQuery;
+  Timer? _mentionSearchTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _draftController.addListener(_onDraftChanged);
+  }
 
   @override
   void dispose() {
+    _mentionSearchTimer?.cancel();
+    _draftController.removeListener(_onDraftChanged);
     _draftController.dispose();
     super.dispose();
+  }
+
+  /// The "@word" the cursor is currently at the end of, or null.
+  RegExpMatch? _activeMention() {
+    final sel = _draftController.selection;
+    final text = _draftController.text;
+    final caret = sel.baseOffset;
+    if (!sel.isValid || caret < 0 || caret > text.length) return null;
+    return RegExp(r'(?:^|\s)@([A-Za-z0-9_]{0,30})$').firstMatch(text.substring(0, caret));
+  }
+
+  void _onDraftChanged() {
+    final match = _activeMention();
+    if (match == null) {
+      if (_mentionQuery != null || _mentionSuggestions.isNotEmpty) {
+        setState(() {
+          _mentionQuery = null;
+          _mentionSuggestions = [];
+        });
+      }
+      return;
+    }
+    final query = match.group(1) ?? '';
+    final store = context.read<AppStore>();
+    setState(() {
+      _mentionQuery = query;
+      _mentionSuggestions = store.mentionCandidates(query);
+    });
+    // Anyone signed up, not just people already on this phone — looked up
+    // a moment after you stop typing.
+    _mentionSearchTimer?.cancel();
+    if (query.isEmpty) return;
+    _mentionSearchTimer = Timer(const Duration(milliseconds: 300), () async {
+      final added = await store.searchPeopleByHandle(query);
+      if (!mounted || !added || _mentionQuery != query) return;
+      setState(() => _mentionSuggestions = store.mentionCandidates(query));
+    });
+  }
+
+  void _insertMention(Person person) {
+    final match = _activeMention();
+    if (match == null) return;
+    final caret = _draftController.selection.baseOffset;
+    final text = _draftController.text;
+    final atIndex = text.substring(0, caret).lastIndexOf('@');
+    if (atIndex < 0) return;
+    final inserted = '@${person.handle} ';
+    final next = text.substring(0, atIndex) + inserted + text.substring(caret);
+    _draftController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: atIndex + inserted.length),
+    );
+    setState(() {
+      _mentionQuery = null;
+      _mentionSuggestions = [];
+    });
   }
 
   @override
@@ -143,6 +216,33 @@ class _ChatScreenState extends State<ChatScreen> {
                       ? const LocationGate()
                       : const _LiveChat(),
             ),
+            if (_segment == 0 && store.location != null && _mentionSuggestions.isNotEmpty)
+              Container(
+                width: double.infinity,
+                constraints: const BoxConstraints(maxHeight: 230),
+                decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  shrinkWrap: true,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+                  children: [
+                    for (final person in _mentionSuggestions)
+                      InkWell(
+                        onTap: () => _insertMention(person),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          child: Row(
+                            children: [
+                              PersonAvatar(person: person, size: 30, preview: false),
+                              const SizedBox(width: 10),
+                              Expanded(child: Text('@${person.handle}', style: const TextStyle(color: mentionColor, fontWeight: FontWeight.w800))),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (_segment == 0 && store.location != null)
               Container(
                 padding: const EdgeInsets.all(10),
@@ -233,30 +333,88 @@ class _MessagesList extends StatelessWidget {
   final AppStore store;
   const _MessagesList({required this.store});
 
+  static String _preview(ChatMessage last, {String? who}) {
+    final body = last.mediaType == null
+        ? last.text
+        : '${last.mediaType == 'video' ? '🎥 Video' : '📷 Photo'}${last.text.isEmpty ? '' : ' · ${last.text}'}';
+    if (last.uid == 'me') return 'You: $body';
+    return who != null ? '$who: $body' : body;
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final conversations = store.dmConversations;
+    final groups = store.groupConversations;
 
-    if (conversations.isEmpty) {
+    // DMs and groups in one list, newest activity first.
+    final entries = <_ConvoEntry>[];
+    for (final person in conversations) {
+      final msgs = store.messagesFor(dmRoomId('me', person.id));
+      entries.add(_ConvoEntry(person: person, last: msgs.isNotEmpty ? msgs.last : null, t: msgs.isNotEmpty ? msgs.last.t : 0));
+    }
+    for (final g in groups) {
+      final msgs = store.messagesFor(g.room);
+      entries.add(_ConvoEntry(group: g, last: msgs.isNotEmpty ? msgs.last : null, t: msgs.isNotEmpty ? msgs.last.t : g.createdAt.millisecondsSinceEpoch));
+    }
+    entries.sort((a, b) => b.t.compareTo(a.t));
+
+    final newGroup = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          onPressed: () => requireAccountThen(
+            context,
+            store,
+            () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
+          ),
+          icon: Icon(Icons.group_add_outlined, size: 18, color: tokens.brand),
+          label: Text('New group', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+        ),
+      ),
+    );
+
+    if (entries.isEmpty) {
       return ListView(
         padding: const EdgeInsets.all(16),
-        children: const [
-          EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
-          FootNote(text: 'Private messages and friends stay. Everything else is wiped at 2 PM.'),
+        children: [
+          newGroup,
+          const EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
+          const FootNote(text: 'Private messages, group chats and friends stay. Everything else is wiped at 2 PM.'),
         ],
       );
     }
 
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: conversations.length,
+      itemCount: entries.length + 1,
       itemBuilder: (context, i) {
-        final person = conversations[i];
+        if (i == 0) return newGroup;
+        final e = entries[i - 1];
+        final last = e.last;
+        final group = e.group;
+        if (group != null) {
+          final sender = last == null || last.uid == 'me' ? null : store.personById(last.uid)?.handle;
+          return ListTile(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: group.id))),
+            leading: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
+              child: const Icon(Icons.groups_rounded, color: Colors.white),
+            ),
+            title: Text(group.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+            subtitle: Text(
+              last == null ? '${group.memberIds.length} people' : _preview(last, who: sender == null ? null : '@$sender'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: tokens.mute),
+            ),
+          );
+        }
+        final person = e.person!;
         final isFriend = store.isFriendsWith(person.id);
-        final room = dmRoomId('me', person.id);
-        final msgs = store.messagesFor(room);
-        final last = msgs.isNotEmpty ? msgs.last : null;
         return ListTile(
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id))),
           leading: Container(
@@ -267,21 +425,33 @@ class _MessagesList extends StatelessWidget {
           title: StyledName(person: person, text: '@${person.handle}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
           subtitle: last == null
               ? null
-              : Text(
-                  (() {
-                    final body = last.mediaType == null
-                        ? last.text
-                        : '${last.mediaType == 'video' ? '🎥 Video' : '📷 Photo'}${last.text.isEmpty ? '' : ' · ${last.text}'}';
-                    return last.uid == 'me' ? 'You: $body' : body;
-                  })(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: tokens.mute),
-                ),
+              : Text(_preview(last), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute)),
         );
       },
     );
   }
+}
+
+class _ConvoEntry {
+  final Person? person;
+  final GroupChat? group;
+  final ChatMessage? last;
+  final int t;
+  const _ConvoEntry({this.person, this.group, required this.last, required this.t});
+}
+
+/// "9:41 PM" for today, "Yesterday 11:58 PM" for last night's side of the
+/// 2 PM reset — so you can see when each live-chat message was sent.
+String _sentAtLabel(BuildContext context, int timestampMs) {
+  final sent = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+  final time = TimeOfDay.fromDateTime(sent).format(context);
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final sentDay = DateTime(sent.year, sent.month, sent.day);
+  final daysAgo = today.difference(sentDay).inDays;
+  if (daysAgo <= 0) return time;
+  if (daysAgo == 1) return 'Yesterday $time';
+  return '${sent.month}/${sent.day} $time';
 }
 
 class _LiveChat extends StatelessWidget {
@@ -357,9 +527,16 @@ class _LiveChat extends StatelessWidget {
                     child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  nameLine,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Flexible(child: nameLine),
+                      const SizedBox(width: 8),
+                      Text(_sentAtLabel(context, m.t), style: TextStyle(color: tokens.mute, fontSize: 11)),
+                    ],
+                  ),
                   const SizedBox(height: 2),
-                  filteredMessageText(m.text, TextStyle(color: tokens.ink)),
+                  filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
                   if (m.uid == 'me' && (m.status == 'sending' || m.status == 'failed'))
                     Padding(
                       padding: const EdgeInsets.only(top: 2),

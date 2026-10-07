@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -257,9 +258,11 @@ class PlaceMediaThumbnail extends StatefulWidget {
   // The shared (backend) copy of the cover photo — used when this device
   // doesn't have the original file, i.e. someone else added the place.
   final String? coverUrl;
+  // The admin-approved picture — preferred over the cover photo.
+  final String? photoUrl;
   final String fallbackLabel;
   final double fontSize;
-  const PlaceMediaThumbnail({super.key, required this.story, this.coverPhotoPath, this.coverUrl, required this.fallbackLabel, this.fontSize = 22});
+  const PlaceMediaThumbnail({super.key, required this.story, this.coverPhotoPath, this.coverUrl, this.photoUrl, required this.fallbackLabel, this.fontSize = 22});
 
   @override
   State<PlaceMediaThumbnail> createState() => _PlaceMediaThumbnailState();
@@ -350,29 +353,50 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
         errorBuilder: (_, __, ___) => _fallback(tokens),
       );
     }
+    return _fallback(tokens);
+  }
+
+  /// No (working) Story media: the approved picture, then the photo whoever
+  /// added the place took, then the flat colored-letter box.
+  Widget _fallback(ThemeTokens tokens) {
+    final photo = widget.photoUrl;
     final cover = widget.coverPhotoPath;
     final coverUrl = widget.coverUrl;
-    Widget fromNetwork() => Image.network(
+    Widget letter() => _letterBox(tokens);
+    Widget coverNetwork() => Image.network(
           coverUrl!,
           fit: BoxFit.cover,
           width: double.infinity,
           height: double.infinity,
-          errorBuilder: (_, __, ___) => _fallback(tokens),
+          errorBuilder: (_, __, ___) => letter(),
         );
-    if (cover != null) {
-      return Image.file(
-        File(cover),
+    Widget coverStage() {
+      if (cover != null) {
+        return Image.file(
+          File(cover),
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          errorBuilder: (_, __, ___) => coverUrl != null ? coverNetwork() : letter(),
+        );
+      }
+      if (coverUrl != null) return coverNetwork();
+      return letter();
+    }
+
+    if (photo != null) {
+      return Image.network(
+        photo,
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        errorBuilder: (_, __, ___) => coverUrl != null ? fromNetwork() : _fallback(tokens),
+        errorBuilder: (_, __, ___) => coverStage(),
       );
     }
-    if (coverUrl != null) return fromNetwork();
-    return _fallback(tokens);
+    return coverStage();
   }
 
-  Widget _fallback(ThemeTokens tokens) => Container(
+  Widget _letterBox(ThemeTokens tokens) => Container(
         color: tokens.raised,
         alignment: Alignment.center,
         child: Text(widget.fallbackLabel, style: TextStyle(fontSize: widget.fontSize, fontWeight: FontWeight.w800, color: tokens.mute)),
@@ -492,6 +516,34 @@ const List<CameraFilter> cameraFilters = [
     0.2126, 0.7152, 0.0722, 0, 0, //
     0, 0, 0, 1, 0,
   ]),
+  // Black & white with the contrast pushed up — deep blacks, bright whites.
+  CameraFilter('Noir', [
+    0.287, 0.966, 0.097, 0, -45, //
+    0.287, 0.966, 0.097, 0, -45, //
+    0.287, 0.966, 0.097, 0, -45, //
+    0, 0, 0, 1, 0,
+  ]),
+  // Saturated, a little magenta/cyan-heavy — the "it's a party" look.
+  CameraFilter('Party', [
+    1.843, -0.595, -0.06, 0, -7.8, //
+    -0.151, 1.214, -0.051, 0, -11.8, //
+    -0.196, -0.661, 2.177, 0, -1.4, //
+    0, 0, 0, 1, 0,
+  ]),
+  // Loud, glowing colors — bar-lights-at-2am.
+  CameraFilter('Neon', [
+    1.972, -0.692, -0.07, 0, -16.6, //
+    -0.181, 1.306, -0.061, 0, -14.6, //
+    -0.232, -0.782, 2.381, 0, -10.7, //
+    0, 0, 0, 1, 0,
+  ]),
+  // Orange-pink golden-hour glow.
+  CameraFilter('Sunset', [
+    1.634, -0.321, -0.032, 0, 6.2, //
+    -0.074, 1.097, -0.025, 0, -2.1, //
+    -0.061, -0.205, 1.085, 0, 7, //
+    0, 0, 0, 1, 0,
+  ]),
   CameraFilter('Warm', [
     1.15, 0, 0, 0, 10, //
     0, 1.05, 0, 0, 5, //
@@ -518,6 +570,49 @@ const List<CameraFilter> cameraFilters = [
   ]),
 ];
 
+/// A horizontally scrolling row of filter names — tap one to pick it. Used
+/// on the live camera and on the review screen so the filters are visible
+/// without having to know about the swipe gesture.
+class FilterStrip extends StatelessWidget {
+  final int selected;
+  final ValueChanged<int> onSelect;
+  final EdgeInsetsGeometry padding;
+  const FilterStrip({super.key, required this.selected, required this.onSelect, this.padding = const EdgeInsets.symmetric(horizontal: 16)});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 36,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: padding,
+        itemCount: cameraFilters.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final active = i == selected;
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onSelect(i),
+            child: Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: active ? Colors.white : Colors.black54,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: active ? Colors.white : Colors.white30),
+              ),
+              child: Text(
+                cameraFilters[i].name,
+                style: TextStyle(color: active ? Colors.black : Colors.white, fontWeight: FontWeight.w800, fontSize: 13),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 /// Re-encodes a captured photo's bytes with [filter] baked in permanently
 /// — needed because the live preview's ColorFiltered only ever affects
 /// what's on screen, never the camera plugin's own saved file. Pure
@@ -533,11 +628,27 @@ Future<Uint8List> applyCameraFilterToImageBytes(Uint8List bytes, CameraFilter fi
   final frame = await codec.getNextFrame();
   final image = frame.image;
   try {
+    // Phone photos are 12MP+, and dart:ui can only write PNG — an
+    // uncompressed-ish 12MP PNG is huge to upload. A Story only ever fills a
+    // phone screen, so the filtered copy is capped at 2048px on its long
+    // edge (smaller photos are left at their own size).
+    const maxEdge = 2048.0;
+    final longEdge = math.max(image.width, image.height).toDouble();
+    final scale = longEdge > maxEdge ? maxEdge / longEdge : 1.0;
+    final outW = (image.width * scale).round();
+    final outH = (image.height * scale).round();
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    canvas.drawImage(image, Offset.zero, Paint()..colorFilter = cf);
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
+      Paint()
+        ..colorFilter = cf
+        ..filterQuality = FilterQuality.high,
+    );
     final picture = recorder.endRecording();
-    final outputImage = await picture.toImage(image.width, image.height);
+    final outputImage = await picture.toImage(outW, outH);
     try {
       final byteData = await outputImage.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) return bytes;
@@ -653,25 +764,84 @@ final RegExp _blurredWordPattern = RegExp(
   caseSensitive: false,
 );
 
+/// "@name" — the same shape a username can have (letters, digits, _), and
+/// not glued onto the end of another word (so an email address isn't a
+/// mention).
+final RegExp mentionPattern = RegExp(r'(?<![A-Za-z0-9_])@[A-Za-z0-9_]{2,30}');
+
+/// The blue used for @mentions in the live chat.
+const Color mentionColor = Color(0xFF3B9DFF);
+
+class _TextHit {
+  final int start;
+  final int end;
+  final bool mention;
+  const _TextHit(this.start, this.end, this.mention);
+}
+
 /// Renders [text] the same as a plain `Text(text, style: style)`, except
 /// any slur (see _blurredWords above) is blurred out and only reveals on
 /// tap. Use this instead of a bare Text(...) wherever a message's own text
 /// is shown — chat bubbles, DMs.
-Widget filteredMessageText(String text, TextStyle? style) {
-  final matches = _blurredWordPattern.allMatches(text).toList();
-  if (matches.isEmpty) return Text(text, style: style);
+/// With [mentions], @names show bold blue (highlighted if it's [myHandle]).
+Widget filteredMessageText(String text, TextStyle? style, {String? myHandle, bool mentions = false}) {
+  final hits = <_TextHit>[
+    for (final m in _blurredWordPattern.allMatches(text)) _TextHit(m.start, m.end, false),
+    if (mentions)
+      for (final m in mentionPattern.allMatches(text)) _TextHit(m.start, m.end, true),
+  ]..sort((a, b) => a.start.compareTo(b.start));
+  if (hits.isEmpty) return Text(text, style: style);
+  final me = myHandle?.toLowerCase();
   final spans = <InlineSpan>[];
   var last = 0;
-  for (final m in matches) {
-    if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start)));
-    spans.add(WidgetSpan(
-      alignment: PlaceholderAlignment.middle,
-      child: _BlurredWord(word: text.substring(m.start, m.end), style: style),
-    ));
-    last = m.end;
+  for (final h in hits) {
+    if (h.start < last) continue;
+    if (h.start > last) spans.add(TextSpan(text: text.substring(last, h.start)));
+    final piece = text.substring(h.start, h.end);
+    if (h.mention) {
+      final isMe = me != null && piece.substring(1).toLowerCase() == me;
+      spans.add(TextSpan(
+        text: piece,
+        style: TextStyle(
+          color: mentionColor,
+          fontWeight: FontWeight.w800,
+          backgroundColor: isMe ? mentionColor.withValues(alpha: 0.18) : null,
+        ),
+      ));
+    } else {
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: _BlurredWord(word: piece, style: style),
+      ));
+    }
+    last = h.end;
   }
   if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
   return Text.rich(TextSpan(style: style, children: spans));
+}
+
+/// A text field controller that shows any @name being typed in bold blue,
+/// so a mention already looks like one before you send it.
+class MentionTextController extends TextEditingController {
+  @override
+  TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
+    final matches = mentionPattern.allMatches(text).toList();
+    if (matches.isEmpty || (value.composing.isValid && !value.composing.isCollapsed)) {
+      return super.buildTextSpan(context: context, style: style, withComposing: withComposing);
+    }
+    final spans = <InlineSpan>[];
+    var last = 0;
+    for (final m in matches) {
+      if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start)));
+      spans.add(TextSpan(
+        text: text.substring(m.start, m.end),
+        style: const TextStyle(color: mentionColor, fontWeight: FontWeight.w800),
+      ));
+      last = m.end;
+    }
+    if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
+    return TextSpan(style: style, children: spans);
+  }
 }
 
 class _BlurredWord extends StatefulWidget {

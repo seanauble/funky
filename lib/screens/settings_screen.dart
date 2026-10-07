@@ -41,9 +41,11 @@ class SettingsScreen extends StatelessWidget {
               padding: EdgeInsets.zero,
               child: Column(
                 children: [
-                  _SwitchRow(label: 'Direct messages', value: store.notifPrefs.dm, onChanged: (v) => store.setNotifPref('dm', v)),
+                  _SwitchRow(label: 'Direct messages & groups', value: store.notifPrefs.dm, onChanged: (v) => store.setNotifPref('dm', v)),
                   Divider(height: 1, color: tokens.line),
                   _SwitchRow(label: 'Friend requests', value: store.notifPrefs.friend, onChanged: (v) => store.setNotifPref('friend', v)),
+                  Divider(height: 1, color: tokens.line),
+                  _SwitchRow(label: '@mentions in live chat', value: store.notifPrefs.mention, onChanged: (v) => store.setNotifPref('mention', v)),
                   Divider(height: 1, color: tokens.line),
                   _SwitchRow(label: 'New verified places near me', value: store.notifPrefs.place, onChanged: (v) => store.setNotifPref('place', v)),
                   Divider(height: 1, color: tokens.line),

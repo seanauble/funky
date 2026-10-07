@@ -250,7 +250,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                               label = 'Delivered';
                           }
                         }
-                        return _DmBubble(
+                        return DmBubble(
                           message: m,
                           tokens: tokens,
                           other: person,
@@ -319,7 +319,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
   }
 }
 
-class _DmBubble extends StatelessWidget {
+class DmBubble extends StatelessWidget {
   final ChatMessage message;
   final ThemeTokens tokens;
   // The person on the other end of the thread — their small profile picture
@@ -330,7 +330,9 @@ class _DmBubble extends StatelessWidget {
   final String? statusLabel;
   final VoidCallback? onRetry;
   final String? errorDetail;
-  const _DmBubble({required this.message, required this.tokens, required this.other, this.statusLabel, this.onRetry, this.errorDetail});
+  // In a group chat: who sent it, shown above their bubble.
+  final String? senderLabel;
+  const DmBubble({super.key, required this.message, required this.tokens, required this.other, this.statusLabel, this.onRetry, this.errorDetail, this.senderLabel});
 
   @override
   Widget build(BuildContext context) {
@@ -349,7 +351,7 @@ class _DmBubble extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _DmMedia(message: message, tokens: tokens),
+                DmMedia(message: message, tokens: tokens),
                 if (message.text.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
@@ -402,7 +404,18 @@ class _DmBubble extends StatelessWidget {
               padding: const EdgeInsets.only(right: 8),
               child: PersonAvatar(person: other, size: 26),
             ),
-            bubble,
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (senderLabel != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 2),
+                    child: Text(senderLabel!, style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                  ),
+                bubble,
+              ],
+            ),
           ],
         ),
       ),
@@ -412,10 +425,10 @@ class _DmBubble extends StatelessWidget {
 
 /// The photo/video thumbnail inside a DM bubble. Your own sends play from the
 /// local file; the other person's load from a signed URL. Tap to open it big.
-class _DmMedia extends StatelessWidget {
+class DmMedia extends StatelessWidget {
   final ChatMessage message;
   final ThemeTokens tokens;
-  const _DmMedia({required this.message, required this.tokens});
+  const DmMedia({required this.message, required this.tokens});
 
   @override
   Widget build(BuildContext context) {

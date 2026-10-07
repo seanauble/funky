@@ -89,6 +89,39 @@ Future<void> _customAdminPoints(BuildContext context, AppStore store, String per
   await _giveAdminPoints(context, store, personId, handle, choice);
 }
 
+/// Pick a reason, send the report to the FUNKY team.
+Future<void> _reportProfile(BuildContext context, AppStore store, String personId, String handle) async {
+  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+  final reason = await showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: tokens.surface,
+    builder: (sheetContext) => SafeArea(
+      child: SingleChildScrollView(
+        child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 6),
+            child: Text('Report @$handle', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
+          ),
+          for (final r in AppStore.profileReportReasons)
+            ListTile(
+              title: Text(r, style: TextStyle(color: tokens.ink)),
+              onTap: () => Navigator.of(sheetContext).pop(r),
+            ),
+        ],
+        ),
+      ),
+    ),
+  );
+  if (reason == null || !context.mounted) return;
+  final message = await store.reportProfile(personId, reason);
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+}
+
 /// The public profile of someone else — reached by tapping their handle in
 /// chat. Old Story posts only show up here once you're mutual friends;
 /// otherwise it's a locked card with an Add Friend button.
@@ -193,6 +226,17 @@ class PersonProfileScreen extends StatelessWidget {
             onDecline: () => store.declineFriendRequest(personId),
             onRemove: () => store.removeFriend(personId),
           ),
+          if (personId != 'me' && store.signedIn)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Center(
+                child: TextButton.icon(
+                  onPressed: () => _reportProfile(context, store, personId, person.handle),
+                  icon: Icon(Icons.flag_outlined, size: 16, color: tokens.mute),
+                  label: Text('Report this profile', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                ),
+              ),
+            ),
           // Only a signed-in FUNKY Admin ever sees this — same hardcoded-
           // admin gate as the place verification controls on
           // place_detail_screen. Banning severs any friendship/pending
