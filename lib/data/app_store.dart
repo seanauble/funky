@@ -3381,8 +3381,8 @@ class AppStore extends ChangeNotifier {
       if (res == 'pending') return photoSuggestedMessage;
       if (res != null && res.startsWith('!')) return res.substring(1);
       return "Couldn't add that picture.";
-    } catch (_) {
-      return "Couldn't add that picture — check your connection and try again. (If this keeps happening, the latest database update may not have been run yet.)";
+    } catch (e) {
+      return _featureError(e, feature: 'Place pictures', phase: 'phase 10', fallback: "Couldn't add that picture");
     }
   }
 
@@ -3448,6 +3448,25 @@ class AppStore extends ChangeNotifier {
   void _scheduleGroupsRefresh() {
     _groupsRefreshTimer?.cancel();
     _groupsRefreshTimer = Timer(const Duration(milliseconds: 500), () => unawaited(_fetchGroups()));
+  }
+
+  /// A readable reason for a failed call to a newer database function: says
+  /// so when the SQL update for that feature simply hasn't been run yet,
+  /// shows the server's own message for other database errors, and only
+  /// blames the connection when it really looks like one.
+  String _featureError(Object e, {required String feature, required String phase, required String fallback}) {
+    if (e is PostgrestException) {
+      final m = e.message;
+      final missing = e.code == 'PGRST202' ||
+          e.code == '42883' ||
+          e.code == '42P01' ||
+          m.contains('Could not find the function') ||
+          m.contains('does not exist') ||
+          m.contains('schema cache');
+      if (missing) return '$feature isn\'t switched on yet — the $phase database update hasn\'t been run.';
+      if (m.isNotEmpty) return '$fallback ($m)';
+    }
+    return fallback;
   }
 
   String _rpcMessage(Object e) {
@@ -3818,8 +3837,8 @@ class AppStore extends ChangeNotifier {
     try {
       final res = await Supabase.instance.client.rpc('report_profile', params: {'p_user': personId, 'p_reason': reason}) as String?;
       return res ?? "Thanks — we'll take a look.";
-    } catch (_) {
-      return "Couldn't send that report — check your connection and try again.";
+    } catch (e) {
+      return _featureError(e, feature: 'Reporting', phase: 'phase 10', fallback: "Couldn't send that report");
     }
   }
 
@@ -3877,8 +3896,8 @@ class AppStore extends ChangeNotifier {
       final res = await Supabase.instance.client.rpc('rate_place', params: {'p_place': placeId, 'p_stars': stars});
       await _fetchPlaceRatings();
       return res as String?;
-    } catch (_) {
-      return "Couldn't save your rating — check your connection and try again.";
+    } catch (e) {
+      return _featureError(e, feature: 'Ratings', phase: 'phase 9', fallback: "Couldn't save your rating");
     }
   }
 
