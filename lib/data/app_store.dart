@@ -4562,7 +4562,7 @@ class AppStore extends ChangeNotifier {
 
   /// People already known on this device whose @name matches [query] —
   /// friends first, then names that START with it, then names that merely
-  /// contain it. Instant (no network); see [searchPeopleByHandle] for the
+  /// contain it. Instant (no network); see [lookupMentionHandles] for the
   /// wider lookup.
   List<Person> mentionCandidates(String query) {
     final q = query.toLowerCase();
@@ -4587,7 +4587,7 @@ class AppStore extends ChangeNotifier {
   /// Looks up accounts whose @name starts with [query] on the server (anyone
   /// signed up, not just people already on this device) and remembers them,
   /// so the picker can show them. Returns true if anyone new turned up.
-  Future<bool> searchPeopleByHandle(String query) async {
+  Future<bool> lookupMentionHandles(String query) async {
     final q = query.trim();
     if (!signedIn || supabaseUserId == null || q.isEmpty) return false;
     try {

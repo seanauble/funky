@@ -157,7 +157,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _mentionSearchTimer?.cancel();
     if (query.isEmpty) return;
     _mentionSearchTimer = Timer(const Duration(milliseconds: 300), () async {
-      final added = await store.searchPeopleByHandle(query);
+      final added = await store.lookupMentionHandles(query);
       if (!mounted || !added || _mentionQuery != query) return;
       setState(() => _mentionSuggestions = store.mentionCandidates(query));
     });
