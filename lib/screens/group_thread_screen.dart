@@ -5,9 +5,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/call_models.dart';
 import '../data/group_models.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
+import '../widgets/call_log_line.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'call_screen.dart';
@@ -320,13 +322,20 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
     }
 
     final msgs = store.messagesFor(group.room);
-    if (msgs.length != _shownCount) {
-      _shownCount = msgs.length;
+    // Messages and video-call lines, oldest first.
+    final timeline = <Object>[...msgs, ...store.groupCallLogFor(group.id)]
+      ..sort((a, b) {
+        int at(Object o) => o is ChatMessage ? o.t : (o as GroupCallLogEntry).at.millisecondsSinceEpoch;
+        return at(a).compareTo(at(b));
+      });
+    if (timeline.length != _shownCount) {
+      _shownCount = timeline.length;
       _scrollToEnd();
     }
     var lastMine = -1;
-    for (var i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].uid == 'me') {
+    for (var i = timeline.length - 1; i >= 0; i--) {
+      final item = timeline[i];
+      if (item is ChatMessage && item.uid == 'me') {
         lastMine = i;
         break;
       }
@@ -405,7 +414,7 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                 ),
               ),
             Expanded(
-              child: msgs.isEmpty
+              child: timeline.isEmpty
                   ? Padding(
                       padding: const EdgeInsets.all(20),
                       child: Center(child: EmptyNote(text: 'Nothing here yet — say hey to ${group.name}.')),
@@ -413,9 +422,18 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                   : ListView.builder(
                       controller: _scrollController,
                       padding: const EdgeInsets.all(16),
-                      itemCount: msgs.length,
+                      itemCount: timeline.length,
                       itemBuilder: (context, i) {
-                        final m = msgs[i];
+                        final item = timeline[i];
+                        if (item is GroupCallLogEntry) {
+                          return CallLogLine(
+                            tokens: tokens,
+                            title: item.title(store.personById(item.startedBy)?.handle),
+                            subtitle: item.subtitle,
+                            at: item.at,
+                          );
+                        }
+                        final m = item as ChatMessage;
                         String? label;
                         if (m.uid == 'me' && (i == lastMine || m.status == 'failed')) {
                           switch (m.status) {

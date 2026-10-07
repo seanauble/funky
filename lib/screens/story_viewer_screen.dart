@@ -100,8 +100,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   }
 
   /// Saves a Story/Memory's photo or video to the phone's own Camera Roll —
-  /// the download button in the viewer header (and the swipe-up sheet on
-  /// your own Story). Handles both a local file and a remote signed URL.
+  /// the download button in the viewer header. Handles both a local file and a remote signed URL.
   Future<void> _saveStoryToCameraRoll(Story story) async {
     if (_savingMedia) return;
     final hasVideo = story.videoPath != null || story.videoUrl != null;
@@ -283,16 +282,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    const Icon(Icons.remove_red_eye_outlined, color: Colors.white70, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${story.views.length} view${story.views.length == 1 ? '' : 's'}',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16),
-                    ),
-                  ],
-                ),
+                _ViewersList(storyId: story.id),
                 if (story.screenshotBy.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Row(
@@ -306,23 +296,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                     ],
                   ),
                 ],
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.of(sheetContext).pop();
-                      _saveStoryToCameraRoll(story);
-                    },
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      side: const BorderSide(color: Colors.white54),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    icon: const Icon(Icons.download_outlined, color: Colors.white70),
-                    label: const Text('Save to camera roll', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
-                  ),
-                ),
+                const SizedBox(height: 16),
                 const SizedBox(height: 12),
                 // Memories auto-delete memoryRetentionDays after posting —
                 // this is the other place (besides the bookmark on the
@@ -712,7 +686,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                   children: [
                     const Icon(Icons.keyboard_arrow_up, color: Colors.white70, size: 20),
                     Text(
-                      story.uid == 'me' ? 'Swipe up for views & delete' : 'Swipe up to message',
+                      story.uid == 'me' ? 'Swipe up for viewers & delete' : 'Swipe up to message',
                       style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600),
                     ),
                   ],
@@ -725,6 +699,102 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Who has seen your Story, newest first, with a heart beside anyone who
+/// liked it. Reads live from the store so new views/likes appear while the
+/// sheet is open; unknown viewers' profiles are fetched when it opens.
+class _ViewersList extends StatefulWidget {
+  final String storyId;
+  const _ViewersList({required this.storyId});
+
+  @override
+  State<_ViewersList> createState() => _ViewersListState();
+}
+
+class _ViewersListState extends State<_ViewersList> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final store = context.read<AppStore>();
+      final i = store.stories.indexWhere((s) => s.id == widget.storyId);
+      if (i == -1) return;
+      final ids = {...store.stories[i].views, ...store.stories[i].likes};
+      store.loadPeople(ids);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.watch<AppStore>();
+    final i = store.stories.indexWhere((s) => s.id == widget.storyId);
+    if (i == -1) return const SizedBox.shrink();
+    final story = store.stories[i];
+    final liked = story.likes.where((id) => id != 'me').toSet();
+    // Newest viewer first; a liker who somehow has no view row still shows.
+    final ids = <String>[
+      ...story.views.reversed.where((id) => id != 'me'),
+      ...liked.where((id) => !story.views.contains(id)),
+    ];
+    final seen = <String>{};
+    final viewers = ids.where(seen.add).toList();
+    final count = viewers.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.remove_red_eye_outlined, color: Colors.white70, size: 20),
+            const SizedBox(width: 8),
+            Text('$count view${count == 1 ? '' : 's'}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16)),
+            if (liked.isNotEmpty) ...[
+              const SizedBox(width: 14),
+              const Icon(Icons.favorite, color: Colors.redAccent, size: 18),
+              const SizedBox(width: 4),
+              Text('${liked.length}', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w800, fontSize: 16)),
+            ],
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (viewers.isEmpty)
+          const Text('No one has seen this yet.', style: TextStyle(color: Colors.white54, fontSize: 13))
+        else
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 220),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: viewers.length,
+              itemBuilder: (_, k) {
+                final id = viewers[k];
+                final person = store.personById(id);
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(
+                    children: [
+                      if (person != null) PersonAvatar(person: person, size: 30) else const GhostAvatar(size: 30),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: person != null
+                            ? StyledName(
+                                person: person,
+                                text: '@${person.handle}',
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                              )
+                            : const Text('Someone', style: TextStyle(color: Colors.white54)),
+                      ),
+                      if (liked.contains(id)) const Icon(Icons.favorite, color: Colors.redAccent, size: 20),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }

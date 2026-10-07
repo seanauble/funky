@@ -2713,6 +2713,8 @@ class AppStore extends ChangeNotifier {
     unawaited(_fetchProfileReports());
     unawaited(_fetchGroups());
     unawaited(refreshGroupCalls());
+    unawaited(fetchCallLog());
+    unawaited(fetchGroupCallLog());
     unawaited(_fetchRemoteChat());
     unawaited(_fetchRemotePolls());
     unawaited(_fetchRemoteReports());
@@ -2980,7 +2982,7 @@ class AppStore extends ChangeNotifier {
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'group_calls',
-        callback: (_) => unawaited(refreshGroupCalls()),
+        callback: (_) => _scheduleGroupCallRefresh(),
       )
       ..subscribe();
   }
@@ -3031,6 +3033,8 @@ class AppStore extends ChangeNotifier {
     _callsChannel = null;
     _groupCallsChannel = null;
     _activeGroupCalls = {};
+    callLog = [];
+    groupCallLog = [];
     incomingCall = null;
     _pollsChannel = null;
     _pollVotesChannel = null;
@@ -4378,6 +4382,10 @@ class AppStore extends ChangeNotifier {
   /// in [people], demo accounts included) so FunkyAvatar/FunkyHandle/
   /// PersonProfileScreen all have something real to render for a story or
   /// DM from an actual other account.
+  /// Public hook so screens (e.g. the Story viewers list) can make sure the
+  /// profiles for some ids are loaded.
+  Future<void> loadPeople(Iterable<String> uids) => _ensurePeopleFor(uids);
+
   Future<void> _ensurePeopleFor(Iterable<String> uids) async {
     final toFetch = uids.where((id) => id != 'me' && !people.containsKey(id)).toSet();
     if (toFetch.isEmpty) return;
@@ -4817,6 +4825,8 @@ class AppStore extends ChangeNotifier {
       _fetchProfileReports(),
       _fetchGroups(),
       refreshGroupCalls(),
+      fetchCallLog(),
+      fetchGroupCallLog(),
       _fetchRemoteMessages(),
       _fetchNotifications(),
     ]);
@@ -5010,11 +5020,67 @@ class AppStore extends ChangeNotifier {
   IncomingCall? incomingCall;
   String? lastCallError;
 
+  // --- Call history (shown as lines inside the DM / group chat) ---------
+
+  List<CallLogEntry> callLog = [];
+  List<GroupCallLogEntry> groupCallLog = [];
+
+  List<CallLogEntry> callLogWith(String personId) => callLog.where((c) => c.peerId == personId).toList();
+  List<GroupCallLogEntry> groupCallLogFor(String groupId) => groupCallLog.where((c) => c.groupId == groupId).toList();
+
+  Future<void> fetchCallLog() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('calls').select().order('created_at', ascending: false).limit(200);
+      final next = <CallLogEntry>[];
+      for (final raw in rows) {
+        final e = CallLogEntry.fromRow(raw, uid);
+        if (e != null) next.add(e);
+      }
+      callLog = next;
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 13 not run yet — no call lines.
+    }
+  }
+
+  Timer? _groupCallRefreshTimer;
+
+  // Everyone on a call pings the table every ~25 s — batch the refreshes.
+  void _scheduleGroupCallRefresh() {
+    _groupCallRefreshTimer?.cancel();
+    _groupCallRefreshTimer = Timer(const Duration(seconds: 2), () {
+      unawaited(refreshGroupCalls());
+      unawaited(fetchGroupCallLog());
+    });
+  }
+
+  Future<void> fetchGroupCallLog() async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('group_calls').select().order('created_at', ascending: false).limit(200);
+      final next = <GroupCallLogEntry>[];
+      final starters = <String>{};
+      for (final raw in rows) {
+        final e = GroupCallLogEntry.fromRow(raw, uid);
+        if (e == null) continue;
+        next.add(e);
+        if (e.startedBy != 'me') starters.add(e.startedBy);
+      }
+      if (starters.isNotEmpty) await _ensurePeopleFor(starters);
+      groupCallLog = next;
+      notifyListeners();
+    } catch (_) {}
+  }
+
   void _onCallRow(Map<String, dynamic> row) {
     final uid = supabaseUserId;
     if (uid == null) return;
     final id = row['id'] as String?;
     if (id == null) return;
+    unawaited(fetchCallLog());
     final status = row['status'] as String?;
     if (row['callee_id'] == uid && status == 'ringing') {
       final created = DateTime.tryParse((row['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();

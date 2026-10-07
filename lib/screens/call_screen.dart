@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../services/ring_service.dart';
 import '../widgets/ui_widgets.dart';
 
 /// Rings [personId] and opens the call screen — or says why it can't.
@@ -42,10 +43,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     _poll = Timer.periodic(const Duration(seconds: 2), (_) => _check());
     _giveUp = Timer(const Duration(seconds: 50), () => _close());
     WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+    RingService.start();
   }
 
   @override
   void dispose() {
+    RingService.stop();
     _poll?.cancel();
     _giveUp?.cancel();
     super.dispose();
@@ -198,6 +201,7 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    RingService.stop();
     _poll?.cancel();
     _ticker?.cancel();
     _noAnswer?.cancel();
@@ -208,6 +212,8 @@ class _CallScreenState extends State<CallScreen> {
 
   Future<void> _start() async {
     final store = context.read<AppStore>();
+    // The caller hears the party ring while it rings on the other end.
+    if (widget.isCaller) RingService.start(volume: 0.7);
     final creds = await store.fetchCallCredentials(widget.callId);
     if (!mounted || _ending) return;
     if (creds == null) {
@@ -276,6 +282,7 @@ class _CallScreenState extends State<CallScreen> {
 
   void _onRemoteJoined() {
     if (_remoteJoined || !mounted) return;
+    RingService.stop();
     _noAnswer?.cancel();
     setState(() {
       _remoteJoined = true;
@@ -314,6 +321,7 @@ class _CallScreenState extends State<CallScreen> {
   Future<void> _finish(String message) async {
     if (_ending) return;
     _ending = true;
+    RingService.stop();
     _poll?.cancel();
     _ticker?.cancel();
     _noAnswer?.cancel();
@@ -330,6 +338,7 @@ class _CallScreenState extends State<CallScreen> {
     final store = context.read<AppStore>();
     final action = widget.isCaller && !_remoteJoined ? 'cancel' : 'end';
     unawaited(store.respondToCall(widget.callId, action));
+    RingService.stop();
     _ending = true;
     _poll?.cancel();
     _ticker?.cancel();

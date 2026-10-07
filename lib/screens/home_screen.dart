@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
@@ -75,7 +77,7 @@ class HomeScreen extends StatelessWidget {
     // left/right swipe there moves through this exact same queue.
     final storyQueue = [if (hasMyStories) 'me', ...sortedStorytellerIds];
     final areaMessages = store.liveChatMessages;
-    final recentAreaMessages = areaMessages.length > 3 ? areaMessages.sublist(areaMessages.length - 3) : areaMessages;
+    final recentAreaMessages = areaMessages;
 
     return Container(
       color: tokens.bg,
@@ -275,26 +277,7 @@ class HomeScreen extends StatelessWidget {
           if (recentAreaMessages.isEmpty)
             const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.')
           else
-            FunkyCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: recentAreaMessages.map((m) {
-                  final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        m.anon
-                            ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
-                            : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
-                        filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
+            const _LiveChatPreview(),
           SectionHeader(
             title: 'Polls',
             action: 'Ask a poll',
@@ -452,4 +435,95 @@ Future<void> _confirmDeletePoll(BuildContext context, AppStore store, Poll poll)
     ),
   );
   if (ok == true) store.deletePoll(poll.id);
+}
+
+
+/// The three-line Live Chat peek on Home. While people are actually talking
+/// (a message in the last 15 minutes) it just shows the latest three. When
+/// the room has gone quiet it slowly cycles back through tonight's older
+/// messages, one step at a time, so the card never looks dead.
+class _LiveChatPreview extends StatefulWidget {
+  const _LiveChatPreview();
+
+  @override
+  State<_LiveChatPreview> createState() => _LiveChatPreviewState();
+}
+
+class _LiveChatPreviewState extends State<_LiveChatPreview> {
+  static const _activeWindowMs = 15 * 60 * 1000;
+  Timer? _timer;
+  int _step = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
+      if (!mounted) return;
+      final msgs = context.read<AppStore>().liveChatMessages;
+      if (msgs.length > 3 && _isQuiet(msgs)) setState(() => _step++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  bool _isQuiet(List<ChatMessage> msgs) {
+    if (msgs.isEmpty) return false;
+    return DateTime.now().millisecondsSinceEpoch - msgs.last.t > _activeWindowMs;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final msgs = store.liveChatMessages;
+    if (msgs.isEmpty) return const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.');
+
+    final List<ChatMessage> shown;
+    var windowKey = 'live';
+    if (msgs.length > 3 && _isQuiet(msgs)) {
+      // Slide a 3-message window around the whole list, wrapping at the end.
+      final start = _step % msgs.length;
+      shown = [for (var k = 0; k < 3; k++) msgs[(start + k) % msgs.length]];
+      windowKey = 'loop$start';
+    } else {
+      shown = msgs.length > 3 ? msgs.sublist(msgs.length - 3) : msgs;
+    }
+
+    return FunkyCard(
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 300),
+        alignment: Alignment.topLeft,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 450),
+          layoutBuilder: (current, previous) => Stack(
+            alignment: Alignment.topLeft,
+            children: [...previous, if (current != null) current],
+          ),
+          child: Column(
+            key: ValueKey(windowKey),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: shown.map((m) {
+              final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    m.anon
+                        ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
+                        : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
+                    filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
 }
