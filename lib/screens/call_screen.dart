@@ -227,7 +227,7 @@ class _CallScreenState extends State<CallScreen> {
       })
       ..on<LocalTrackPublishedEvent>((e) {
         final t = e.publication.track;
-        if (t is VideoTrack && mounted) setState(() => _localVideo = t);
+        if (t is VideoTrack && mounted) setState(() => _localVideo = t as VideoTrack);
       })
       ..on<ParticipantConnectedEvent>((_) => _onRemoteJoined())
       ..on<ParticipantDisconnectedEvent>((_) => _onRemoteLeft())
@@ -352,7 +352,10 @@ class _CallScreenState extends State<CallScreen> {
     if (!_camOn) return;
     final next = !_frontCamera;
     try {
-      await _room?.localParticipant?.setCameraPosition(next ? CameraPosition.front : CameraPosition.back);
+      final track = _localVideo;
+      if (track is LocalVideoTrack) {
+        await track.restartTrack(CameraCaptureOptions(cameraPosition: next ? CameraPosition.front : CameraPosition.back));
+      }
       if (mounted) setState(() => _frontCamera = next);
     } catch (_) {}
   }
@@ -586,7 +589,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
       })
       ..on<LocalTrackPublishedEvent>((e) {
         final t = e.publication.track;
-        if (t is VideoTrack && mounted) setState(() => _localVideo = t);
+        if (t is VideoTrack && mounted) setState(() => _localVideo = t as VideoTrack);
       })
       ..on<ParticipantConnectedEvent>((e) {
         context.read<AppStore>().ensurePerson(e.participant.identity);
@@ -679,7 +682,10 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
     if (!_camOn) return;
     final next = !_frontCamera;
     try {
-      await _room?.localParticipant?.setCameraPosition(next ? CameraPosition.front : CameraPosition.back);
+      final track = _localVideo;
+      if (track is LocalVideoTrack) {
+        await track.restartTrack(CameraCaptureOptions(cameraPosition: next ? CameraPosition.front : CameraPosition.back));
+      }
       if (mounted) setState(() => _frontCamera = next);
     } catch (_) {}
   }
