@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/geo.dart';
 import 'ui_widgets.dart';
 
 /// Shown wherever a screen needs a location and doesn't have one yet. Real
@@ -31,7 +32,7 @@ class LocationGate extends StatelessWidget {
                 const Text('📍', style: TextStyle(fontSize: 40)),
                 const SizedBox(height: 10),
                 Text(
-                  'Your area is the 25 miles around you',
+                  'Your area is the ${rangeLabel()} around you',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18),
                 ),

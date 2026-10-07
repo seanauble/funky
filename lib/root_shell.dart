@@ -8,6 +8,7 @@ import 'screens/places_screen.dart';
 import 'screens/profile_screen.dart';
 import 'widgets/top_bar_actions.dart';
 import 'widgets/ui_widgets.dart';
+import 'widgets/rainbow_wordmark.dart';
 
 /// Lets a screen outside RootShell (e.g. Home's "Open chat" shortcut) jump
 /// to one of RootShell's own tabs instead of pushing a whole new route on
@@ -102,12 +103,7 @@ class _RootShellState extends State<RootShell> {
                 builder: (logoContext) => GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => _popConfetti(logoContext),
-                  child: Image.asset(
-                    'assets/branding/funky_wordmark.png',
-                    height: 38,
-                    fit: BoxFit.contain,
-                    alignment: Alignment.centerLeft,
-                  ),
+                  child: const RainbowWordmark(height: 38),
                 ),
               )
             : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),

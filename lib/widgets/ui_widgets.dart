@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
+import '../data/group_models.dart';
 import '../theme/colors.dart';
 import '../data/models.dart';
 
@@ -135,6 +136,18 @@ class FunkyAvatar extends StatelessWidget {
     final color = hueOf(seed);
     final letter = label.isNotEmpty ? label.substring(0, 1).toUpperCase() : '?';
     final path = photoPath;
+    final url = photoUrl;
+    final hasUrl = url != null && url.isNotEmpty;
+    Widget remote() => ClipOval(
+          child: Image.network(
+            url!,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+            loadingBuilder: (context, child, progress) => progress == null ? child : _initialCircle(color, letter),
+          ),
+        );
     if (path != null) {
       return ClipOval(
         child: Image.file(
@@ -142,25 +155,14 @@ class FunkyAvatar extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
-          // Falls back to the initial circle if the file's gone missing
-          // (e.g. the OS cleared app storage) instead of a broken-image icon.
-          errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+          // If the local file's gone missing (the OS cleared it, or the app's
+          // folder moved) fall back to the uploaded picture — and only then
+          // to the initial circle — instead of a broken-image icon.
+          errorBuilder: (_, __, ___) => hasUrl ? remote() : _initialCircle(color, letter),
         ),
       );
     }
-    final url = photoUrl;
-    if (url != null && url.isNotEmpty) {
-      return ClipOval(
-        child: Image.network(
-          url,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _initialCircle(color, letter),
-          loadingBuilder: (context, child, progress) => progress == null ? child : _initialCircle(color, letter),
-        ),
-      );
-    }
+    if (hasUrl) return remote();
     return _initialCircle(color, letter);
   }
 
@@ -570,45 +572,74 @@ const List<CameraFilter> cameraFilters = [
   ]),
 ];
 
-/// A horizontally scrolling row of filter names — tap one to pick it. Used
-/// on the live camera and on the review screen so the filters are visible
-/// without having to know about the swipe gesture.
-class FilterStrip extends StatelessWidget {
-  final int selected;
-  final ValueChanged<int> onSelect;
-  final EdgeInsetsGeometry padding;
-  const FilterStrip({super.key, required this.selected, required this.onSelect, this.padding = const EdgeInsets.symmetric(horizontal: 16)});
+/// A group chat's picture — its photo when it has one, otherwise the
+/// brand-colored group icon.
+class GroupAvatar extends StatelessWidget {
+  final GroupChat group;
+  final double size;
+  const GroupAvatar({super.key, required this.group, this.size = 44});
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 36,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: padding,
-        itemCount: cameraFilters.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final active = i == selected;
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => onSelect(i),
-            child: Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              decoration: BoxDecoration(
-                color: active ? Colors.white : Colors.black54,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: active ? Colors.white : Colors.white30),
-              ),
-              child: Text(
-                cameraFilters[i].name,
-                style: TextStyle(color: active ? Colors.black : Colors.white, fontWeight: FontWeight.w800, fontSize: 13),
-              ),
-            ),
-          );
-        },
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final fallback = Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
+      child: Icon(Icons.groups_rounded, color: Colors.white, size: size * 0.5),
+    );
+    final url = group.photoUrl;
+    if (url == null || url.isEmpty) return fallback;
+    return ClipOval(
+      child: Image.network(
+        url,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => fallback,
+        loadingBuilder: (context, child, progress) => progress == null ? child : fallback,
       ),
+    );
+  }
+}
+
+/// Little dots showing which filter is on and how many there are — the
+/// filters themselves are picked by swiping on the picture (right for the
+/// next one, left for the previous), so this is only an indicator.
+class FilterDots extends StatelessWidget {
+  final int selected;
+  final bool showHint;
+  const FilterDots({super.key, required this.selected, this.showHint = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < cameraFilters.length; i++)
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: i == selected ? 18 : 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: i == selected ? Colors.white : Colors.white38,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+          ],
+        ),
+        if (showHint) ...[
+          const SizedBox(height: 6),
+          Text(
+            selected == 0 ? 'Swipe for filters' : '${cameraFilters[selected].name} · swipe for more',
+            style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ],
     );
   }
 }

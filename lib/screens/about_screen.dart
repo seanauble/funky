@@ -11,7 +11,7 @@ import '../widgets/ui_widgets.dart';
 // longer shown on this screen, which just says "Version 2" plainly instead
 // of "Version 1.0.0 (25)".
 const _appVersion = '3.0';
-const _appBuild = '89';
+const _appBuild = '95';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
@@ -24,7 +24,7 @@ class AboutScreen extends StatelessWidget {
         InfoSection('FUNKY', 'Version $_appVersion'),
         InfoSection(
           'What it is',
-          'FUNKY shows you what\'s happening within 25 miles of you right now — places, polls, live chat, and '
+          'FUNKY shows you what\'s happening within your chosen area (25 miles unless you change it) right now — places, polls, live chat, and '
               'Stories — and clears most of it every day at 2 PM so it always feels like tonight, not a feed '
               'of old posts.',
         ),

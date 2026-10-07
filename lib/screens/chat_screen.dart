@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/geo.dart';
 import '../data/group_models.dart';
 import '../data/models.dart';
 import '../widgets/location_gate.dart';
@@ -398,12 +399,7 @@ class _MessagesList extends StatelessWidget {
           final sender = last == null || last.uid == 'me' ? null : store.personById(last.uid)?.handle;
           return ListTile(
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: group.id))),
-            leading: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
-              child: const Icon(Icons.groups_rounded, color: Colors.white),
-            ),
+            leading: GroupAvatar(group: group, size: 44),
             title: Text(group.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
             subtitle: Text(
               last == null ? '${group.memberIds.length} people' : _preview(last, who: sender == null ? null : '@$sender'),
@@ -480,7 +476,7 @@ class _LiveChat extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 3),
-        Text('📍 Everyone within 25 miles of you, right now', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+        Text('📍 Everyone within ${rangeLabel()} of you, right now', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
         const SizedBox(height: 16),
         if (msgs.isEmpty) Text('Nobody has said anything here tonight. Start it off.', style: TextStyle(color: tokens.mute)),
         ...msgs.map((m) {

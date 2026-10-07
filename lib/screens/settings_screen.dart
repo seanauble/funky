@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/geo.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/ui_widgets.dart';
 import 'about_screen.dart';
@@ -35,6 +36,8 @@ class SettingsScreen extends StatelessWidget {
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen())),
             ),
           ),
+          const SectionHeader(title: 'Your area'),
+          const _RadiusCard(),
           if (store.signedIn) ...[
             const SectionHeader(title: 'Notifications'),
             FunkyCard(
@@ -161,6 +164,63 @@ class _SwitchRow extends StatelessWidget {
         children: [
           Expanded(child: Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700))),
           Switch(value: value, activeColor: tokens.brand, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// Picks how far "near you" reaches — 1 to 50 miles. Places, polls, live chat
+/// and the map all follow it; the server uses it too so "new verified place
+/// near me" alerts match.
+class _RadiusCard extends StatefulWidget {
+  const _RadiusCard();
+
+  @override
+  State<_RadiusCard> createState() => _RadiusCardState();
+}
+
+class _RadiusCardState extends State<_RadiusCard> {
+  double? _drag;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.read<AppStore>();
+    final value = (_drag ?? rangeMiles).clamp(minRangeMiles.toDouble(), maxRangeMiles.toDouble());
+    final miles = value.round();
+    return FunkyCard(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('How far is near you?', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              ),
+              Text(miles == 1 ? '1 mile' : '$miles miles', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          Slider(
+            value: value,
+            min: minRangeMiles.toDouble(),
+            max: maxRangeMiles.toDouble(),
+            divisions: maxRangeMiles - minRangeMiles,
+            label: miles == 1 ? '1 mile' : '$miles miles',
+            activeColor: tokens.orange,
+            onChanged: (v) => setState(() => _drag = v),
+            onChangeEnd: (v) {
+              store.setRadiusMiles(v.round());
+              setState(() => _drag = null);
+            },
+          ),
+          Text(
+            'Places, polls, live chat and the map show what is within this distance of you. Default is 25 miles.',
+            style: TextStyle(color: tokens.mute, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
         ],
       ),
     );

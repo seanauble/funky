@@ -15,15 +15,15 @@ import 'place_detail_screen.dart';
 
 const _heatLabel = ['Quiet so far', 'Some activity', 'Active', 'Very active'];
 
-// The app-wide 25-mile area, in meters, and the lat/lng box that just
-// contains that circle (used to frame the map).
-const double _radiusMeters = 25 * 1609.344;
+// The app-wide area (25 miles unless you picked your own), in meters, and the
+// lat/lng box that just contains that circle (used to frame the map).
+double get _radiusMeters => rangeMiles * 1609.344;
 
 LatLngBounds _radiusBounds(double lat, double lng) {
   const milesPerDegLat = 69.0;
-  final dLat = 25 / milesPerDegLat;
+  final dLat = rangeMiles / milesPerDegLat;
   final cosLat = math.cos(lat * math.pi / 180).abs();
-  final dLng = 25 / (milesPerDegLat * (cosLat < 0.05 ? 0.05 : cosLat));
+  final dLng = rangeMiles / (milesPerDegLat * (cosLat < 0.05 ? 0.05 : cosLat));
   return LatLngBounds(ll.LatLng(lat - dLat, lng - dLng), ll.LatLng(lat + dLat, lng + dLng));
 }
 
@@ -85,7 +85,7 @@ class PlacesScreen extends StatelessWidget {
                   // A fresh map when your location changes (e.g. the real GPS
                   // fix replacing the default), since the starting view below
                   // is only read once.
-                  key: ValueKey('${here.lat.toStringAsFixed(2)},${here.lng.toStringAsFixed(2)}'),
+                  key: ValueKey('${here.lat.toStringAsFixed(2)},${here.lng.toStringAsFixed(2)},${rangeMiles.round()}'),
                   options: MapOptions(
                     initialCenter: ll.LatLng(here.lat, here.lng),
                     // Starts zoomed out just far enough to show the whole
@@ -217,7 +217,7 @@ class PlacesScreen extends StatelessWidget {
                           decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.orange, width: 2)),
                         ),
                         const SizedBox(width: 6),
-                        Text('25-mile radius', style: TextStyle(color: tokens.ink, fontSize: 11, fontWeight: FontWeight.w700)),
+                        Text('${rangeMiles.round()}-mile radius', style: TextStyle(color: tokens.ink, fontSize: 11, fontWeight: FontWeight.w700)),
                       ],
                     ),
                   ),
@@ -244,7 +244,7 @@ class PlacesScreen extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               children: [
                 if (store.rankedPlaces.isEmpty)
-                  const EmptyNote(text: 'Nothing is listed within 25 miles yet. Be the first to add one.')
+                  EmptyNote(text: 'Nothing is listed within ${rangeLabel()} yet. Be the first to add one.')
                 else
                   ...store.rankedPlaces.map((p) {
                     final bits = <String>[placeKindLabel(p.kind)];

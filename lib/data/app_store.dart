@@ -4,10 +4,12 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/push_service.dart';
 import 'geo.dart';
+import 'call_models.dart';
 import 'group_models.dart';
 import 'mock_data.dart';
 import 'models.dart';
@@ -358,19 +360,26 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  /// Admin-only — permanently deletes a poll (and scrubs its id out of
-  /// everyone's votes, including your own, so a stray old vote can't ever
-  /// point at something that no longer exists). Silently does nothing for
-  /// a non-admin account.
+  /// Permanently deletes a poll (and scrubs its id out of everyone's votes,
+  /// including your own, so a stray old vote can't ever point at something
+  /// that no longer exists). Allowed for the admin and for whoever asked the
+  /// poll; silently does nothing for anyone else. Also removes it on the
+  /// server so it doesn't come back on the next refresh.
   void deletePoll(String pollId) {
-    if (!isAdmin) return;
+    final target = polls.where((p) => p.id == pollId).toList();
+    if (target.isEmpty) return;
+    if (!isAdmin && target.first.by != 'me') return;
     polls = polls.where((p) => p.id != pollId).toList();
     me = me.copyWith(votes: Map<String, int>.from(me.votes)..remove(pollId));
     people = {
       for (final entry in people.entries) entry.key: entry.value.copyWith(votes: Map<String, int>.from(entry.value.votes)..remove(pollId)),
     };
+    _remotePollVotes.remove(pollId);
     notifyListeners();
     _persist();
+    if (_remotePollIds.remove(pollId)) {
+      _fireAndForgetRemote(() => Supabase.instance.client.from('polls').delete().eq('id', pollId));
+    }
   }
 
   /// Admin-only — sets your own points to the max, comfortably past every
@@ -692,6 +701,9 @@ class AppStore extends ChangeNotifier {
   Future<void> load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _avatarPending = prefs.getBool(_avatarPendingKey) ?? false;
+      final savedRadius = prefs.getInt(_radiusKey);
+      if (savedRadius != null) rangeMiles = savedRadius.clamp(minRangeMiles, maxRangeMiles).toDouble();
       final raw = prefs.getString(_storageKey);
       final currentSession = sessionKey();
       if (raw != null) {
@@ -856,6 +868,7 @@ class AppStore extends ChangeNotifier {
       // Age out old Memories before anyone ever sees them — otherwise the
       // very first frame could flash a Memory that's about to disappear.
       _purgeExpiredMemories();
+      await _repairLocalAvatar();
       loaded = true;
       notifyListeners();
       // Flush the purge immediately so a Memory that expired while the app
@@ -1315,10 +1328,48 @@ class AppStore extends ChangeNotifier {
     me = me.copyWith(photoPath: path);
     notifyListeners();
     _persist();
+    _avatarBackfillTried = false;
+    await _setAvatarPending(true);
     return _uploadAvatar(path);
   }
 
   bool _avatarBackfillTried = false;
+  static const _avatarPendingKey = 'funky.avatarPending';
+  bool _avatarPending = false;
+  bool _avatarUploading = false;
+
+  /// Your picture is remembered as a path inside the app's own folder — but
+  /// that folder's address can change (an app update, a restore) and the OS
+  /// can clean files up, which is what made your picture "reset" to a letter
+  /// even though the uploaded copy was fine. If the file isn't where we left
+  /// it, look for it in the current folder; failing that, drop the dead path
+  /// so the uploaded picture (photoUrl) shows instead.
+  Future<void> _repairLocalAvatar() async {
+    final path = me.photoPath;
+    if (path == null) return;
+    try {
+      if (File(path).existsSync()) return;
+      final marker = '/Documents/';
+      final i = path.indexOf(marker);
+      if (i >= 0) {
+        final docs = await getApplicationDocumentsDirectory();
+        final moved = '${docs.path}/${path.substring(i + marker.length)}';
+        if (File(moved).existsSync()) {
+          me = me.copyWith(photoPath: moved);
+          return;
+        }
+      }
+      me = me.copyWith(clearPhotoPath: true);
+    } catch (_) {}
+  }
+
+  Future<void> _setAvatarPending(bool v) async {
+    _avatarPending = v;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_avatarPendingKey, v);
+    } catch (_) {}
+  }
 
   /// Uploads your profile picture to the public avatars bucket and points
   /// your profile row at it, so everyone else sees it (their app can only
@@ -1326,6 +1377,7 @@ class AppStore extends ChangeNotifier {
   Future<String?> _uploadAvatar(String path) async {
     final uid = supabaseUserId;
     if (!signedIn || uid == null) return null;
+    _avatarUploading = true;
     try {
       final file = File(path);
       if (!await file.exists()) return null;
@@ -1346,11 +1398,19 @@ class AppStore extends ChangeNotifier {
       if (!linked) {
         return "Your picture uploaded but your profile couldn't be updated to show it — run RUN_ALL.sql in Supabase, then pick it again.";
       }
+      // Show the uploaded copy right away too, so if the local file ever
+      // goes missing the picture is still there.
+      me = me.copyWith(photoUrl: busted);
+      notifyListeners();
+      _persist();
+      await _setAvatarPending(false);
       return null;
     } catch (e) {
       // Your own device keeps showing the local file either way, but other
       // people can't see it until this works — so say why.
       return "Your picture saved on this phone but couldn't upload for other people — ${_friendlySendError(e)}";
+    } finally {
+      _avatarUploading = false;
     }
   }
 
@@ -2620,6 +2680,8 @@ class AppStore extends ChangeNotifier {
   RealtimeChannel? _chatReactionsChannel;
   RealtimeChannel? _friendshipsChannel;
   RealtimeChannel? _profilesChannel;
+  RealtimeChannel? _callsChannel;
+  RealtimeChannel? _groupCallsChannel;
   RealtimeChannel? _pollsChannel;
   RealtimeChannel? _pollVotesChannel;
   RealtimeChannel? _reportsChannel;
@@ -2650,6 +2712,7 @@ class AppStore extends ChangeNotifier {
     unawaited(_fetchPhotoSuggestions());
     unawaited(_fetchProfileReports());
     unawaited(_fetchGroups());
+    unawaited(refreshGroupCalls());
     unawaited(_fetchRemoteChat());
     unawaited(_fetchRemotePolls());
     unawaited(_fetchRemoteReports());
@@ -2894,6 +2957,32 @@ class AppStore extends ChangeNotifier {
         callback: (payload) => _applyProfileRow(payload.newRecord),
       )
       ..subscribe();
+
+    // A friend ringing you (RLS only lets you see calls you're part of).
+    _callsChannel = client.channel('public:calls:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'calls',
+        callback: (payload) => _onCallRow(payload.newRecord),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'calls',
+        callback: (payload) => _onCallRow(payload.newRecord),
+      )
+      ..subscribe();
+
+    // A group started (or ended) a video call.
+    _groupCallsChannel = client.channel('public:group_calls:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'group_calls',
+        callback: (_) => unawaited(refreshGroupCalls()),
+      )
+      ..subscribe();
   }
 
   void _stopRemoteSync() {
@@ -2914,6 +3003,8 @@ class AppStore extends ChangeNotifier {
       _chatReactionsChannel,
       _friendshipsChannel,
       _profilesChannel,
+      _callsChannel,
+      _groupCallsChannel,
       _pollsChannel,
       _pollVotesChannel,
       _reportsChannel,
@@ -2937,6 +3028,10 @@ class AppStore extends ChangeNotifier {
     _chatReactionsChannel = null;
     _friendshipsChannel = null;
     _profilesChannel = null;
+    _callsChannel = null;
+    _groupCallsChannel = null;
+    _activeGroupCalls = {};
+    incomingCall = null;
     _pollsChannel = null;
     _pollVotesChannel = null;
     _reportsChannel = null;
@@ -3191,7 +3286,19 @@ class AppStore extends ChangeNotifier {
     final serverBio = row['bio'] as String?;
     if (next.bio.isEmpty && serverBio != null && serverBio.isNotEmpty) next = next.copyWith(bio: serverBio);
     final avatarUrl = row['avatar_url'] as String?;
-    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+    if (next.photoPath != null && !File(next.photoPath!).existsSync()) {
+      // The local file is gone — rely on the uploaded copy.
+      next = next.copyWith(clearPhotoPath: true);
+    }
+    if (_avatarUploading) {
+      // Mid-upload — this row is from before it finished; leave the picture alone.
+    } else if (next.photoPath != null && _avatarPending && !_avatarBackfillTried) {
+      // Your last picture never finished uploading (offline, or the server
+      // wasn't ready) — the server still has an older one. Try again now
+      // rather than letting the old one come back.
+      _avatarBackfillTried = true;
+      unawaited(_uploadAvatar(next.photoPath!));
+    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
       next = next.copyWith(photoUrl: avatarUrl);
     } else if (next.photoPath != null && !_avatarBackfillTried) {
       // A picture picked before it could be shared (older build, or the
@@ -3503,6 +3610,7 @@ class AppStore extends ChangeNotifier {
           memberIds: membersByGroup[id] ?? const ['me'],
           createdBy: by == uid ? 'me' : (by ?? ''),
           createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+          photoUrl: (r['photo_url'] as String?)?.isNotEmpty == true ? r['photo_url'] as String : null,
         ));
       }
       if (others.isNotEmpty) await _ensurePeopleFor(others);
@@ -3749,6 +3857,35 @@ class AppStore extends ChangeNotifier {
       return null;
     } catch (e) {
       return _rpcMessage(e);
+    }
+  }
+
+  /// Sets (or, with a null [path], removes) the group's picture. The image
+  /// goes to the public picture bucket under your own folder, and the group
+  /// row points at it. Returns null on success, otherwise a message to show.
+  Future<String?> setGroupPhoto(String groupId, String? path) async {
+    final uid = supabaseUserId;
+    if (uid == null) return 'Log in first.';
+    try {
+      String? url;
+      if (path != null) {
+        url = await _uploadPlaceCover(uid, path);
+        if (url == null) return "Couldn't upload that picture — pick one under 8 MB and check your connection.";
+      }
+      await Supabase.instance.client.rpc('set_group_photo', params: {'p_group': groupId, 'p_url': url});
+      // Show it straight away, then let the refresh confirm.
+      groups = [
+        for (final g in groups)
+          if (g.id == groupId)
+            GroupChat(id: g.id, name: g.name, memberIds: g.memberIds, createdBy: g.createdBy, createdAt: g.createdAt, photoUrl: url)
+          else
+            g,
+      ];
+      notifyListeners();
+      unawaited(_fetchGroups());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Group pictures', phase: 'phase 12', fallback: "Couldn't set that picture");
     }
   }
 
@@ -4679,6 +4816,7 @@ class AppStore extends ChangeNotifier {
       _fetchPhotoSuggestions(),
       _fetchProfileReports(),
       _fetchGroups(),
+      refreshGroupCalls(),
       _fetchRemoteMessages(),
       _fetchNotifications(),
     ]);
@@ -4845,8 +4983,229 @@ class AppStore extends ChangeNotifier {
     } catch (_) {}
   }
 
+  static const _radiusKey = 'funky.radiusMiles';
+
+  /// Your own "near me" distance, 1–50 miles (25 by default). Saved on this
+  /// phone, and sent up with your location so the server's "new place near
+  /// you" alerts use the same distance.
+  Future<void> setRadiusMiles(int miles) async {
+    final next = miles.clamp(minRangeMiles, maxRangeMiles).toDouble();
+    if (next == rangeMiles) return;
+    rangeMiles = next;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_radiusKey, next.round());
+    } catch (_) {}
+    // Force the location row to be re-sent with the new radius.
+    _syncedLocationAt = null;
+    _syncedLocation = null;
+    _syncLocationUp();
+  }
+
+  // --- Video calls ------------------------------------------------------
+
+  /// A call that's ringing for you right now, if any. The app root shows the
+  /// answer/decline screen whenever this appears.
+  IncomingCall? incomingCall;
+  String? lastCallError;
+
+  void _onCallRow(Map<String, dynamic> row) {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    final id = row['id'] as String?;
+    if (id == null) return;
+    final status = row['status'] as String?;
+    if (row['callee_id'] == uid && status == 'ringing') {
+      final created = DateTime.tryParse((row['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+      // Stale rings (the app was closed when it came in) aren't worth showing.
+      if (DateTime.now().difference(created) > const Duration(seconds: 50)) return;
+      final from = row['caller_id'] as String?;
+      if (from == null) return;
+      unawaited(() async {
+        await _ensurePeopleFor([from]);
+        if (incomingCall?.id == id) return;
+        incomingCall = IncomingCall(id: id, fromId: from, at: created);
+        notifyListeners();
+      }());
+    } else if (incomingCall?.id == id && status != 'ringing') {
+      // The caller hung up (or someone answered elsewhere).
+      incomingCall = null;
+      notifyListeners();
+    }
+  }
+
+  // --- Group video calls --------------------------------------------------
+
+  // groupId -> the call id that's live in it right now.
+  Map<String, String> _activeGroupCalls = {};
+
+  /// The video call going on in this group right now, if any.
+  String? activeGroupCallId(String groupId) => _activeGroupCalls[groupId];
+
+  Future<void> refreshGroupCalls() async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.rpc('active_group_calls');
+      final next = <String, String>{};
+      if (rows is List) {
+        for (final raw in rows) {
+          if (raw is! Map) continue;
+          final gid = raw['group_id'] as String?;
+          final id = raw['id'] as String?;
+          if (gid != null && id != null) next[gid] = id;
+        }
+      }
+      var changed = next.length != _activeGroupCalls.length;
+      if (!changed) {
+        for (final e in next.entries) {
+          if (_activeGroupCalls[e.key] != e.value) changed = true;
+        }
+      }
+      _activeGroupCalls = next;
+      if (changed) notifyListeners();
+    } catch (_) {
+      // Offline, or phase 14 not run yet — no banner.
+    }
+  }
+
+  /// Starts a video call in the group, or joins the one already going.
+  /// Returns the call id, or null with [lastCallError] set.
+  Future<String?> startGroupCall(String groupId) async {
+    lastCallError = null;
+    if (!signedIn || supabaseUserId == null) {
+      lastCallError = 'Log in to make a video call.';
+      return null;
+    }
+    try {
+      final res = await Supabase.instance.client.rpc('start_group_call', params: {'p_group': groupId});
+      final id = res as String?;
+      if (id == null) {
+        lastCallError = "Couldn't start that call.";
+        return null;
+      }
+      _activeGroupCalls = {..._activeGroupCalls, groupId: id};
+      notifyListeners();
+      return id;
+    } catch (e) {
+      lastCallError = _featureError(e, feature: 'Group video calls', phase: 'phase 14', fallback: "Couldn't start that call");
+      if (e is PostgrestException && e.message.isNotEmpty && !lastCallError!.contains("isn't switched on")) {
+        lastCallError = e.message;
+      }
+      return null;
+    }
+  }
+
+  Future<void> pingGroupCall(String callId) async {
+    try {
+      await Supabase.instance.client.rpc('ping_group_call', params: {'p_call': callId});
+    } catch (_) {}
+  }
+
+  Future<void> endGroupCall(String callId) async {
+    try {
+      await Supabase.instance.client.rpc('end_group_call', params: {'p_call': callId});
+      _activeGroupCalls = {
+        for (final e in _activeGroupCalls.entries)
+          if (e.value != callId) e.key: e.value,
+      };
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  void clearIncomingCall() {
+    if (incomingCall == null) return;
+    incomingCall = null;
+    notifyListeners();
+  }
+
+  /// Rings a friend. Returns the call id, or null with [lastCallError] set.
+  Future<String?> startCall(String personId) async {
+    lastCallError = null;
+    if (!signedIn || supabaseUserId == null) {
+      lastCallError = 'Log in to make a video call.';
+      return null;
+    }
+    if (!isFriendsWith(personId)) {
+      lastCallError = 'You can only video chat with friends.';
+      return null;
+    }
+    try {
+      final res = await Supabase.instance.client.rpc('start_call', params: {'p_callee': personId});
+      final id = res as String?;
+      if (id == null) lastCallError = "Couldn't start that call.";
+      return id;
+    } catch (e) {
+      lastCallError = _featureError(e, feature: 'Video calls', phase: 'phase 13', fallback: "Couldn't start that call");
+      if (e is PostgrestException && e.message.isNotEmpty && !lastCallError!.contains("isn't switched on")) {
+        lastCallError = e.message;
+      }
+      return null;
+    }
+  }
+
+  /// accept | decline | cancel | end. Returns null on success, otherwise a message.
+  Future<String?> respondToCall(String callId, String action) async {
+    try {
+      await Supabase.instance.client.rpc('respond_call', params: {'p_call': callId, 'p_action': action});
+      return null;
+    } catch (e) {
+      return _rpcMessage(e);
+    }
+  }
+
+  Future<CallInfo?> fetchCall(String callId) async {
+    final uid = supabaseUserId;
+    if (uid == null) return null;
+    try {
+      final row = await Supabase.instance.client.from('calls').select().eq('id', callId).maybeSingle();
+      if (row == null) return null;
+      final caller = row['caller_id'] as String?;
+      final callee = row['callee_id'] as String?;
+      if (caller == null || callee == null) return null;
+      return CallInfo(
+        id: callId,
+        callerId: caller == uid ? 'me' : caller,
+        calleeId: callee == uid ? 'me' : callee,
+        status: (row['status'] as String?) ?? 'ended',
+        createdAt: DateTime.tryParse((row['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Asks the call-token function for the LiveKit key to this call's room.
+  /// On failure returns null with [lastCallError] set.
+  Future<CallCredentials?> fetchCallCredentials(String callId, {bool group = false}) async {
+    lastCallError = null;
+    try {
+      final res = await Supabase.instance.client.functions
+          .invoke('call-token', body: group ? {'group_call_id': callId} : {'call_id': callId});
+      final data = res.data;
+      if (data is Map && data['url'] is String && data['token'] is String) {
+        return CallCredentials(url: data['url'] as String, token: data['token'] as String);
+      }
+      lastCallError = (data is Map && data['error'] is String) ? data['error'] as String : "Couldn't connect the call.";
+      return null;
+    } on FunctionException catch (e) {
+      final d = e.details;
+      if (e.status == 404) {
+        lastCallError = "Video calling isn't switched on yet — the call-token function hasn't been deployed.";
+      } else if (d is Map && d['error'] is String) {
+        lastCallError = d['error'] as String;
+      } else {
+        lastCallError = "Couldn't connect the call — check your connection and try again.";
+      }
+      return null;
+    } catch (_) {
+      lastCallError = "Couldn't connect the call — check your connection and try again.";
+      return null;
+    }
+  }
+
   /// Tells the server roughly where you last opened the app — only used to
-  /// work out whether a newly verified place is within 25 miles of you, and
+  /// work out whether a newly verified place is within your area, and
   /// only visible to you. Throttled: at most every 30 min unless you moved
   /// more than a mile.
   void _syncLocationUp() {
@@ -4859,13 +5218,22 @@ class AppStore extends ChangeNotifier {
     _syncedLocation = loc;
     _syncedLocationAt = DateTime.now();
     unawaited(() async {
+      final row = <String, dynamic>{
+        'user_id': uid,
+        'lat': loc.lat,
+        'lng': loc.lng,
+        'radius_miles': rangeMiles.round(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      };
       try {
-        await Supabase.instance.client.from('user_locations').upsert({
-          'user_id': uid,
-          'lat': loc.lat,
-          'lng': loc.lng,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        });
+        try {
+          await Supabase.instance.client.from('user_locations').upsert(row);
+        } catch (_) {
+          // The radius column only exists once phase 12 has been run — fall
+          // back to the plain location so alerts keep working meanwhile.
+          row.remove('radius_miles');
+          await Supabase.instance.client.from('user_locations').upsert(row);
+        }
       } catch (_) {
         _syncedLocationAt = null;
       }

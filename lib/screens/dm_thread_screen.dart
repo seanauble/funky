@@ -11,6 +11,7 @@ import '../theme/colors.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'call_screen.dart';
 import 'camera_capture_screen.dart';
 
 /// A private 1:1 thread with one other person — reached from the Messages
@@ -215,6 +216,15 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
             ],
           ),
         ),
+        // Video chat — friends only.
+        actions: [
+          if (isFriend && store.signedIn)
+            IconButton(
+              tooltip: 'Video call',
+              onPressed: () => placeVideoCall(context, store, person.id),
+              icon: const Icon(Icons.videocam_outlined),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Column(

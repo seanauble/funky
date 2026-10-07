@@ -18,7 +18,7 @@ class PrivacyPolicyScreen extends StatelessWidget {
       sections: [
         InfoSection(
           'What we collect',
-          'Your device location (used only to show you places, polls, and chat within 25 miles of you), '
+          'Your device location (used only to show you places, polls, and chat within the area you choose — 25 miles by default, up to 50), '
               'a screen name and optional bio you choose, any Stories, poll votes, chat messages, and place '
               'reports you post, and basic device information needed to run the app.',
         ),

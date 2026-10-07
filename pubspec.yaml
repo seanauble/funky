@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.0.0+89
+version: 3.0.0+95
 
 environment:
   sdk: ^3.13.3
@@ -55,6 +55,8 @@ dependencies:
   # Where captured Story photos/videos get copied so they survive after the
   # camera plugin's own temp file is cleaned up. Also an official package.
   path_provider: ^2.1.4
+  # Video calls between friends (LiveKit — see supabase/VIDEO_CALLS_SETUP.md).
+  livekit_client: ^2.9.0
   # Stitches the before/after clips from a mid-recording camera flip into
   # one continuous-looking video (see _finishRecording in
   # create_flow_screen.dart). This one IS a smaller community package, not
@@ -110,6 +112,7 @@ flutter:
   # branding (the launcher icon itself is set separately per-platform).
   assets:
     - assets/branding/funky_wordmark.png
+    - assets/branding/funky_wordmark_fill.png
     - assets/branding/funky_mark.png
 
   # An image asset can refer to one or more resolution-specific "variants", see

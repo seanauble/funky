@@ -328,6 +328,8 @@ class PersonProfileScreen extends StatelessWidget {
               const EmptyNote(text: "Nothing posted yet tonight.")
             else
               ...theirStories.map((s) {
+                // The viewer plays oldest-first, this list is newest-first.
+                final viewerIndex = theirStories.length - 1 - theirStories.indexOf(s);
                 final hasVideo = s.videoPath != null || s.videoUrl != null;
                 final hasText = s.text != null && s.text!.isNotEmpty;
                 // The picture itself (or a frame of the video) — a friend's
@@ -347,7 +349,12 @@ class PersonProfileScreen extends StatelessWidget {
                 }
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: ClipRRect(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: [personId], initialStoryIndex: viewerIndex)),
+                    ),
+                    child: ClipRRect(
                     borderRadius: BorderRadius.circular(14),
                     child: Container(
                       color: tokens.surface,
@@ -395,6 +402,7 @@ class PersonProfileScreen extends StatelessWidget {
                           ),
                         ],
                       ),
+                    ),
                     ),
                   ),
                 );

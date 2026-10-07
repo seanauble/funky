@@ -1,4 +1,4 @@
--- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11). Paste ALL of this into the
+-- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14). Paste ALL of this into the
 -- Supabase SQL Editor and press Run. Safe to re-run.
 
 
@@ -921,7 +921,6 @@ $$;
 
 grant execute on function public.admin_give_points(uuid, integer) to authenticated;
 
-
 -- ======================== phase7.sql ========================
 -- ============================================================
 -- PHASE 7 — Notifications (DMs, friend requests, new verified places
@@ -1404,7 +1403,6 @@ drop trigger if exists notify_report on public.place_reports;
 create trigger notify_report after insert on public.place_reports
   for each row execute procedure public.notify_report();
 
-
 -- ======================== phase8.sql ========================
 -- ============================================================
 -- PHASE 8 — @mentions in the live chat.
@@ -1499,7 +1497,6 @@ revoke all on function public.notify_chat_mentions() from public, anon, authenti
 drop trigger if exists notify_chat_mentions on public.chat_messages;
 create trigger notify_chat_mentions after insert on public.chat_messages
   for each row execute procedure public.notify_chat_mentions();
-
 
 -- ======================== phase9.sql ========================
 -- ============================================================
@@ -1624,8 +1621,6 @@ begin
     alter publication supabase_realtime add table public.place_ratings;
   end if;
 end $$;
-
-
 
 -- ======================== phase10.sql ========================
 -- ============================================================
@@ -1824,8 +1819,6 @@ begin
     alter publication supabase_realtime add table public.profile_reports;
   end if;
 end $$;
-
-
 
 -- ======================== phase11.sql ========================
 -- ============================================================
@@ -2135,5 +2128,481 @@ begin
   end loop;
 end $$;
 
+-- ======================== phase12.sql ========================
+-- ============================================================
+-- PHASE 12 — Your own "near me" distance (1–50 miles) and group photos.
+-- Safe to re-run. Needs phases 7 and 11 first.
+-- ============================================================
+
+-- ---- Per-person radius, used for "new verified place near you" alerts ----
+
+alter table public.user_locations
+  add column if not exists radius_miles integer;
+
+alter table public.user_locations
+  drop constraint if exists user_locations_radius_miles_check;
+alter table public.user_locations
+  add constraint user_locations_radius_miles_check
+  check (radius_miles is null or radius_miles between 1 and 50);
+
+create or replace function public.notify_place_verified(pid uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  pl public.places%rowtype;
+begin
+  select * into pl from public.places where id = pid;
+  if not found then return; end if;
+
+  insert into public.notifications (user_id, kind, title, body, data)
+  select ul.user_id, 'place', 'New verified place near you',
+         pl.name || ' is now verified on FUNKY',
+         jsonb_build_object('place_id', pl.id)
+    from public.user_locations ul
+    left join public.notification_prefs np on np.user_id = ul.user_id
+   cross join lateral (select coalesce(ul.radius_miles, 25)::double precision as r) rad
+   where ul.user_id is distinct from pl.by_uid
+     and coalesce(np.place_on, true)
+     -- cheap box first (a degree of latitude is about 69 miles; longitude
+     -- shrinks with latitude), then the exact great-circle distance.
+     and ul.lat between pl.lat - rad.r / 69.0 and pl.lat + rad.r / 69.0
+     and ul.lng between pl.lng - rad.r / (69.172 * greatest(0.01, cos(radians(pl.lat))))
+                    and pl.lng + rad.r / (69.172 * greatest(0.01, cos(radians(pl.lat))))
+     and 3958.8 * 2 * asin(least(1, sqrt(
+           power(sin(radians(ul.lat - pl.lat) / 2), 2) +
+           cos(radians(pl.lat)) * cos(radians(ul.lat)) *
+           power(sin(radians(ul.lng - pl.lng) / 2), 2)
+         ))) <= rad.r
+     and not exists (
+       select 1 from public.notifications n
+        where n.user_id = ul.user_id
+          and n.kind = 'place'
+          and n.data ->> 'place_id' = pl.id::text
+     );
+end;
+$$;
+
+revoke all on function public.notify_place_verified(uuid) from public, anon, authenticated;
+
+-- ---- A picture for a group chat -------------------------------------
+
+alter table public.group_chats
+  add column if not exists photo_url text;
+
+create or replace function public.set_group_photo(p_group uuid, p_url text)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  u text := nullif(btrim(coalesce(p_url, '')), '');
+begin
+  if not public.is_group_member(p_group) then raise exception 'You''re not in that group.'; end if;
+  -- Only a picture this app uploaded (the public place_covers storage bucket).
+  if u is not null and (char_length(u) > 600
+      or u !~* '^https://[a-z0-9.-]+/storage/v1/object/public/place_covers/') then
+    raise exception 'That picture link isn''t valid.';
+  end if;
+  update public.group_chats set photo_url = u where id = p_group;
+end;
+$$;
+
+grant execute on function public.set_group_photo(uuid, text) to authenticated;
+
+-- ======================== phase13.sql ========================
+-- ============================================================
+-- PHASE 13 — Video calls between friends (DMs).
+-- Safe to re-run. Needs phases 7 and 11 first (push_notify, are_friends).
+-- The live video itself runs through LiveKit; this just tracks who is
+-- calling whom and whether it was answered. See supabase/VIDEO_CALLS_SETUP.md.
+-- ============================================================
+
+create table if not exists public.calls (
+  id uuid primary key default gen_random_uuid(),
+  caller_id uuid not null references public.profiles (id) on delete cascade,
+  callee_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'ringing'
+    check (status in ('ringing', 'accepted', 'declined', 'cancelled', 'missed', 'ended')),
+  created_at timestamptz not null default now(),
+  answered_at timestamptz,
+  ended_at timestamptz,
+  check (caller_id <> callee_id)
+);
+
+create index if not exists calls_callee_idx on public.calls (callee_id, created_at desc);
+create index if not exists calls_caller_idx on public.calls (caller_id, created_at desc);
+
+alter table public.calls enable row level security;
+
+-- You can see calls you're in. Nobody writes to this table directly —
+-- only the functions below do.
+drop policy if exists "See your own calls" on public.calls;
+create policy "See your own calls"
+  on public.calls for select to authenticated
+  using (auth.uid() = caller_id or auth.uid() = callee_id);
+
+-- ---- 'call' notifications follow the "Direct messages & groups" switch ----
+
+create or replace function public.push_notify(
+  target uuid, k text, t text, b text, d jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  wanted boolean;
+begin
+  if target is null then return; end if;
+  if not exists (select 1 from public.profiles where id = target) then return; end if;
+
+  select case k
+           when 'dm' then dm_on
+           when 'group' then dm_on
+           when 'call' then dm_on
+           when 'friend' then friend_on
+           when 'place' then place_on
+           when 'report' then report_on
+           when 'mention' then mention_on
+           else true
+         end
+    into wanted
+    from public.notification_prefs
+   where user_id = target;
+  if found and not coalesce(wanted, true) then return; end if;
+
+  delete from public.notifications where user_id = target and created_at < now() - interval '30 days';
+
+  insert into public.notifications (user_id, kind, title, body, data)
+  values (target, k, t, b, d);
+end;
+$$;
+
+revoke all on function public.push_notify(uuid, text, text, text, jsonb) from public, anon, authenticated;
+
+-- ---- Start a call (friends only) ------------------------------------
+
+create or replace function public.start_call(p_callee uuid)
+returns uuid
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  cid uuid;
+  who text;
+begin
+  if uid is null then raise exception 'Log in to make a video call.'; end if;
+  if p_callee is null or p_callee = uid then raise exception 'Pick someone to call.'; end if;
+  if public.is_banned() then raise exception 'You can''t make calls right now.'; end if;
+  if not public.are_friends(uid, p_callee) then
+    raise exception 'You can only video chat with friends.';
+  end if;
+
+  -- Housekeeping: rings that nobody answered are missed; calls left open
+  -- for hours (app killed mid-call) are over.
+  update public.calls set status = 'missed', ended_at = now()
+   where status = 'ringing' and created_at < now() - interval '60 seconds';
+  update public.calls set status = 'ended', ended_at = now()
+   where status = 'accepted' and ended_at is null and answered_at < now() - interval '3 hours';
+
+  -- Starting a new call drops any ring of yours that's still going.
+  update public.calls set status = 'cancelled', ended_at = now()
+   where caller_id = uid and status = 'ringing';
+
+  if exists (
+    select 1 from public.calls
+     where status in ('ringing', 'accepted') and ended_at is null
+       and (caller_id = p_callee or callee_id = p_callee)
+  ) then
+    raise exception 'They''re busy on another call right now.';
+  end if;
+  if exists (
+    select 1 from public.calls
+     where status = 'accepted' and ended_at is null
+       and (caller_id = uid or callee_id = uid)
+  ) then
+    raise exception 'You''re already on a call.';
+  end if;
+
+  if (select count(*) from public.calls where caller_id = uid and created_at > now() - interval '1 hour') >= 30 then
+    raise exception 'Slow down — too many calls in a row.';
+  end if;
+
+  insert into public.calls (caller_id, callee_id) values (uid, p_callee) returning id into cid;
+
+  select handle into who from public.profiles where id = uid;
+  perform public.push_notify(
+    p_callee, 'call',
+    '📹 @' || coalesce(who, 'someone') || ' is calling',
+    'Tap to answer the video call',
+    jsonb_build_object('call_id', cid, 'from', uid)
+  );
+
+  return cid;
+end;
+$$;
+
+-- ---- Answer / decline / cancel / hang up ------------------------------
+
+create or replace function public.respond_call(p_call uuid, p_action text)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  c public.calls%rowtype;
+  who text;
+begin
+  if uid is null then raise exception 'Log in first.'; end if;
+  select * into c from public.calls where id = p_call for update;
+  if not found or (uid <> c.caller_id and uid <> c.callee_id) then
+    raise exception 'That call isn''t available.';
+  end if;
+
+  if p_action = 'accept' then
+    if uid <> c.callee_id then raise exception 'Only the person being called can answer.'; end if;
+    if c.status <> 'ringing' or c.created_at < now() - interval '75 seconds' then
+      if c.status = 'ringing' then
+        update public.calls set status = 'missed', ended_at = now() where id = c.id;
+      end if;
+      raise exception 'That call already ended.';
+    end if;
+    update public.calls set status = 'accepted', answered_at = now() where id = c.id;
+    return 'accepted';
+
+  elsif p_action = 'decline' then
+    if uid <> c.callee_id then raise exception 'Only the person being called can decline.'; end if;
+    if c.status = 'ringing' then
+      update public.calls set status = 'declined', ended_at = now() where id = c.id;
+    end if;
+    return 'declined';
+
+  elsif p_action = 'cancel' then
+    if uid <> c.caller_id then raise exception 'Only the caller can cancel.'; end if;
+    if c.status = 'ringing' then
+      update public.calls set status = 'cancelled', ended_at = now() where id = c.id;
+      select handle into who from public.profiles where id = uid;
+      perform public.push_notify(
+        c.callee_id, 'call',
+        'Missed video call',
+        '@' || coalesce(who, 'someone') || ' tried to video chat with you',
+        jsonb_build_object('from', uid)
+      );
+    end if;
+    return 'cancelled';
+
+  elsif p_action = 'end' then
+    if c.status = 'accepted' then
+      update public.calls set status = 'ended', ended_at = now() where id = c.id;
+    elsif c.status = 'ringing' and uid = c.caller_id then
+      update public.calls set status = 'cancelled', ended_at = now() where id = c.id;
+    end if;
+    return 'ended';
+  end if;
+
+  raise exception 'Unknown call action.';
+end;
+$$;
+
+revoke all on function public.start_call(uuid) from public, anon;
+revoke all on function public.respond_call(uuid, text) from public, anon;
+grant execute on function public.start_call(uuid) to authenticated;
+grant execute on function public.respond_call(uuid, text) to authenticated;
+
+-- Live updates of the calls table (an incoming ring, a hang-up).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'calls'
+  ) then
+    alter publication supabase_realtime add table public.calls;
+  end if;
+end $$;
+
+-- ======================== phase14.sql ========================
+-- ============================================================
+-- PHASE 14 — Group video calls (inside group chats).
+-- Safe to re-run. Needs phases 11 and 13 first.
+-- The live video runs through LiveKit (see VIDEO_CALLS_SETUP.md); this just
+-- tracks which group has a call going so members can see it and join.
+-- ============================================================
+
+create table if not exists public.group_calls (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references public.group_chats (id) on delete cascade,
+  started_by uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'active' check (status in ('active', 'ended')),
+  created_at timestamptz not null default now(),
+  last_active_at timestamptz not null default now(),
+  ended_at timestamptz
+);
+
+create index if not exists group_calls_group_idx on public.group_calls (group_id, created_at desc);
+
+alter table public.group_calls enable row level security;
+
+drop policy if exists "See your groups' calls" on public.group_calls;
+create policy "See your groups' calls"
+  on public.group_calls for select to authenticated
+  using (public.is_group_member(group_id));
+
+-- 'group_call' notifications follow the "Direct messages & groups" switch.
+create or replace function public.push_notify(
+  target uuid, k text, t text, b text, d jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  wanted boolean;
+begin
+  if target is null then return; end if;
+  if not exists (select 1 from public.profiles where id = target) then return; end if;
+
+  select case k
+           when 'dm' then dm_on
+           when 'group' then dm_on
+           when 'call' then dm_on
+           when 'group_call' then dm_on
+           when 'friend' then friend_on
+           when 'place' then place_on
+           when 'report' then report_on
+           when 'mention' then mention_on
+           else true
+         end
+    into wanted
+    from public.notification_prefs
+   where user_id = target;
+  if found and not coalesce(wanted, true) then return; end if;
+
+  delete from public.notifications where user_id = target and created_at < now() - interval '30 days';
+
+  insert into public.notifications (user_id, kind, title, body, data)
+  values (target, k, t, b, d);
+end;
+$$;
+
+revoke all on function public.push_notify(uuid, text, text, text, jsonb) from public, anon, authenticated;
+
+-- Start a call in a group — or join the one already going. Returns the call id.
+create or replace function public.start_group_call(p_group uuid)
+returns uuid
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  existing uuid;
+  cid uuid;
+  who text;
+  gname text;
+  m record;
+begin
+  if uid is null then raise exception 'Log in to make a video call.'; end if;
+  if not public.is_group_member(p_group) then raise exception 'You''re not in that group.'; end if;
+  if public.is_banned() then raise exception 'You can''t make calls right now.'; end if;
+
+  -- Calls nobody has pinged for a minute and a half are over.
+  update public.group_calls set status = 'ended', ended_at = now()
+   where group_id = p_group and status = 'active' and last_active_at < now() - interval '90 seconds';
+
+  select id into existing from public.group_calls
+   where group_id = p_group and status = 'active'
+   order by created_at desc limit 1;
+  if existing is not null then
+    update public.group_calls set last_active_at = now() where id = existing;
+    return existing;
+  end if;
+
+  if (select count(*) from public.group_calls where started_by = uid and created_at > now() - interval '1 hour') >= 20 then
+    raise exception 'Slow down — too many calls in a row.';
+  end if;
+
+  insert into public.group_calls (group_id, started_by) values (p_group, uid) returning id into cid;
+
+  select handle into who from public.profiles where id = uid;
+  select name into gname from public.group_chats where id = p_group;
+  for m in select user_id from public.group_members where group_id = p_group and user_id <> uid loop
+    perform public.push_notify(
+      m.user_id, 'group_call',
+      '📹 @' || coalesce(who, 'someone') || ' started a video call',
+      'In ' || coalesce(gname, 'your group') || ' — tap to join',
+      jsonb_build_object('group_id', p_group, 'group_call_id', cid, 'from', uid)
+    );
+  end loop;
+
+  return cid;
+end;
+$$;
+
+-- Everyone in the call pings this every ~25 seconds so the group knows it's live.
+create or replace function public.ping_group_call(p_call uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  gid uuid;
+begin
+  select group_id into gid from public.group_calls where id = p_call;
+  if gid is null or not public.is_group_member(gid) then return; end if;
+  update public.group_calls set last_active_at = now() where id = p_call and status = 'active';
+end;
+$$;
+
+-- The last person out ends it.
+create or replace function public.end_group_call(p_call uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  gid uuid;
+begin
+  select group_id into gid from public.group_calls where id = p_call;
+  if gid is null or not public.is_group_member(gid) then return; end if;
+  update public.group_calls set status = 'ended', ended_at = now() where id = p_call and status = 'active';
+end;
+$$;
+
+-- Which of your groups have a call going right now (age measured on the
+-- server, so a wrong phone clock can't hide it).
+create or replace function public.active_group_calls()
+returns table (id uuid, group_id uuid, started_by uuid, age_seconds integer)
+language sql
+security definer set search_path = public
+as $$
+  select gc.id, gc.group_id, gc.started_by,
+         extract(epoch from (now() - gc.last_active_at))::integer
+    from public.group_calls gc
+   where gc.status = 'active'
+     and gc.last_active_at > now() - interval '90 seconds'
+     and public.is_group_member(gc.group_id);
+$$;
+
+revoke all on function public.start_group_call(uuid) from public, anon;
+revoke all on function public.ping_group_call(uuid) from public, anon;
+revoke all on function public.end_group_call(uuid) from public, anon;
+revoke all on function public.active_group_calls() from public, anon;
+grant execute on function public.start_group_call(uuid) to authenticated;
+grant execute on function public.ping_group_call(uuid) to authenticated;
+grant execute on function public.end_group_call(uuid) to authenticated;
+grant execute on function public.active_group_calls() to authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'group_calls'
+  ) then
+    alter publication supabase_realtime add table public.group_calls;
+  end if;
+end $$;
 
 select 'FUNKY backend ready' as status;

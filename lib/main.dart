@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'data/app_store.dart';
 import 'data/supabase_config.dart';
+import 'screens/call_screen.dart';
 import 'push_router.dart';
 import 'services/push_service.dart';
 import 'root_shell.dart';
@@ -111,6 +112,7 @@ class _AppRoot extends StatefulWidget {
 class _AppRootState extends State<_AppRoot> {
   bool _splashElapsed = false;
   bool _tapsHooked = false;
+  String? _shownCallId;
 
   @override
   void initState() {
@@ -153,6 +155,19 @@ class _AppRootState extends State<_AppRoot> {
       );
     }
     _hookPushTaps(store);
+    // A friend is ringing: bring up the answer/decline screen.
+    final ringing = store.incomingCall;
+    if (ringing != null && ringing.id != _shownCallId) {
+      _shownCallId = ringing.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final nav = appNavigatorKey.currentState;
+        if (nav == null) return;
+        nav.push(MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => IncomingCallScreen(callId: ringing.id, fromId: ringing.fromId),
+        ));
+      });
+    }
     return const Stack(
       children: [
         RootShell(),

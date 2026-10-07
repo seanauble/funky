@@ -126,7 +126,7 @@ class _DestinationSheetState extends State<_DestinationSheet> {
                       onTap: () => Navigator.of(context).pop('main'),
                       leading: Icon(Icons.public, color: tokens.ink),
                       title: Text('Area', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                      subtitle: Text('Everyone within 25 miles', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                      subtitle: Text('Everyone within ${rangeLabel()}', style: TextStyle(color: tokens.mute, fontSize: 12)),
                       trailing: mark(widget.current == 'main'),
                     ),
                   for (final p in places)

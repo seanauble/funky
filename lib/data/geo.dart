@@ -1,8 +1,19 @@
 import 'dart:math';
 import 'models.dart';
 
-/// Your area is the 25 miles around you (rule 1) — no area picker.
-const double rangeMiles = 25;
+/// Your area is the circle around you. 25 miles unless you pick your own
+/// (1–50) in Settings — AppStore.setRadiusMiles keeps this in step, which is
+/// why it is a plain variable rather than a constant.
+const double defaultRangeMiles = 25;
+const int minRangeMiles = 1;
+const int maxRangeMiles = 50;
+double rangeMiles = defaultRangeMiles;
+
+/// "25 miles" / "1 mile" — for the sentences that name your area.
+String rangeLabel() {
+  final n = rangeMiles.round();
+  return n == 1 ? '1 mile' : '$n miles';
+}
 
 /// Great-circle distance in miles between two points.
 double milesBetween(LatLng a, LatLng b) {

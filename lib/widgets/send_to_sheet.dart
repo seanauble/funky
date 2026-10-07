@@ -117,12 +117,7 @@ class _SendToSheetState extends State<_SendToSheet> {
                         for (final g in groups)
                           ListTile(
                             onTap: () => _toggle(_groups, g.id),
-                            leading: Container(
-                              width: 38,
-                              height: 38,
-                              decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
-                              child: const Icon(Icons.groups_rounded, color: Colors.white, size: 20),
-                            ),
+                            leading: GroupAvatar(group: g, size: 38),
                             title: Text(g.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
                             subtitle: Text('${g.memberIds.length} people', style: TextStyle(color: tokens.mute, fontSize: 12)),
                             trailing: check(_groups.contains(g.id)),

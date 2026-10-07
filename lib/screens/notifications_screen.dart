@@ -27,6 +27,12 @@ class NotificationsScreen extends StatelessWidget {
         if (from == null) return;
         await store.ensurePerson(from);
         navigator.push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: from)));
+      case 'call':
+        final from = n.data['from'] as String?;
+        if (from == null) return;
+        await store.ensurePerson(from);
+        navigator.push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: from)));
+      case 'group_call':
       case 'group':
         final groupId = n.data['group_id'] as String?;
         if (groupId == null) return;
@@ -136,6 +142,9 @@ class _NotificationTile extends StatelessWidget {
     switch (n.kind) {
       case 'dm':
         return Icons.chat_bubble_outline;
+      case 'call':
+      case 'group_call':
+        return Icons.videocam_outlined;
       case 'group':
         return Icons.groups_outlined;
       case 'friend':

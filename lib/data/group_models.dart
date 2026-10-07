@@ -6,6 +6,8 @@ class GroupChat {
   final List<String> memberIds;
   final String createdBy; // 'me' if you made it
   final DateTime createdAt;
+  // The group's picture (a public URL), or null for the default icon.
+  final String? photoUrl;
 
   const GroupChat({
     required this.id,
@@ -13,6 +15,7 @@ class GroupChat {
     required this.memberIds,
     required this.createdBy,
     required this.createdAt,
+    this.photoUrl,
   });
 
   /// The chat room key its messages live under.

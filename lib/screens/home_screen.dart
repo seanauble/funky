@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/geo.dart';
 import '../data/models.dart';
 import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
@@ -165,7 +166,7 @@ class HomeScreen extends StatelessWidget {
                 children: [
                   Text(
                     store.rankedPlaces.isEmpty
-                        ? 'Nothing is listed within 25 miles yet. Put the first spot on the map.'
+                        ? 'Nothing is listed within ${rangeLabel()} yet. Put the first spot on the map.'
                         : "Nothing verified near you yet — venues need 15 confirmations before they show up here. Check the Places tab to confirm one.",
                     style: TextStyle(color: tokens.ink),
                   ),
@@ -310,7 +311,21 @@ class HomeScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(poll.q, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: Text(poll.q, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700))),
+                        if (poll.by == 'me' || store.isAdmin)
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _confirmDeletePoll(context, store, poll),
+                            child: Padding(
+                              padding: const EdgeInsets.only(left: 10, bottom: 4),
+                              child: Icon(Icons.delete_outline, size: 20, color: tokens.mute),
+                            ),
+                          ),
+                      ],
+                    ),
                     const SizedBox(height: 8),
                     PollBars(options: poll.options, counts: counts, selectedIndex: mine, onSelect: (i) => store.votePoll(poll.id, i)),
                   ],
@@ -421,4 +436,20 @@ class _StoryRing extends StatelessWidget {
       ),
     );
   }
+}
+
+
+Future<void> _confirmDeletePoll(BuildContext context, AppStore store, Poll poll) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Delete this poll?'),
+      content: Text('This removes "${poll.q}" and everyone\'s votes on it.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+      ],
+    ),
+  );
+  if (ok == true) store.deletePoll(poll.id);
 }

@@ -187,14 +187,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     // A single finger was already an effective no-op for zoom (scale only
     // moves once a second finger joins), repurposed as swipe-to-change-
     // filter instead — see create_flow_screen.dart's identical comment.
-    if (details.pointerCount == 1) {
-      _filterSwipeAccum += details.focalPointDelta.dx;
-      if (_filterSwipeAccum.abs() >= _filterSwipeThreshold) {
-        _changeFilter(_filterSwipeAccum < 0 ? 1 : -1);
-        _filterSwipeAccum = 0;
-      }
-      return;
-    }
+    // One finger does nothing here — filters are only changed by swiping on
+    // the preview AFTER the shot (see _buildReview), never while framing or
+    // recording.
+    if (details.pointerCount == 1) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
     final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
@@ -501,11 +497,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                   maintainState: true,
                   maintainAnimation: true,
                   maintainSize: true,
-                  child: const Padding(
-                    padding: EdgeInsets.only(bottom: 14),
-                    child: Text(
-                      'Tap for a photo · Hold for a video',
-                      style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'Tap for a photo · Hold for a video',
+                          style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600),
+                        ),
+                      ],
                     ),
                   ),
                 ),

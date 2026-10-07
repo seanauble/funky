@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -9,6 +10,7 @@ import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'call_screen.dart';
 import 'camera_capture_screen.dart';
 import 'dm_thread_screen.dart';
 
@@ -203,9 +205,20 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
   final _scrollController = ScrollController();
   bool _sendingMedia = false;
   int _shownCount = -1;
+  Timer? _callsTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep the "video call in progress" banner honest while this is open.
+    final store = context.read<AppStore>();
+    unawaited(store.refreshGroupCalls());
+    _callsTimer = Timer.periodic(const Duration(seconds: 20), (_) => store.refreshGroupCalls());
+  }
 
   @override
   void dispose() {
+    _callsTimer?.cancel();
     _draftController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -331,12 +344,7 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: group.id))),
           child: Row(
             children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
-                child: const Icon(Icons.groups_rounded, color: Colors.white, size: 18),
-              ),
+              GroupAvatar(group: group, size: 32),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -352,6 +360,15 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
           ),
         ),
         actions: [
+          if (store.signedIn)
+            IconButton(
+              tooltip: store.activeGroupCallId(group.id) != null ? 'Join video call' : 'Start video call',
+              onPressed: () => joinGroupVideoCall(context, store, group.id),
+              icon: Icon(
+                store.activeGroupCallId(group.id) != null ? Icons.videocam : Icons.videocam_outlined,
+                color: store.activeGroupCallId(group.id) != null ? tokens.brand : null,
+              ),
+            ),
           IconButton(
             tooltip: 'Group info',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: group.id))),
@@ -362,6 +379,31 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // A call is going on in this group right now.
+            if (store.activeGroupCallId(group.id) != null)
+              Material(
+                color: tokens.brand,
+                child: InkWell(
+                  onTap: () => joinGroupVideoCall(context, store, group.id),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.videocam, color: Colors.white, size: 20),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text('Video call in progress', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
+                          child: Text('Join', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: msgs.isEmpty
                   ? Padding(
@@ -493,6 +535,68 @@ class GroupInfoScreen extends StatelessWidget {
     }
   }
 
+  /// Pick a new group picture — take one, choose one, or remove it.
+  Future<void> _changePhoto(BuildContext context, AppStore store, GroupChat group) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: Icon(Icons.photo_camera_outlined, color: tokens.ink),
+              title: Text('Take a photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.of(sheetContext).pop('camera'),
+            ),
+            ListTile(
+              leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
+              title: Text('Choose from library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.of(sheetContext).pop('library'),
+            ),
+            if (group.photoUrl != null)
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: tokens.danger),
+                title: Text('Remove photo', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+                onTap: () => Navigator.of(sheetContext).pop('remove'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+
+    String? path;
+    if (choice == 'camera') {
+      final media = await Navigator.of(context).push<CapturedMedia>(
+        MaterialPageRoute(fullscreenDialog: true, builder: (_) => const CameraCaptureScreen()),
+      );
+      if (media == null || !context.mounted) return;
+      if (media.isVideo) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Group pictures are photos only — tap the shutter instead of holding it.')));
+        return;
+      }
+      path = media.file.path;
+    } else if (choice == 'library') {
+      try {
+        final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85, maxWidth: 1280);
+        if (picked == null || !context.mounted) return;
+        path = picked.path;
+      } catch (e) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
+        return;
+      }
+    }
+    final error = await store.setGroupPhoto(group.id, path);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error ?? (path == null ? 'Group photo removed.' : 'Group photo updated.'))));
+    }
+  }
+
   Future<void> _addPeople(BuildContext context, AppStore store, GroupChat group) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final candidates = store.groupablePeople.where((p) => !group.memberIds.contains(p.id)).toList();
@@ -585,6 +689,35 @@ class GroupInfoScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Center(
+            child: GestureDetector(
+              onTap: () => _changePhoto(context, store, group),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  GroupAvatar(group: group, size: 96),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(color: tokens.surface, shape: BoxShape.circle, border: Border.all(color: tokens.line, width: 2)),
+                      child: Icon(Icons.photo_camera_outlined, size: 17, color: tokens.ink),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Center(
+            child: TextButton(
+              onPressed: () => _changePhoto(context, store, group),
+              child: Text(group.photoUrl == null ? 'Add group photo' : 'Change group photo', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700)),
+            ),
+          ),
+          const SizedBox(height: 6),
           FunkyCard(
             padding: EdgeInsets.zero,
             child: InkWell(

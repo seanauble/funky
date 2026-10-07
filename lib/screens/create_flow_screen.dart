@@ -381,32 +381,16 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     // gesture instead of adding a second GestureDetector that would just
     // fight the existing one over the same pointer in the gesture arena.
     // Two-plus fingers still falls through to pinch-zoom exactly as before.
-    if (details.pointerCount == 1) {
-      _filterSwipeAccum += details.focalPointDelta.dx;
-      if (_filterSwipeAccum.abs() >= _filterSwipeThreshold) {
-        _changeFilter(_filterSwipeAccum < 0 ? 1 : -1);
-        _filterSwipeAccum = 0;
-      }
-      return;
-    }
+    // One finger does nothing here — filters are only changed by swiping on
+    // the preview AFTER the shot (see _buildReview), never while framing or
+    // recording.
+    if (details.pointerCount == 1) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
     final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
     if (zoom == _currentZoom) return;
     _currentZoom = zoom;
     controller.setZoomLevel(zoom);
-  }
-
-  /// Picks a filter from the strip (shows its name briefly).
-  void _selectFilter(int index) {
-    setState(() {
-      _filterIndex = index;
-      _showFilterLabel = true;
-    });
-    _filterLabelTimer?.cancel();
-    _filterLabelTimer = Timer(const Duration(milliseconds: 900), () {
-      if (mounted) setState(() => _showFilterLabel = false);
-    });
   }
 
   /// Swipe left/right on the open preview to cycle through cameraFilters
@@ -1138,8 +1122,6 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        FilterStrip(selected: _filterIndex, onSelect: _selectFilter),
-                        const SizedBox(height: 12),
                         const Text('Tap for a photo · Hold for a video', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
                       ],
                     ),
@@ -1216,7 +1198,38 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ClipRect(child: SizedBox.expand(child: _buildFullBleedReviewMedia())),
+          // Swipe anywhere on the picture to change the filter — right for
+          // the next one, left for the previous; keep swiping to scrub.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragStart: (_) => _filterSwipeAccum = 0,
+              onHorizontalDragUpdate: (d) {
+                if (_baking) return;
+                _filterSwipeAccum += d.delta.dx;
+                if (_filterSwipeAccum.abs() >= 60) {
+                  _changeFilter(_filterSwipeAccum > 0 ? 1 : -1);
+                  _filterSwipeAccum = 0;
+                }
+              },
+              child: ClipRect(child: SizedBox.expand(child: _buildFullBleedReviewMedia())),
+            ),
+          ),
+          // The filter's name, flashed on every swipe.
+          if (_showFilterLabel)
+            IgnorePointer(
+              child: Align(
+                alignment: const Alignment(0, -0.45),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                  child: Text(
+                    cameraFilters[_filterIndex].name,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                  ),
+                ),
+              ),
+            ),
 
           // Back to the live camera for another take — there's no separate
           // Retake button anymore, this corner X is the only way back.
@@ -1289,8 +1302,6 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                     children: [
                       // Pick or change a filter right here, after the shot —
                       // the preview above updates instantly.
-                      IgnorePointer(ignoring: _baking, child: FilterStrip(selected: _filterIndex, onSelect: (i) => setState(() => _filterIndex = i), padding: EdgeInsets.zero)),
-                      const SizedBox(height: 14),
                       // One compact dropdown (a searchable sheet) instead of a
                       // chip per place — there'll be a lot of places nearby —
                       // with the anonymous switch on the same line.
