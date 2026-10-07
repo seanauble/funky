@@ -43,6 +43,59 @@ void _showVerifiedExplainer(BuildContext context, {required bool isAdmin}) {
   );
 }
 
+/// 1–50 mile slider under the map. The label follows your finger; the map
+/// and lists resize when you let go.
+class _MapRadiusSlider extends StatefulWidget {
+  const _MapRadiusSlider();
+
+  @override
+  State<_MapRadiusSlider> createState() => _MapRadiusSliderState();
+}
+
+class _MapRadiusSliderState extends State<_MapRadiusSlider> {
+  double? _drag;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.read<AppStore>();
+    final value = (_drag ?? rangeMiles).clamp(minRangeMiles.toDouble(), maxRangeMiles.toDouble());
+    final miles = value.round();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 2, 14, 0),
+      decoration: BoxDecoration(color: tokens.bg, border: Border(bottom: BorderSide(color: tokens.line))),
+      child: Row(
+        children: [
+          Icon(Icons.radar, size: 18, color: tokens.orange),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Slider(
+              value: value,
+              min: minRangeMiles.toDouble(),
+              max: maxRangeMiles.toDouble(),
+              divisions: maxRangeMiles - minRangeMiles,
+              activeColor: tokens.orange,
+              onChanged: (v) => setState(() => _drag = v),
+              onChangeEnd: (v) {
+                store.setRadiusMiles(v.round());
+                setState(() => _drag = null);
+              },
+            ),
+          ),
+          SizedBox(
+            width: 52,
+            child: Text(
+              miles == 1 ? '1 mile' : '$miles mi',
+              textAlign: TextAlign.right,
+              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class PlacesScreen extends StatelessWidget {
   const PlacesScreen({super.key});
 
@@ -89,7 +142,7 @@ class PlacesScreen extends StatelessWidget {
                   options: MapOptions(
                     initialCenter: ll.LatLng(here.lat, here.lng),
                     // Starts zoomed out just far enough to show the whole
-                    // 25-mile circle.
+                    // radius circle (10 miles unless you changed it).
                     initialCameraFit: CameraFit.bounds(
                       bounds: _radiusBounds(here.lat, here.lng),
                       padding: const EdgeInsets.all(14),
@@ -239,6 +292,9 @@ class PlacesScreen extends StatelessWidget {
               ],
             ),
           ),
+          // How far "near you" reaches — drag to resize the circle on the map
+          // (and everything else FUNKY shows you).
+          const _MapRadiusSlider(),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.all(16),

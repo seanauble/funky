@@ -167,7 +167,7 @@ class HomeScreen extends StatelessWidget {
                   Text(
                     store.rankedPlaces.isEmpty
                         ? 'Nothing is listed within ${rangeLabel()} yet. Put the first spot on the map.'
-                        : "Nothing verified near you yet — venues need 15 confirmations before they show up here. Check the Places tab to confirm one.",
+                        : "Nothing verified near you yet — venues need 15 confirmations before they show up here. Check the Map tab to confirm one.",
                     style: TextStyle(color: tokens.ink),
                   ),
                   const SizedBox(height: 10),

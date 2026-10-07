@@ -529,6 +529,14 @@ class _LiveChat extends StatelessWidget {
                       Flexible(child: nameLine),
                       const SizedBox(width: 8),
                       Text(_sentAtLabel(context, m.t), style: TextStyle(color: tokens.mute, fontSize: 11)),
+                      // Roughly how far away they are (not for your own messages).
+                      if (m.uid != 'me' && m.lat != null && m.lng != null && store.location != null) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '· ${awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!)))}',
+                          style: TextStyle(color: tokens.mute, fontSize: 11),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 2),

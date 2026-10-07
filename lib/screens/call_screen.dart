@@ -177,6 +177,7 @@ class _CallScreenState extends State<CallScreen> {
   EventsListener<RoomEvent>? _listener;
   VideoTrack? _remoteVideo;
   VideoTrack? _localVideo;
+  bool _remoteCamOff = false;
   bool _micOn = true;
   bool _camOn = true;
   bool _frontCamera = true;
@@ -228,6 +229,13 @@ class _CallScreenState extends State<CallScreen> {
       ..on<LocalTrackPublishedEvent>((e) {
         final t = e.publication.track;
         if (t is VideoTrack && mounted) setState(() => _localVideo = t as VideoTrack);
+      })
+      // The other person turned their camera off / back on.
+      ..on<TrackMutedEvent>((e) {
+        if (mounted && e.participant is RemoteParticipant && e.publication.kind == TrackType.VIDEO) setState(() => _remoteCamOff = true);
+      })
+      ..on<TrackUnmutedEvent>((e) {
+        if (mounted && e.participant is RemoteParticipant && e.publication.kind == TrackType.VIDEO) setState(() => _remoteCamOff = false);
       })
       ..on<ParticipantConnectedEvent>((_) => _onRemoteJoined())
       ..on<ParticipantDisconnectedEvent>((_) => _onRemoteLeft())
@@ -371,7 +379,7 @@ class _CallScreenState extends State<CallScreen> {
     final store = context.watch<AppStore>();
     final person = store.personById(widget.peerId);
     final handle = person?.handle ?? 'friend';
-    final remote = _remoteVideo;
+    final remote = _remoteCamOff ? null : _remoteVideo;
     final local = _localVideo;
 
     return PopScope(
@@ -393,7 +401,7 @@ class _CallScreenState extends State<CallScreen> {
                       const SizedBox(height: 18),
                       Text('@$handle', style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
                       const SizedBox(height: 6),
-                      Text(_remoteJoined ? 'Their camera is off' : _status, style: const TextStyle(color: Colors.white70, fontSize: 16)),
+                      Text(_remoteJoined ? (_remoteCamOff ? 'Their camera is off' : 'Connecting video…') : _status, style: const TextStyle(color: Colors.white70, fontSize: 16)),
                     ],
                   ),
                 ),
@@ -436,9 +444,21 @@ class _CallScreenState extends State<CallScreen> {
                       width: 104,
                       height: 148,
                       color: const Color(0xFF1C1C1E),
-                      child: (local != null && _camOn)
-                          ? VideoTrackRenderer(local, fit: VideoViewFit.cover)
-                          : const Center(child: Icon(Icons.videocam_off, color: Colors.white54)),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (local != null && _camOn)
+                            VideoTrackRenderer(local, fit: VideoViewFit.cover)
+                          else
+                            const Center(child: Icon(Icons.videocam_off, color: Colors.white54)),
+                          if (!_micOn)
+                            const Positioned(
+                              left: 6,
+                              bottom: 6,
+                              child: CircleAvatar(radius: 11, backgroundColor: Color(0xFFE53935), child: Icon(Icons.mic_off, size: 14, color: Colors.white)),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -465,18 +485,10 @@ class _CallScreenState extends State<CallScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
-                        _ControlButton(icon: _micOn ? Icons.mic : Icons.mic_off, active: _micOn, onTap: _toggleMic),
-                        _ControlButton(icon: _camOn ? Icons.videocam : Icons.videocam_off, active: _camOn, onTap: _toggleCamera),
-                        _ControlButton(icon: Icons.flip_camera_ios_outlined, active: true, onTap: _flipCamera),
-                        GestureDetector(
-                          onTap: _hangUp,
-                          child: Container(
-                            width: 64,
-                            height: 64,
-                            decoration: const BoxDecoration(color: Color(0xFFE53935), shape: BoxShape.circle),
-                            child: const Icon(Icons.call_end, color: Colors.white, size: 30),
-                          ),
-                        ),
+                        _ControlButton(icon: _micOn ? Icons.mic : Icons.mic_off, active: _micOn, label: _micOn ? 'Mute' : 'Unmute', onTap: _toggleMic),
+                        _ControlButton(icon: _camOn ? Icons.videocam : Icons.videocam_off, active: _camOn, label: _camOn ? 'Camera off' : 'Camera on', onTap: _toggleCamera),
+                        _ControlButton(icon: Icons.flip_camera_ios_outlined, active: true, label: 'Flip', onTap: _flipCamera),
+                        _HangUpButton(label: 'End', onTap: _hangUp),
                       ],
                     ),
                   ),
@@ -493,18 +505,55 @@ class _CallScreenState extends State<CallScreen> {
 class _ControlButton extends StatelessWidget {
   final IconData icon;
   final bool active;
+  final String label;
   final VoidCallback onTap;
-  const _ControlButton({required this.icon, required this.active, required this.onTap});
+  const _ControlButton({required this.icon, required this.active, required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Container(
-        width: 54,
-        height: 54,
-        decoration: BoxDecoration(color: active ? Colors.white24 : Colors.white, shape: BoxShape.circle),
-        child: Icon(icon, color: active ? Colors.white : Colors.black, size: 26),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            // Filled white when it's switched OFF, so it's obvious at a glance.
+            decoration: BoxDecoration(color: active ? Colors.white24 : Colors.white, shape: BoxShape.circle),
+            child: Icon(icon, color: active ? Colors.white : Colors.black, size: 26),
+          ),
+          const SizedBox(height: 5),
+          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+class _HangUpButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _HangUpButton({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: const BoxDecoration(color: Color(0xFFE53935), shape: BoxShape.circle),
+            child: const Icon(Icons.call_end, color: Colors.white, size: 28),
+          ),
+          const SizedBox(height: 5),
+          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11.5, fontWeight: FontWeight.w600)),
+        ],
       ),
     );
   }
@@ -538,6 +587,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
   Room? _room;
   EventsListener<RoomEvent>? _listener;
   final Map<String, VideoTrack> _videos = {}; // participant identity -> their camera
+  final Set<String> _camOffIds = {}; // people whose camera is switched off
   VideoTrack? _localVideo;
   bool _micOn = true;
   bool _camOn = true;
@@ -590,6 +640,12 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
       ..on<LocalTrackPublishedEvent>((e) {
         final t = e.publication.track;
         if (t is VideoTrack && mounted) setState(() => _localVideo = t as VideoTrack);
+      })
+      ..on<TrackMutedEvent>((e) {
+        if (mounted && e.participant is RemoteParticipant && e.publication.kind == TrackType.VIDEO) setState(() => _camOffIds.add(e.participant.identity));
+      })
+      ..on<TrackUnmutedEvent>((e) {
+        if (mounted && e.participant is RemoteParticipant && e.publication.kind == TrackType.VIDEO) setState(() => _camOffIds.remove(e.participant.identity));
       })
       ..on<ParticipantConnectedEvent>((e) {
         context.read<AppStore>().ensurePerson(e.participant.identity);
@@ -728,7 +784,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
     final tiles = <Widget>[
       _ParticipantTile(
         video: _camOn ? _localVideo : null,
-        label: 'You',
+        label: _micOn ? 'You' : 'You · muted',
         seed: 'me',
         photoPath: store.me.photoPath,
         photoUrl: store.me.photoUrl,
@@ -738,7 +794,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
           final person = store.personById(p.identity);
           final handle = person?.handle ?? (p.name.isNotEmpty ? p.name : 'friend');
           return _ParticipantTile(
-            video: _videos[p.identity],
+            video: _camOffIds.contains(p.identity) ? null : _videos[p.identity],
             label: '@$handle',
             seed: p.identity,
             photoPath: person?.photoPath,
@@ -779,18 +835,10 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    _ControlButton(icon: _micOn ? Icons.mic : Icons.mic_off, active: _micOn, onTap: _toggleMic),
-                    _ControlButton(icon: _camOn ? Icons.videocam : Icons.videocam_off, active: _camOn, onTap: _toggleCamera),
-                    _ControlButton(icon: Icons.flip_camera_ios_outlined, active: true, onTap: _flipCamera),
-                    GestureDetector(
-                      onTap: _leave,
-                      child: Container(
-                        width: 64,
-                        height: 64,
-                        decoration: const BoxDecoration(color: Color(0xFFE53935), shape: BoxShape.circle),
-                        child: const Icon(Icons.call_end, color: Colors.white, size: 30),
-                      ),
-                    ),
+                    _ControlButton(icon: _micOn ? Icons.mic : Icons.mic_off, active: _micOn, label: _micOn ? 'Mute' : 'Unmute', onTap: _toggleMic),
+                    _ControlButton(icon: _camOn ? Icons.videocam : Icons.videocam_off, active: _camOn, label: _camOn ? 'Camera off' : 'Camera on', onTap: _toggleCamera),
+                    _ControlButton(icon: Icons.flip_camera_ios_outlined, active: true, label: 'Flip', onTap: _flipCamera),
+                    _HangUpButton(label: 'Leave', onTap: _leave),
                   ],
                 ),
               ),

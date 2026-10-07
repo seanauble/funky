@@ -217,7 +217,7 @@ class _RadiusCardState extends State<_RadiusCard> {
             },
           ),
           Text(
-            'Places, polls, live chat and the map show what is within this distance of you. Default is 25 miles.',
+            'Places, polls, live chat and the map show what is within this distance of you. Default is 10 miles. You can also change this on the Map tab.',
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
           const SizedBox(height: 6),

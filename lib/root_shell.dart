@@ -63,7 +63,7 @@ class _RootShellState extends State<RootShell> {
     ProfileScreen(),
   ];
 
-  static const _titles = ['Home', 'Chat', '', 'Places', 'Profile'];
+  static const _titles = ['Home', 'Chat', '', 'Map', 'Profile'];
 
   // A little easter egg: tapping the FUNKY wordmark on Home pops a small
   // confetti burst from right where you tapped. Pure CustomPainter — no
@@ -170,7 +170,7 @@ class _TabBar extends StatelessWidget {
                     // without being clipped by it, but this Expanded still
                     // keeps the side tab items spaced exactly as before.
                     const Expanded(child: SizedBox.shrink()),
-                    _TabItem(icon: Icons.location_on, label: 'Places', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
+                    _TabItem(icon: Icons.map, label: 'Map', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
                     _TabItem(icon: Icons.person, label: 'Profile', active: index == 4, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(4)),
                   ],
                 ),

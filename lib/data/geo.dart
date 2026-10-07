@@ -1,10 +1,10 @@
 import 'dart:math';
 import 'models.dart';
 
-/// Your area is the circle around you. 25 miles unless you pick your own
+/// Your area is the circle around you. 10 miles unless you pick your own
 /// (1–50) in Settings — AppStore.setRadiusMiles keeps this in step, which is
 /// why it is a plain variable rather than a constant.
-const double defaultRangeMiles = 25;
+const double defaultRangeMiles = 10;
 const int minRangeMiles = 1;
 const int maxRangeMiles = 50;
 double rangeMiles = defaultRangeMiles;
@@ -28,6 +28,17 @@ double milesBetween(LatLng a, LatLng b) {
 }
 
 bool near(LatLng me, LatLng pt) => milesBetween(me, pt) <= rangeMiles;
+
+/// A deliberately rough "how far away" for Live Chat — an upper bound
+/// ("<5 mi away"), never an exact distance, so it can't be used to pin
+/// someone down.
+String awayLabel(double miles) {
+  const steps = [1, 2, 3, 5, 10, 15, 20, 30, 40, 50, 75, 100];
+  for (final s in steps) {
+    if (miles < s) return '<$s mi away';
+  }
+  return '100+ mi away';
+}
 
 String formatMiles(double mi) {
   if (mi < 0.1) return 'next to you';
