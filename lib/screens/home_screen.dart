@@ -440,8 +440,9 @@ Future<void> _confirmDeletePoll(BuildContext context, AppStore store, Poll poll)
 
 /// The three-line Live Chat peek on Home. While people are actually talking
 /// (a message in the last 15 minutes) it just shows the latest three. When
-/// the room has gone quiet it slowly cycles back through tonight's older
-/// messages, one step at a time, so the card never looks dead.
+/// the room has gone quiet it behaves like a live feed replaying tonight's
+/// older messages: every few seconds the top line slips away and the next
+/// old message swoops in at the bottom, one at a time, looping forever.
 class _LiveChatPreview extends StatefulWidget {
   const _LiveChatPreview();
 
@@ -452,16 +453,15 @@ class _LiveChatPreview extends StatefulWidget {
 class _LiveChatPreviewState extends State<_LiveChatPreview> {
   static const _activeWindowMs = 15 * 60 * 1000;
   Timer? _timer;
-  int _step = 0;
+  // Non-null only while the replay loop is running.
+  List<ChatMessage>? _items;
+  GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
+  int _cursor = 0;
 
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
-      if (!mounted) return;
-      final msgs = context.read<AppStore>().liveChatMessages;
-      if (msgs.length > 3 && _isQuiet(msgs)) setState(() => _step++);
-    });
+    _timer = Timer.periodic(const Duration(milliseconds: 2500), (_) => _tick());
   }
 
   @override
@@ -475,114 +475,115 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
     return DateTime.now().millisecondsSinceEpoch - msgs.last.t > _activeWindowMs;
   }
 
+  void _tick() {
+    if (!mounted) return;
+    final store = context.read<AppStore>();
+    final msgs = store.liveChatMessages;
+    if (msgs.length <= 3 || !_isQuiet(msgs)) {
+      if (_items != null) setState(() => _items = null);
+      return;
+    }
+    final items = _items;
+    if (items == null) {
+      // Start the loop from tonight's latest three; the next one in is the
+      // very first message, so it reads as one continuous feed.
+      setState(() {
+        _items = msgs.sublist(msgs.length - 3);
+        _listKey = GlobalKey<AnimatedListState>();
+        _cursor = 0;
+      });
+      return;
+    }
+    final list = _listKey.currentState;
+    if (list == null) return;
+    if (_cursor >= msgs.length) _cursor = 0;
+    final next = msgs[_cursor];
+    _cursor = (_cursor + 1) % msgs.length;
+    final gone = items.removeAt(0);
+    list.removeItem(
+      0,
+      (ctx, anim) => _row(ctx, store, gone, anim, leaving: true),
+      duration: const Duration(milliseconds: 380),
+    );
+    items.add(next);
+    list.insertItem(items.length - 1, duration: const Duration(milliseconds: 650));
+  }
+
+  Widget _row(BuildContext context, AppStore store, ChatMessage m, Animation<double> anim, {bool leaving = false}) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
+    final content = Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          m.anon
+              ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
+              : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
+          if (m.uid != 'me' && m.lat != null && m.lng != null && store.location != null)
+            Text(
+              awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!))),
+              style: TextStyle(color: tokens.mute, fontSize: 10.5),
+            ),
+          filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
+        ],
+      ),
+    );
+    if (leaving) {
+      // Top line slides off to the left while the card closes the gap.
+      final curved = CurvedAnimation(parent: anim, curve: Curves.easeIn);
+      return SizeTransition(
+        sizeFactor: curved,
+        axisAlignment: -1,
+        child: SlideTransition(
+          position: Tween<Offset>(begin: const Offset(-1.0, 0), end: Offset.zero).animate(curved),
+          child: content,
+        ),
+      );
+    }
+    // New line: the card opens a gap, then the message slides in from the
+    // right — no fading, just motion.
+    return SizeTransition(
+      sizeFactor: CurvedAnimation(parent: anim, curve: const Interval(0.0, 0.5, curve: Curves.easeOut)),
+      axisAlignment: -1,
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(1.0, 0), end: Offset.zero).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+        child: content,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
     final msgs = store.liveChatMessages;
     if (msgs.isEmpty) return const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.');
 
-    final List<ChatMessage> shown;
-    var windowKey = 'live';
-    if (msgs.length > 3 && _isQuiet(msgs)) {
-      // Slide a 3-message window around the whole list, wrapping at the end.
-      final start = _step % msgs.length;
-      shown = [for (var k = 0; k < 3; k++) msgs[(start + k) % msgs.length]];
-      windowKey = 'loop$start';
-    } else {
-      shown = msgs.length > 3 ? msgs.sublist(msgs.length - 3) : msgs;
-    }
-
-    return FunkyCard(
-      child: AnimatedSize(
-        duration: const Duration(milliseconds: 300),
-        alignment: Alignment.topLeft,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 700),
-          reverseDuration: const Duration(milliseconds: 220),
-          transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: child),
-          layoutBuilder: (current, previous) => Stack(
-            alignment: Alignment.topLeft,
-            children: [...previous, if (current != null) current],
-          ),
-          child: Column(
-            key: ValueKey(windowKey),
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: shown.asMap().entries.map((entry) {
-              final m = entry.value;
-              final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
-              return _SwoopIn(
-                delay: Duration(milliseconds: 130 * entry.key),
-                animate: windowKey != 'live',
-                child: Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    m.anon
-                        ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
-                        : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
-                    filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
-                  ],
-                ),
-              ),
-              );
-            }).toList(),
-          ),
+    final items = _items;
+    if (items != null && msgs.length > 3 && _isQuiet(msgs)) {
+      return FunkyCard(
+        child: ClipRect(
+         child: AnimatedList(
+          key: _listKey,
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          physics: const NeverScrollableScrollPhysics(),
+          initialItemCount: items.length,
+          itemBuilder: (ctx, i, anim) {
+            if (i >= items.length) return const SizedBox.shrink();
+            return _row(ctx, store, items[i], anim);
+          },
+         ),
         ),
-      ),
-    );
-  }
-}
-
-/// Slides a row in from the right with a little overshoot-free swoop and a
-/// fade, each row starting a beat after the one above it.
-class _SwoopIn extends StatefulWidget {
-  final Widget child;
-  final Duration delay;
-  final bool animate;
-  const _SwoopIn({required this.child, required this.delay, required this.animate});
-
-  @override
-  State<_SwoopIn> createState() => _SwoopInState();
-}
-
-class _SwoopInState extends State<_SwoopIn> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 560));
-  late final Animation<double> _curve = CurvedAnimation(parent: _c, curve: Curves.easeOutCubic);
-  Timer? _t;
-
-  @override
-  void initState() {
-    super.initState();
-    if (!widget.animate) {
-      _c.value = 1;
-    } else {
-      _t = Timer(widget.delay, () {
-        if (mounted) _c.forward();
-      });
+      );
     }
-  }
 
-  @override
-  void dispose() {
-    _t?.cancel();
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _curve,
-      builder: (_, child) {
-        final v = _curve.value;
-        return Opacity(
-          opacity: v.clamp(0.0, 1.0),
-          child: Transform.translate(offset: Offset((1 - v) * 90, (1 - v) * 10), child: child),
-        );
-      },
-      child: widget.child,
+    final shown = msgs.length > 3 ? msgs.sublist(msgs.length - 3) : msgs;
+    return FunkyCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [for (final m in shown) _row(context, store, m, const AlwaysStoppedAnimation<double>(1))],
+      ),
     );
   }
 }
