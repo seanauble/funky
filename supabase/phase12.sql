@@ -12,7 +12,7 @@ alter table public.user_locations
   drop constraint if exists user_locations_radius_miles_check;
 alter table public.user_locations
   add constraint user_locations_radius_miles_check
-  check (radius_miles is null or radius_miles between 1 and 50);
+  check (radius_miles is null or radius_miles between 1 and 5000); -- 50 for everyone, 5,000 for admins (see phase 18)
 
 create or replace function public.notify_place_verified(pid uuid)
 returns void

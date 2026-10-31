@@ -7,6 +7,7 @@ import '../data/models.dart';
 import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
 import 'person_profile_screen.dart';
+import '../services/share_links.dart';
 
 /// Reached by tapping the magnifying glass on the Friends screen — search
 /// for someone by @handle instead of only being able to Add Friend from a
@@ -102,14 +103,26 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
 
   Widget _buildBody(ThemeTokens tokens) {
     if (_query.trim().isEmpty) {
-      return EmptyNote(text: "Search for a username to add someone as a friend.");
+      return ListView(
+        children: [
+          const EmptyNote(text: "Search for a username to add someone as a friend."),
+          const SizedBox(height: 16),
+          _InviteCard(tokens: tokens),
+        ],
+      );
     }
     if (_loading && _results == null) {
       return const Center(child: Padding(padding: EdgeInsets.only(top: 40), child: CircularProgressIndicator()));
     }
     final results = _results ?? const [];
     if (results.isEmpty) {
-      return EmptyNote(text: 'No one on FUNKY matches "@${_query.trim()}" right now.');
+      return ListView(
+        children: [
+          EmptyNote(text: 'No one on FUNKY matches "@${_query.trim()}" right now.'),
+          const SizedBox(height: 16),
+          _InviteCard(tokens: tokens),
+        ],
+      );
     }
     return ListView.builder(
       itemCount: results.length,
@@ -139,6 +152,43 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+
+/// "Not on FUNKY yet? Invite them" — opens the share sheet with the link.
+class _InviteCard extends StatelessWidget {
+  final ThemeTokens tokens;
+  const _InviteCard({required this.tokens});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.read<AppStore>();
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: tokens.line)),
+        child: Row(
+          children: [
+            Icon(Icons.ios_share, color: tokens.brand),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Friends not on FUNKY yet?', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text('Send them the link to get the app.', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: tokens.mute),
+          ],
+        ),
+      ),
     );
   }
 }

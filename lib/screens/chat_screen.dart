@@ -8,9 +8,9 @@ import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
-import 'add_friends_screen.dart';
 import 'dm_thread_screen.dart';
 import 'group_thread_screen.dart';
+import '../services/share_links.dart';
 import '../widgets/avatar_preview.dart';
 
 // The hold-to-react picker's fixed set — "custom" in the sense that it's
@@ -398,34 +398,34 @@ class _MessagesListState extends State<_MessagesList> {
     }
 
     final header = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 8, 4),
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
       child: Row(
         children: [
-          Expanded(child: Text('Messages', style: TextStyle(color: tokens.ink, fontSize: 21, fontWeight: FontWeight.w800))),
+          Expanded(child: Text('Messages', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800))),
           TextButton.icon(
             onPressed: () => requireAccountThen(
               context,
               store,
               () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
             ),
-            icon: Icon(Icons.group_add_outlined, size: 21, color: tokens.brand),
-            label: Text('New group', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 15)),
+            icon: Icon(Icons.group_add_outlined, size: 18, color: tokens.brand),
+            label: Text('New group', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 13.5)),
           ),
         ],
       ),
     );
 
     final searchBar = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       child: TextField(
         controller: _search,
         onChanged: (v) => setState(() => _query = v),
         textInputAction: TextInputAction.search,
-        style: TextStyle(color: tokens.ink, fontSize: 15.5),
+        style: TextStyle(color: tokens.ink, fontSize: 14),
         decoration: InputDecoration(
           hintText: 'Search messages',
-          hintStyle: TextStyle(color: tokens.mute, fontSize: 15.5),
-          prefixIcon: Icon(Icons.search_rounded, color: tokens.mute),
+          hintStyle: TextStyle(color: tokens.mute, fontSize: 14),
+          prefixIcon: Icon(Icons.search_rounded, color: tokens.mute, size: 20),
           suffixIcon: _query.isEmpty
               ? null
               : IconButton(
@@ -438,34 +438,30 @@ class _MessagesListState extends State<_MessagesList> {
           filled: true,
           fillColor: tokens.surface,
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 14),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: tokens.line)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: tokens.brand, width: 1.4)),
+          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: tokens.line)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: tokens.brand, width: 1.4)),
         ),
       ),
     );
 
     final invite = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => requireAccountThen(
-          context,
-          store,
-          () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AddFriendsScreen())),
-        ),
+        onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
           decoration: BoxDecoration(
             color: tokens.surface,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(14),
             border: Border.all(color: tokens.line),
           ),
           child: Row(
             children: [
-              Icon(Icons.people_outline_rounded, color: tokens.ink, size: 26),
-              const SizedBox(width: 14),
-              Expanded(child: Text('Bring your friends to Funky', style: TextStyle(color: tokens.ink, fontSize: 15.5, fontWeight: FontWeight.w600))),
+              Icon(Icons.people_outline_rounded, color: tokens.ink, size: 21),
+              const SizedBox(width: 12),
+              Expanded(child: Text('Bring your friends to Funky', style: TextStyle(color: tokens.ink, fontSize: 14, fontWeight: FontWeight.w600))),
               Icon(Icons.chevron_right_rounded, color: tokens.ink),
             ],
           ),
@@ -478,7 +474,7 @@ class _MessagesListState extends State<_MessagesList> {
       final (e, preview) = shown[i];
       rows.add(_ConvoRow(entry: e, preview: preview, time: _ago(preview?.t ?? e.t), store: store));
       if (i < shown.length - 1) {
-        rows.add(Divider(height: 1, thickness: 0.6, indent: 16 + 58 + 14, endIndent: 16, color: tokens.line));
+        rows.add(Divider(height: 1, thickness: 0.6, indent: 16 + 48 + 12, endIndent: 16, color: tokens.line));
       }
     }
 
@@ -529,7 +525,7 @@ class _ConvoRow extends StatelessWidget {
     final online = person != null && store.isOnline(person.id);
     final isFriend = person != null && store.isFriendsWith(person.id);
 
-    const avatarSize = 58.0;
+    const avatarSize = 48.0;
     Widget avatar;
     if (group != null) {
       avatar = GroupAvatar(group: group, size: avatarSize);
@@ -537,9 +533,9 @@ class _ConvoRow extends StatelessWidget {
       avatar = Container(
         width: avatarSize,
         height: avatarSize,
-        padding: EdgeInsets.all(isFriend ? 2.5 : 0),
-        decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 2)) : null,
-        child: PersonAvatar(person: person!, size: isFriend ? avatarSize - 9 : avatarSize),
+        padding: EdgeInsets.all(isFriend ? 2 : 0),
+        decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 1.8)) : null,
+        child: PersonAvatar(person: person!, size: isFriend ? avatarSize - 7.6 : avatarSize),
       );
     }
     avatar = SizedBox(
@@ -554,12 +550,12 @@ class _ConvoRow extends StatelessWidget {
               right: 1,
               bottom: 1,
               child: Container(
-                width: 16,
-                height: 16,
+                width: 13,
+                height: 13,
                 decoration: BoxDecoration(
                   color: const Color(0xFF34D058),
                   shape: BoxShape.circle,
-                  border: Border.all(color: tokens.bg, width: 3),
+                  border: Border.all(color: tokens.bg, width: 2.5),
                 ),
               ),
             ),
@@ -567,7 +563,7 @@ class _ConvoRow extends StatelessWidget {
       ),
     );
 
-    final nameStyle = TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5);
+    final nameStyle = TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14.5);
     final Widget title = group != null
         ? Text(group.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: nameStyle)
         : StyledName(person: person!, text: '@${person.handle}', style: nameStyle);
@@ -575,7 +571,7 @@ class _ConvoRow extends StatelessWidget {
     // The preview line: "You: thats why", "@sam: yo", or a camera + "Photo".
     final msg = preview;
     final previewColor = hasUnread ? tokens.ink : tokens.mute;
-    final previewStyle = TextStyle(color: previewColor, fontSize: 14.5, fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400);
+    final previewStyle = TextStyle(color: previewColor, fontSize: 13, fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400);
     Widget subtitle;
     if (msg == null) {
       subtitle = Text(group != null ? '${group.memberIds.length} people' : 'Say hey 👋', style: previewStyle);
@@ -592,7 +588,7 @@ class _ConvoRow extends StatelessWidget {
         subtitle = Row(
           children: [
             if (prefix.isNotEmpty) Text(prefix, style: previewStyle),
-            Icon(isVideo ? Icons.videocam_rounded : Icons.photo_camera_rounded, size: 18, color: previewColor),
+            Icon(isVideo ? Icons.videocam_rounded : Icons.photo_camera_rounded, size: 15, color: previewColor),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
@@ -614,17 +610,17 @@ class _ConvoRow extends StatelessWidget {
         builder: (_) => group != null ? GroupThreadScreen(groupId: group.id) : DmThreadScreen(personId: person!.id),
       )),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
         child: Row(
           children: [
             avatar,
-            const SizedBox(width: 14),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   title,
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   subtitle,
                 ],
               ),
@@ -633,19 +629,19 @@ class _ConvoRow extends StatelessWidget {
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(time, style: TextStyle(color: hasUnread ? tokens.brand : tokens.mute, fontSize: 13, fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500)),
+                Text(time, style: TextStyle(color: hasUnread ? tokens.brand : tokens.mute, fontSize: 11.5, fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500)),
                 const SizedBox(height: 6),
                 if (hasUnread)
                   Container(
-                    constraints: const BoxConstraints(minWidth: 24),
-                    height: 24,
-                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                    constraints: const BoxConstraints(minWidth: 20),
+                    height: 20,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
                     alignment: Alignment.center,
-                    decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(12)),
-                    child: Text(unread > 99 ? '99+' : '$unread', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                    decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(10)),
+                    child: Text(unread > 99 ? '99+' : '$unread', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 11)),
                   )
                 else
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
               ],
             ),
           ],
@@ -882,7 +878,7 @@ class _ChatTabs extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: () => onTap(i),
           child: SizedBox(
-            height: 48,
+            height: 42,
             child: Center(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -891,7 +887,7 @@ class _ChatTabs extends StatelessWidget {
                     duration: const Duration(milliseconds: 160),
                     style: TextStyle(
                       color: active ? tokens.ink : tokens.mute,
-                      fontSize: 17,
+                      fontSize: 15,
                       fontWeight: active ? FontWeight.w800 : FontWeight.w600,
                     ),
                     child: Text(label),
@@ -934,8 +930,8 @@ class _ChatTabs extends StatelessWidget {
                   widthFactor: 0.5,
                   child: Center(
                     child: Container(
-                      width: 96,
-                      height: 3,
+                      width: 84,
+                      height: 2.5,
                       decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(2)),
                     ),
                   ),

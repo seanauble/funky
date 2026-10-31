@@ -199,6 +199,20 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   Positioned.fill(
                     child: PlaceMediaThumbnail(story: latestVenueStory, coverPhotoPath: place.coverPhotoPath, coverUrl: place.coverUrl, photoUrl: place.photoUrl, fallbackLabel: place.name.substring(0, 1), fontSize: 40),
                   ),
+                  // Google photos need a visible credit.
+                  if (latestVenueStory == null && store.placePhotoCredits[place.id] != null)
+                    Positioned(
+                      left: 10,
+                      bottom: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(6)),
+                        child: Text(
+                          'Photo: ${store.placePhotoCredits[place.id]} · Google',
+                          style: const TextStyle(color: Colors.white, fontSize: 10),
+                        ),
+                      ),
+                    ),
                   if (venueStories.isNotEmpty)
                     Positioned(
                       bottom: 10,

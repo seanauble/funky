@@ -24,7 +24,11 @@ LatLngBounds _radiusBounds(double lat, double lng) {
   final dLat = rangeMiles / milesPerDegLat;
   final cosLat = math.cos(lat * math.pi / 180).abs();
   final dLng = rangeMiles / (milesPerDegLat * (cosLat < 0.05 ? 0.05 : cosLat));
-  return LatLngBounds(ll.LatLng(lat - dLat, lng - dLng), ll.LatLng(lat + dLat, lng + dLng));
+  // An admin's radius can reach thousands of miles — keep the box on the map.
+  return LatLngBounds(
+    ll.LatLng((lat - dLat).clamp(-85.0, 85.0), (lng - dLng).clamp(-180.0, 180.0)),
+    ll.LatLng((lat + dLat).clamp(-85.0, 85.0), (lng + dLng).clamp(-180.0, 180.0)),
+  );
 }
 
 /// The little text box explaining what a verified checkmark on a place
@@ -58,9 +62,11 @@ class _MapRadiusSliderState extends State<_MapRadiusSlider> {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final store = context.read<AppStore>();
-    final value = (_drag ?? rangeMiles).clamp(minRangeMiles.toDouble(), maxRangeMiles.toDouble());
-    final miles = value.round();
+    final store = context.watch<AppStore>();
+    // 1–50 miles for everyone; admins can slide on out to 5,000.
+    final stops = radiusStops(admin: store.isAdmin);
+    final value = (_drag ?? radiusStopIndex(stops, rangeMiles).toDouble()).clamp(0.0, (stops.length - 1).toDouble());
+    final miles = stops[value.round()];
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 2, 14, 0),
       decoration: BoxDecoration(color: tokens.bg, border: Border(bottom: BorderSide(color: tokens.line))),
@@ -71,21 +77,21 @@ class _MapRadiusSliderState extends State<_MapRadiusSlider> {
           Expanded(
             child: Slider(
               value: value,
-              min: minRangeMiles.toDouble(),
-              max: maxRangeMiles.toDouble(),
-              divisions: maxRangeMiles - minRangeMiles,
+              min: 0,
+              max: (stops.length - 1).toDouble(),
+              divisions: stops.length - 1,
               activeColor: tokens.orange,
               onChanged: (v) => setState(() => _drag = v),
               onChangeEnd: (v) {
-                store.setRadiusMiles(v.round());
+                store.setRadiusMiles(stops[v.round()]);
                 setState(() => _drag = null);
               },
             ),
           ),
           SizedBox(
-            width: 52,
+            width: 66,
             child: Text(
-              miles == 1 ? '1 mile' : '$miles mi',
+              radiusShortLabel(miles),
               textAlign: TextAlign.right,
               style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 13),
             ),

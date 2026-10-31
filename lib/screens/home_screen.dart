@@ -17,6 +17,7 @@ import 'account_screen.dart';
 import 'add_friends_screen.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
+import 'profile_parts.dart' show storyMedia;
 import 'place_detail_screen.dart';
 import '../root_shell.dart';
 import 'story_viewer_screen.dart';
@@ -90,8 +91,8 @@ class _HomeScreenState extends State<HomeScreen> {
     // one), then everyone else, unseen first — shared with the viewer so a
     // left/right swipe there moves through this exact same queue.
     final storyQueue = [if (hasMyStories) 'me', ...sortedStorytellerIds];
-    final areaMessages = store.liveChatMessages;
-    final recentAreaMessages = areaMessages;
+    // Tonight's chat, or the last 24 hours right after the 2 PM reset.
+    final recentAreaMessages = store.liveChatReplay;
 
     return Container(
       color: tokens.bg,
@@ -119,6 +120,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   seed: store.signedIn ? store.me.id : 'guest',
                   photoPath: store.signedIn ? store.me.photoPath : null,
                   photoUrl: store.signedIn ? store.me.photoUrl : null,
+                  // Once you've posted, the ring shows a little preview of
+                  // your newest Story instead of your profile picture.
+                  preview: hasMyStories ? storyMedia(myStories.first, tokens) : null,
                   onTap: hasMyStories
                       ? () => Navigator.of(context)
                           .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0)))
@@ -398,7 +402,7 @@ class _HomeTabBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 46,
+      height: 38,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
@@ -428,20 +432,20 @@ class _HomeTabChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 13),
         decoration: BoxDecoration(
           color: active ? tokens.brand : tokens.surface,
-          borderRadius: BorderRadius.circular(23),
+          borderRadius: BorderRadius.circular(19),
           border: Border.all(color: active ? tokens.brand : tokens.line, width: 1.2),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(tab.icon, size: 19, color: active ? Colors.white : tokens.mute),
-            const SizedBox(width: 8),
+            Icon(tab.icon, size: 16, color: active ? Colors.white : tokens.mute),
+            const SizedBox(width: 6),
             Text(
               tab.label,
-              style: TextStyle(color: active ? Colors.white : tokens.ink, fontSize: 14.5, fontWeight: FontWeight.w700),
+              style: TextStyle(color: active ? Colors.white : tokens.ink, fontSize: 13.5, fontWeight: FontWeight.w700),
             ),
           ],
         ),
@@ -751,6 +755,8 @@ class _StoryRing extends StatelessWidget {
   // used for "Your story" once you have stories to look back at, so the
   // ring can open your Stories while the badge still jumps to the camera.
   final VoidCallback? onAddBadgeTap;
+  // Shown inside the ring instead of the avatar (your newest Story).
+  final Widget? preview;
   const _StoryRing({
     required this.label,
     this.isAdd = false,
@@ -762,6 +768,7 @@ class _StoryRing extends StatelessWidget {
     this.onTap,
     this.onLongPress,
     this.onAddBadgeTap,
+    this.preview,
   });
 
   @override
@@ -769,6 +776,9 @@ class _StoryRing extends StatelessWidget {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final showBadge = isAdd || onAddBadgeTap != null;
     final Color ringColor = tokens.line;
+    final Widget inner = preview != null
+        ? ClipOval(child: SizedBox(width: 56, height: 56, child: preview))
+        : FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl);
     return GestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
@@ -787,7 +797,7 @@ class _StoryRing extends StatelessWidget {
                   RainbowRing(
                     size: 64,
                     strokeWidth: 3,
-                    child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
+                    child: inner,
                   )
                 else
                   Container(
@@ -798,7 +808,7 @@ class _StoryRing extends StatelessWidget {
                       shape: BoxShape.circle,
                       border: Border.all(color: ringColor, width: 2.5),
                     ),
-                    child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
+                    child: inner,
                   ),
                 if (showBadge)
                   Positioned(
@@ -850,9 +860,10 @@ Future<void> _confirmDeletePoll(BuildContext context, AppStore store, Poll poll)
 
 /// The three-line Live Chat peek on Home. While people are actually talking
 /// (a message in the last 15 minutes) it just shows the latest three. When
-/// the room has gone quiet it behaves like a live feed replaying tonight's
-/// older messages: every few seconds the top line slips away and the next
-/// old message swoops in at the bottom, one at a time, looping forever.
+/// the room has gone quiet it behaves like a live feed replaying older
+/// messages (tonight's, plus the last 24 hours so it still moves right after
+/// the 2 PM reset): every few seconds the top line slips away and the next
+/// one slides in at the bottom, one at a time, looping forever.
 class _LiveChatPreview extends StatefulWidget {
   const _LiveChatPreview();
 
@@ -880,25 +891,30 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
     super.dispose();
   }
 
-  bool _isQuiet(List<ChatMessage> msgs) {
-    if (msgs.isEmpty) return false;
-    return DateTime.now().millisecondsSinceEpoch - msgs.last.t > _activeWindowMs;
+  /// Someone said something in Live Chat in the last 15 minutes.
+  bool _isActive(List<ChatMessage> tonight) {
+    if (tonight.isEmpty) return false;
+    return DateTime.now().millisecondsSinceEpoch - tonight.last.t <= _activeWindowMs;
   }
+
+  /// How many lines show at once while looping — three, or fewer when
+  /// there are only a couple of messages to cycle through.
+  static int _window(int n) => n > 3 ? 3 : n - 1;
 
   void _tick() {
     if (!mounted) return;
     final store = context.read<AppStore>();
-    final msgs = store.liveChatMessages;
-    if (msgs.length <= 3 || !_isQuiet(msgs)) {
+    final msgs = store.liveChatReplay;
+    if (msgs.length < 2 || _isActive(store.liveChatMessages)) {
       if (_items != null) setState(() => _items = null);
       return;
     }
     final items = _items;
     if (items == null) {
-      // Start the loop from tonight's latest three; the next one in is the
-      // very first message, so it reads as one continuous feed.
+      // Start from the latest few; the next one in is the very first
+      // message, so it reads as one continuous feed.
       setState(() {
-        _items = msgs.sublist(msgs.length - 3);
+        _items = msgs.sublist(msgs.length - _window(msgs.length));
         _listKey = GlobalKey<AnimatedListState>();
         _cursor = 0;
       });
@@ -966,11 +982,13 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
   @override
   Widget build(BuildContext context) {
     final store = context.watch<AppStore>();
-    final msgs = store.liveChatMessages;
-    if (msgs.isEmpty) return const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.');
+    final tonight = store.liveChatMessages;
+    final pool = store.liveChatReplay;
+    if (tonight.isEmpty && pool.isEmpty) return const EmptyNote(text: 'Quiet so far. Be the first to ask what the move is.');
+    final msgs = tonight.isNotEmpty && _isActive(tonight) ? tonight : pool;
 
     final items = _items;
-    if (items != null && msgs.length > 3 && _isQuiet(msgs)) {
+    if (items != null && pool.length >= 2 && !_isActive(tonight)) {
       return FunkyCard(
         child: ClipRect(
          child: AnimatedList(

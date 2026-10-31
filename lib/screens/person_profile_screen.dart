@@ -9,7 +9,7 @@ import '../widgets/ui_widgets.dart';
 import 'admin_manage_user_screen.dart';
 import 'dm_thread_screen.dart';
 import 'profile_parts.dart';
-import 'profile_screen.dart' show shareFunkyProfile;
+import '../services/share_links.dart';
 import '../root_shell.dart' show rootShellTabRequest;
 import 'story_viewer_screen.dart';
 
@@ -171,7 +171,7 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
     final hasRing = ringStories.isNotEmpty && !banned;
     final ringUnseen = ringStories.any((s) => !s.views.contains('me'));
 
-    const avatarSize = 132.0;
+    const avatarSize = 100.0;
     final avatar = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: hasRing
@@ -222,22 +222,22 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
             child: StyledName(
               person: person,
               text: '@${person.handle}',
-              style: TextStyle(color: tokens.ink, fontSize: 26, fontWeight: FontWeight.w800),
+              style: TextStyle(color: tokens.ink, fontSize: 21, fontWeight: FontWeight.w800),
             ),
           ),
           if (person.bio.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 15)),
+            Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 13.5)),
           ],
           if (title != null) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Center(child: ProfileTitleChip(title: title)),
           ],
           if (banned) ...[
             const SizedBox(height: 8),
             Text('This account is banned.', textAlign: TextAlign.center, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
           ],
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
           ProfileStatsRow(stats: [
             (formatCount(memories.length), 'Memories', () => setState(() => _tab = 0)),
             (friendCount == null ? '–' : formatCount(friendCount), 'Friends', null),
@@ -262,9 +262,9 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
           Text(
             '${formatCount(person.points)} Funky points  ·  Level ${formatCount(levelFor(person.points))}',
             textAlign: TextAlign.center,
-            style: TextStyle(color: tokens.mute, fontSize: 13.5),
+            style: TextStyle(color: tokens.mute, fontSize: 12.5),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
           UnderlineTabs(labels: const ['Memories', 'Places'], index: _tab, onTap: (i) => setState(() => _tab = i)),
           const SizedBox(height: 12),
           if (_tab == 0) ...[
@@ -326,7 +326,7 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
               label: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Explore tagged spots in Places', style: TextStyle(color: tokens.mute, fontSize: 14.5)),
+                  Text('Explore tagged spots in Places', style: TextStyle(color: tokens.mute, fontSize: 13.5)),
                   Icon(Icons.chevron_right_rounded, color: tokens.mute),
                 ],
               ),
@@ -366,14 +366,14 @@ class _FriendButtons extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
-    const pad = EdgeInsets.symmetric(vertical: 14);
-    const label = TextStyle(fontWeight: FontWeight.w800, fontSize: 16);
+    final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(11));
+    const pad = EdgeInsets.symmetric(vertical: 10);
+    const label = TextStyle(fontWeight: FontWeight.w800, fontSize: 14.5);
 
     Widget filled(IconData icon, String text, VoidCallback onTap) => ElevatedButton.icon(
           onPressed: onTap,
           style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, foregroundColor: Colors.white, elevation: 0, padding: pad, shape: shape),
-          icon: Icon(icon, size: 22),
+          icon: Icon(icon, size: 19),
           label: Text(text, style: label),
         );
     Widget outlined(IconData icon, String text, VoidCallback onTap, {Color? color}) => OutlinedButton.icon(
@@ -385,7 +385,7 @@ class _FriendButtons extends StatelessWidget {
             side: BorderSide(color: tokens.line),
             shape: shape,
           ),
-          icon: Icon(icon, size: 21),
+          icon: Icon(icon, size: 18),
           label: Text(text, style: label),
         );
 

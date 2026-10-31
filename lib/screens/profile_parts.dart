@@ -130,7 +130,7 @@ class MemoryTile extends StatelessWidget {
               bottom: 8,
               child: Text(
                 shortDateLabel(DateTime.fromMillisecondsSinceEpoch(story.t)),
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13.5, shadows: shadow),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12, shadows: shadow),
               ),
             ),
             if (placeName != null)
@@ -207,9 +207,9 @@ class AddMemoryTile extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.add_rounded, color: tokens.brand, size: 40),
+              Icon(Icons.add_rounded, color: tokens.brand, size: 32),
               const SizedBox(height: 4),
-              Text('Add memory', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13.5)),
+              Text('Add memory', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 12.5)),
             ],
           ),
         ),
@@ -331,13 +331,13 @@ class PlaceMemoryCard extends StatelessWidget {
                           Text(place.name,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15.5, height: 1.15)),
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14, height: 1.15)),
                           const SizedBox(height: 3),
-                          Text('$n memor${n == 1 ? 'y' : 'ies'}', style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+                          Text('$n memor${n == 1 ? 'y' : 'ies'}', style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
                         ],
                       ),
                     ),
-                    const Icon(Icons.chevron_right_rounded, color: Colors.white, size: 26),
+                    const Icon(Icons.chevron_right_rounded, color: Colors.white, size: 22),
                   ],
                 ),
               ),
@@ -483,7 +483,7 @@ class ProfileStatsRow extends StatelessWidget {
     final children = <Widget>[];
     for (var i = 0; i < stats.length; i++) {
       final (value, label, onTap) = stats[i];
-      if (i > 0) children.add(Container(width: 1, height: 44, color: tokens.line));
+      if (i > 0) children.add(Container(width: 1, height: 36, color: tokens.line));
       children.add(Expanded(
         child: InkWell(
           onTap: onTap,
@@ -494,10 +494,10 @@ class ProfileStatsRow extends StatelessWidget {
               children: [
                 FittedBox(
                   fit: BoxFit.scaleDown,
-                  child: Text(value, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 23)),
+                  child: Text(value, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18.5)),
                 ),
-                const SizedBox(height: 2),
-                Text(label, style: TextStyle(color: tokens.mute, fontSize: 13.5)),
+                const SizedBox(height: 1),
+                Text(label, style: TextStyle(color: tokens.mute, fontSize: 12)),
               ],
             ),
           ),
@@ -517,11 +517,11 @@ class ProfileTitleChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
-      decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(16)),
       child: Text(
-        '${title.emoji}  ${title.title}',
-        style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13.5),
+        '${title.emoji} ${title.title}',
+        style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12),
       ),
     );
   }
@@ -548,16 +548,16 @@ class UnderlineTabs extends StatelessWidget {
                 onTap: () => onTap(i),
                 child: Column(
                   children: [
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     Text(
                       labels[i],
                       style: TextStyle(
                         color: i == index ? tokens.orange : tokens.mute,
                         fontWeight: i == index ? FontWeight.w800 : FontWeight.w600,
-                        fontSize: 16,
+                        fontSize: 14.5,
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       height: 3,

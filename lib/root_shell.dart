@@ -134,14 +134,16 @@ class _TabBar extends StatelessWidget {
   final ValueChanged<int> onTap;
   const _TabBar({required this.index, required this.onTap});
 
-  static const double _barHeight = 74;
+  static const double _barHeight = 56;
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    // The home-indicator gap sits under the bar, not inside its 74px, so the
-    // icons never get squeezed on Face ID iPhones.
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    // The home-indicator gap sits under the bar (trimmed a little so the bar
+    // doesn't sit too high), not inside its 56px, so the icons never get
+    // squeezed on Face ID iPhones.
+    final rawInset = MediaQuery.paddingOf(context).bottom;
+    final bottomInset = rawInset > 20 ? rawInset - 12 : rawInset;
     final unread = context.select<AppStore, int>((s) => s.totalUnreadMessages);
     return Container(
       height: _barHeight + bottomInset,
@@ -188,16 +190,16 @@ class _PlusButtonState extends State<_PlusButton> {
         scale: _down ? 0.9 : 1,
         duration: const Duration(milliseconds: 110),
         child: Container(
-          width: 56,
-          height: 56,
+          width: 46,
+          height: 46,
           decoration: BoxDecoration(
             color: widget.color,
-            borderRadius: BorderRadius.circular(17),
+            borderRadius: BorderRadius.circular(14),
             boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.35), blurRadius: 12, offset: const Offset(0, 4))],
           ),
           // A plus, not a camera: it opens the whole create flow (camera
           // Story, text Story, poll, or place).
-          child: const Icon(Icons.add_rounded, color: Colors.white, size: 36),
+          child: const Icon(Icons.add_rounded, color: Colors.white, size: 30),
         ),
       ),
     );
@@ -231,7 +233,7 @@ class _TabItem extends StatelessWidget {
                 AnimatedScale(
                   scale: active ? 1.08 : 1,
                   duration: const Duration(milliseconds: 160),
-                  child: Icon(icon, color: c, size: 29),
+                  child: Icon(icon, color: c, size: 25),
                 ),
                 if (badge > 0)
                   Positioned(
@@ -252,8 +254,8 @@ class _TabItem extends StatelessWidget {
                   ),
               ],
             ),
-            const SizedBox(height: 4),
-            Text(label, style: TextStyle(color: c, fontSize: 13, fontWeight: active ? FontWeight.w800 : FontWeight.w600)),
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(color: c, fontSize: 11, fontWeight: active ? FontWeight.w800 : FontWeight.w600)),
           ],
         ),
       ),

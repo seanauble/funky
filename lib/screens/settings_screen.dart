@@ -9,6 +9,7 @@ import 'account_screen.dart';
 import 'admin_panel_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
+import '../services/share_links.dart';
 
 /// Reached from the gear icon on Profile. Appearance used to just sit in
 /// the middle of the profile page — it lives here now along with the
@@ -34,6 +35,16 @@ class SettingsScreen extends StatelessWidget {
             child: _SettingsRow(
               label: store.signedIn ? 'Manage account (${store.accountEmail})' : 'Create an account to post & message',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen())),
+            ),
+          ),
+          const SizedBox(height: 10),
+          FunkyCard(
+            padding: EdgeInsets.zero,
+            child: Builder(
+              builder: (rowContext) => _SettingsRow(
+                label: 'Invite friends to FUNKY',
+                onTap: () => shareFunkyInvite(rowContext, handle: store.signedIn ? store.me.handle : null),
+              ),
             ),
           ),
           const SectionHeader(title: 'Your area'),
@@ -187,9 +198,11 @@ class _RadiusCardState extends State<_RadiusCard> {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final store = context.read<AppStore>();
-    final value = (_drag ?? rangeMiles).clamp(minRangeMiles.toDouble(), maxRangeMiles.toDouble());
-    final miles = value.round();
+    final store = context.watch<AppStore>();
+    // 1–50 miles for everyone; admins can go out to 5,000.
+    final stops = radiusStops(admin: store.isAdmin);
+    final value = (_drag ?? radiusStopIndex(stops, rangeMiles).toDouble()).clamp(0.0, (stops.length - 1).toDouble());
+    final miles = stops[value.round()];
     return FunkyCard(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
       child: Column(
@@ -200,24 +213,26 @@ class _RadiusCardState extends State<_RadiusCard> {
               Expanded(
                 child: Text('How far is near you?', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
               ),
-              Text(miles == 1 ? '1 mile' : '$miles miles', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+              Text(radiusShortLabel(miles), style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
             ],
           ),
           Slider(
             value: value,
-            min: minRangeMiles.toDouble(),
-            max: maxRangeMiles.toDouble(),
-            divisions: maxRangeMiles - minRangeMiles,
-            label: miles == 1 ? '1 mile' : '$miles miles',
+            min: 0,
+            max: (stops.length - 1).toDouble(),
+            divisions: stops.length - 1,
+            label: radiusShortLabel(miles),
             activeColor: tokens.orange,
             onChanged: (v) => setState(() => _drag = v),
             onChangeEnd: (v) {
-              store.setRadiusMiles(v.round());
+              store.setRadiusMiles(stops[v.round()]);
               setState(() => _drag = null);
             },
           ),
           Text(
-            'Places, polls, live chat and the map show what is within this distance of you. Default is 10 miles. You can also change this on the Map tab.',
+            store.isAdmin
+                ? 'Places, polls, live chat and the map show what is within this distance of you. Admins can go up to 5,000 miles; everyone else 1–50.'
+                : 'Places, polls, live chat and the map show what is within this distance of you. Default is 10 miles. You can also change this on the Map tab.',
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
           const SizedBox(height: 6),

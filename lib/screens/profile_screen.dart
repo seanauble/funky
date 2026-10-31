@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
@@ -17,26 +16,9 @@ import 'create_sheet.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
 import 'profile_parts.dart';
+import '../services/share_links.dart';
 
 enum _PhotoSource { camera, library }
-
-/// Shares a FUNKY profile through the phone's share sheet.
-Future<void> shareFunkyProfile(BuildContext context, String handle, {bool mine = false}) async {
-  final text = mine ? "I'm on FUNKY — add me: @$handle 🕺" : 'Check out @$handle on FUNKY 🕺';
-  try {
-    final box = context.findRenderObject() as RenderBox?;
-    await SharePlus.instance.share(ShareParams(
-      text: text,
-      subject: 'FUNKY',
-      sharePositionOrigin: box == null ? null : box.localToGlobal(Offset.zero) & box.size,
-    ));
-  } catch (_) {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied — paste it anywhere.')));
-    }
-  }
-}
 
 /// Your own profile tab: picture, name, bio and title up top, Edit / Share,
 /// your numbers, the places you've posted from, and your Memories by month.
@@ -157,9 +139,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final buttonStyle = OutlinedButton.styleFrom(
       backgroundColor: tokens.surface,
-      padding: const EdgeInsets.symmetric(vertical: 13),
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      minimumSize: const Size(0, 38),
       side: BorderSide(color: tokens.line),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     );
 
     // No AppBar of its own — the root shell's shared AppBar carries the
@@ -176,7 +159,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Container(
                 padding: const EdgeInsets.all(2),
                 decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.line, width: 2)),
-                child: PersonAvatar(person: me, size: 104, viewProfile: false),
+                child: PersonAvatar(person: me, size: 82, viewProfile: false),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -186,18 +169,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     StyledName(
                       person: me,
                       text: '@${me.handle}',
-                      style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800),
+                      style: TextStyle(color: tokens.ink, fontSize: 19, fontWeight: FontWeight.w800),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     if (me.bio.isNotEmpty)
-                      Text(me.bio, style: TextStyle(color: tokens.mute, fontSize: 14.5, height: 1.3))
+                      Text(me.bio, style: TextStyle(color: tokens.mute, fontSize: 13.5, height: 1.3))
                     else
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EditProfileScreen())),
-                        child: Text('Add a bio', style: TextStyle(color: tokens.mute.withValues(alpha: 0.7), fontSize: 14.5)),
+                        child: Text('Add a bio', style: TextStyle(color: tokens.mute.withValues(alpha: 0.7), fontSize: 13.5)),
                       ),
                     if (title != null) ...[
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 8),
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen())),
                         child: ProfileTitleChip(title: title),
@@ -222,14 +205,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   .toList(),
             ),
           ],
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
                 child: OutlinedButton(
                   onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EditProfileScreen())),
                   style: buttonStyle,
-                  child: Text('Edit profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                  child: Text('Edit profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14)),
                 ),
               ),
               const SizedBox(width: 10),
@@ -238,7 +221,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   builder: (buttonContext) => OutlinedButton(
                     onPressed: () => shareFunkyProfile(buttonContext, me.handle, mine: true),
                     style: buttonStyle,
-                    child: Text('Share profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                    child: Text('Share profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14)),
                   ),
                 ),
               ),
@@ -269,15 +252,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
               children: [
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Icon(Icons.location_on, color: tokens.brand, size: 26),
+                  child: Icon(Icons.location_on, color: tokens.brand, size: 22),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text("Places I've been", style: TextStyle(color: tokens.ink, fontSize: 19, fontWeight: FontWeight.w800)),
-                      Text('From your tagged memories', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                      Text("Places I've been", style: TextStyle(color: tokens.ink, fontSize: 16.5, fontWeight: FontWeight.w800)),
+                      Text('From your tagged memories', style: TextStyle(color: tokens.mute, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -285,7 +268,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PlacesBeenScreen(personId: 'me'))),
                   child: Row(
                     children: [
-                      Text('See all', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 14.5)),
+                      Text('See all', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13.5)),
                       Icon(Icons.chevron_right_rounded, color: tokens.orange),
                     ],
                   ),
@@ -294,7 +277,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 12),
             SizedBox(
-              height: 150,
+              height: 116,
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final cardWidth = (constraints.maxWidth - 10) / 2;
@@ -311,7 +294,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Divider(height: 1, color: tokens.line),
           ],
           const SizedBox(height: 14),
-          Text('Memories', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
+          Text('Memories', style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800)),
           if (myStories.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6, bottom: 10),
@@ -327,12 +310,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(months[mi], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5)),
+                    child: Text(months[mi], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14.5)),
                   ),
                   if (mi == 0 && months.length > 1)
                     GestureDetector(
                       onTap: () => _pickMonth(months),
-                      child: Icon(Icons.calendar_today_outlined, color: tokens.ink, size: 22),
+                      child: Icon(Icons.calendar_today_outlined, color: tokens.ink, size: 19),
                     ),
                 ],
               ),

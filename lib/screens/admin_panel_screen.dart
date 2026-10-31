@@ -5,6 +5,7 @@ import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
 import 'add_friends_screen.dart';
 import 'person_profile_screen.dart';
+import 'venue_review_screen.dart';
 
 /// Reached from Settings, only ever shown to the one hardcoded FUNKY Admin
 /// account (store.isAdmin — see app_store.dart) — a single place for the
@@ -160,7 +161,7 @@ class AdminPanelScreen extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Text(
-              'To give someone points, open their profile — the +100 / +500 / +1000 buttons are right under Add Friend.',
+              'To give someone points or ban them, open their profile → ••• → Manage this account.',
               style: TextStyle(color: tokens.mute, fontSize: 12.5),
             ),
           ),
@@ -182,6 +183,37 @@ class AdminPanelScreen extends StatelessWidget {
                 ),
               );
             }),
+          const SectionHeader(title: 'New venues'),
+          FunkyCard(
+            padding: EdgeInsets.zero,
+            child: InkWell(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const VenueReviewScreen())),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                child: Row(
+                  children: [
+                    Icon(Icons.local_bar_outlined, color: tokens.brand),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Review bars & clubs to add', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                          Text(
+                            store.venueCandidatesLoaded
+                                ? '${store.venueCandidates.where((v) => v.status == 'pending').length} waiting · within 50 mi of Egg Harbor'
+                                : 'Within 50 miles of Egg Harbor',
+                            style: TextStyle(color: tokens.mute, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right, color: tokens.mute),
+                  ],
+                ),
+              ),
+            ),
+          ),
           const SectionHeader(title: 'Approvals'),
           Builder(builder: (context) {
             final pendingPlaces = store.places.where((p) => !store.isAdminVerified(p.id)).length;

@@ -16,6 +16,8 @@ import 'models.dart';
 import 'notification_models.dart';
 import 'place_photo.dart';
 import 'place_rating.dart';
+import 'supabase_config.dart';
+import 'venue_models.dart';
 import 'session.dart';
 
 const _storageKey = 'funky.store.v1';
@@ -353,6 +355,7 @@ class AppStore extends ChangeNotifier {
   void deleteMessage(String messageId) {
     if (!isAdmin) return;
     messages = messages.where((m) => m.id != messageId).toList();
+    _chatReplayPool = _chatReplayPool.where((m) => m.id != messageId).toList();
     notifyListeners();
     _persist();
     if (_remoteChatIds.remove(messageId)) {
@@ -721,7 +724,8 @@ class AppStore extends ChangeNotifier {
       _avatarPending = prefs.getBool(_avatarPendingKey) ?? false;
       await _loadUnreadState(prefs);
       final savedRadius = prefs.getInt(_radiusKey);
-      if (savedRadius != null) rangeMiles = savedRadius.clamp(minRangeMiles, maxRangeMiles).toDouble();
+      if (savedRadius != null) _savedRadiusMiles = savedRadius.clamp(minRangeMiles, adminMaxRangeMiles).toInt();
+      rangeMiles = (_savedRadiusMiles ?? defaultRangeMiles.round()).clamp(minRangeMiles, maxRangeMiles).toDouble();
       final raw = prefs.getString(_storageKey);
       final currentSession = sessionKey();
       if (raw != null) {
@@ -899,6 +903,8 @@ class AppStore extends ChangeNotifier {
       // — pick the real backend sync back up the same as a fresh signIn
       // would, so Stories/DMs start flowing in without waiting for you to
       // touch the account screen.
+      // Admins may have picked a radius past 50 miles.
+      _applyRadiusCap();
       if (signedIn || isGuest) {
         _startRemoteSync();
       } else {
@@ -2543,6 +2549,7 @@ class AppStore extends ChangeNotifier {
         accountEmail = s.user.email;
         supabaseUserId = s.user.id;
         signedIn = true;
+        _applyRadiusCap();
         notifyListeners();
         _persist();
         _startRemoteSync();
@@ -2570,6 +2577,7 @@ class AppStore extends ChangeNotifier {
       accountEmail = response.user?.email;
       supabaseUserId = response.user?.id;
       signedIn = true;
+      _applyRadiusCap();
       notifyListeners();
       _persist();
       _startRemoteSync();
@@ -2592,6 +2600,7 @@ class AppStore extends ChangeNotifier {
       accountEmail = response.user?.email;
       supabaseUserId = response.user?.id;
       signedIn = true;
+      _applyRadiusCap();
       notifyListeners();
       _persist();
       _startRemoteSync();
@@ -2621,6 +2630,7 @@ class AppStore extends ChangeNotifier {
     signedIn = false;
     accountEmail = null;
     supabaseUserId = null;
+    _applyRadiusCap();
     notifyListeners();
     _persist();
     // Keep browsing as a guest (places, live chat, stories).
@@ -3285,6 +3295,7 @@ class AppStore extends ChangeNotifier {
     _remotePersonIds.clear();
     _remotePlaceIds.clear();
     _remoteChatIds.clear();
+    _chatReplayPool = [];
     _remoteBannedIds.clear();
     selfBanned = false;
     _remoteAdmin = false;
@@ -3466,6 +3477,7 @@ class AppStore extends ChangeNotifier {
     selfBanned = row['banned'] as bool? ?? false;
     final wasRemoteAdmin = _remoteAdmin;
     _remoteAdmin = row['is_admin'] as bool? ?? false;
+    if (_remoteAdmin != wasRemoteAdmin) _applyRadiusCap();
     if (_remoteAdmin && !wasRemoteAdmin) {
       // Just learned this account is an admin — pull in what's waiting.
       unawaited(_fetchProfileReports());
@@ -4296,8 +4308,119 @@ class AppStore extends ChangeNotifier {
       session: sessionKey(created),
       coverPhotoPath: _localPlaceCovers[id],
       coverUrl: row['cover_url'] as String?,
-      photoUrl: row['photo_url'] as String?,
+      photoUrl: _resolvePlacePhoto(id, row),
     );
+  }
+
+  /// Who took each place's picture, when it needs a credit (Google photos).
+  final Map<String, String> placePhotoCredits = {};
+
+  /// A place's approved picture. Imported venues store a Google photo as
+  /// "gplace:places/…/photos/…", which loads through the venue-photo function.
+  String? _resolvePlacePhoto(String placeId, Map<String, dynamic> row) {
+    final raw = row['photo_url'] as String?;
+    final credit = row['photo_credit'] as String?;
+    if (credit != null && credit.isNotEmpty) {
+      placePhotoCredits[placeId] = credit;
+    } else {
+      placePhotoCredits.remove(placeId);
+    }
+    if (raw != null && raw.startsWith('gplace:')) return venuePhotoUrl(raw.substring(7));
+    return raw;
+  }
+
+  /// Where an imported venue's Google photo loads from.
+  String venuePhotoUrl(String ref, {int width = 800}) =>
+      '${SupabaseConfig.url}/functions/v1/venue-photo?ref=${Uri.encodeQueryComponent(ref)}&w=$width';
+
+  // --- Venue import (admin) -----------------------------------------------
+
+  /// Bars and clubs pulled in from OpenStreetMap, for the admin to review.
+  List<VenueCandidate> venueCandidates = [];
+  bool venueCandidatesLoaded = false;
+
+  Future<void> fetchVenueCandidates() async {
+    if (!isAdmin) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('venue_candidates')
+          .select()
+          .order('distance_miles', ascending: true)
+          .limit(2000);
+      venueCandidates = [
+        for (final r in rows)
+          if (VenueCandidate.fromRow(r) case final c?) c,
+      ];
+      venueCandidatesLoaded = true;
+      notifyListeners();
+    } catch (_) {
+      venueCandidatesLoaded = true;
+      notifyListeners();
+    }
+  }
+
+  /// Runs the OpenStreetMap import (bars, pubs & clubs within 50 miles of
+  /// Egg Harbor).
+  /// Returns a sentence saying how it went.
+  Future<String> importVenues() async {
+    if (!isAdmin) return 'Admins only.';
+    try {
+      final res = await Supabase.instance.client.functions.invoke('import-venues');
+      final data = res.data;
+      await fetchVenueCandidates();
+      if (data is Map) {
+        if (data['error'] != null) return data['error'].toString();
+        final added = data['added'] ?? 0;
+        final found = data['found'] ?? 0;
+        return added == 0 ? 'Nothing new — you have every bar & club already ($found checked).' : '$added new bars & clubs to review.';
+      }
+      return 'Import finished.';
+    } on FunctionException catch (e) {
+      final d = e.details;
+      if (d is Map && d['error'] != null) return d['error'].toString();
+      return "The import didn't run (${e.status}). Is the import-venues function deployed?";
+    } catch (e) {
+      return "The import didn't run: $e";
+    }
+  }
+
+  /// Uploads [path] as an imported venue's photo (and swaps it in on the
+  /// map if the venue is already live). Null means it worked.
+  Future<String?> setVenuePhoto(String id, String path) async {
+    final uid = supabaseUserId;
+    if (!isAdmin || uid == null) return 'Admins only.';
+    final url = await _uploadPlaceCover(uid, path);
+    if (url == null) return "Couldn't upload that photo — try a smaller one.";
+    try {
+      await Supabase.instance.client.rpc('set_venue_photo', params: {'p_id': id, 'p_url': url});
+      await fetchVenueCandidates();
+      unawaited(_fetchRemotePlaces());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Venue photos', phase: 'phase 19', fallback: "Couldn't save that photo");
+    }
+  }
+
+  /// Approve / deny / ask for changes on an imported venue, with optional
+  /// edits (name, bar/club, which photo, a note). Null means it worked.
+  Future<String?> reviewVenue(String id, String decision, {String? note, String? name, String? kind, int? photoIndex, String? address}) async {
+    if (!isAdmin) return 'Admins only.';
+    try {
+      await Supabase.instance.client.rpc('review_venue', params: {
+        'p_id': id,
+        'p_decision': decision,
+        'p_note': note,
+        'p_name': name,
+        'p_kind': kind,
+        'p_photo_index': photoIndex,
+        'p_address': address,
+      });
+      await fetchVenueCandidates();
+      if (decision == 'approve') unawaited(_fetchRemotePlaces());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Venue import', phase: 'phase 19', fallback: "Couldn't save that");
+    }
   }
 
   /// Replaces the backend-sourced places with a fresh copy. A place lasts 24
@@ -4506,24 +4629,56 @@ class AppStore extends ChangeNotifier {
     );
   }
 
+  // The last 24 hours of Live Chat (the server never gives out older) —
+  // only used by Home's chat preview to keep looping old messages right
+  // after the 2 PM reset, when tonight's chat is still empty. The real Live
+  // Chat still only shows tonight's.
+  List<ChatMessage> _chatReplayPool = [];
+
+  /// Tonight's area chat plus anything from the last 24 hours, oldest first.
+  List<ChatMessage> get liveChatReplay {
+    final here = location ?? defaultLocation;
+    final byId = <String, ChatMessage>{};
+    for (final m in _chatReplayPool) {
+      byId[m.id] = m;
+    }
+    for (final m in liveChatMessages) {
+      byId[m.id] = m;
+    }
+    final list = byId.values.where((m) {
+      if (m.uid != 'me' && isBanned(m.uid)) return false;
+      final lat = m.lat;
+      final lng = m.lng;
+      return lat == null || lng == null || near(here, LatLng(lat, lng));
+    }).toList();
+    list.sort((a, b) => a.t.compareTo(b.t));
+    return list;
+  }
+
   Future<void> _fetchRemoteChat() async {
     if (supabaseUserId == null) return;
     try {
-      final cutoff = DateTime.fromMillisecondsSinceEpoch(_sessionStartMs()).toUtc().toIso8601String();
+      final dayAgo = DateTime.now().subtract(const Duration(hours: 24)).toUtc().toIso8601String();
+      final sessionStart = _sessionStartMs();
       final rows = await Supabase.instance.client
           .from('chat_messages')
           .select()
-          .gte('created_at', cutoff)
+          .gte('created_at', dayAgo)
           .order('created_at', ascending: false)
-          .limit(300);
+          .limit(400);
       final fetched = <ChatMessage>[];
+      final pool = <ChatMessage>[];
       for (final row in rows) {
         final msg = _chatFromRow(row);
         if (msg == null) continue;
+        pool.add(msg);
+        if (msg.t < sessionStart) continue; // before the 2 PM reset
         fetched.add(msg);
         _remoteChatIds.add(msg.id);
       }
-      await _ensurePeopleFor(fetched.map((m) => m.uid).where((u) => u != 'anon' && u != 'me'));
+      await _ensurePeopleFor(pool.map((m) => m.uid).where((u) => u != 'anon' && u != 'me'));
+      _chatReplayPool = pool;
+      notifyListeners();
       final existingIds = messages.map((m) => m.id).toSet();
       final newOnes = fetched.where((m) => !existingIds.contains(m.id)).toList();
       if (newOnes.isNotEmpty) {
@@ -4553,6 +4708,7 @@ class AppStore extends ChangeNotifier {
     final id = oldRow['id'] as String?;
     if (id == null) return;
     _remoteChatIds.remove(id);
+    _chatReplayPool = _chatReplayPool.where((m) => m.id != id).toList();
     final before = messages.length;
     messages = messages.where((m) => m.id != id).toList();
     if (messages.length != before) notifyListeners();
@@ -5221,11 +5377,25 @@ class AppStore extends ChangeNotifier {
 
   static const _radiusKey = 'funky.radiusMiles';
 
-  /// Your own "near me" distance, 1–50 miles (25 by default). Saved on this
-  /// phone, and sent up with your location so the server's "new place near
-  /// you" alerts use the same distance.
+  // The radius you picked (saved on this phone). What's actually used is
+  // this, capped at 50 miles unless you're an admin (up to 5,000).
+  int? _savedRadiusMiles;
+
+  int get radiusCapMiles => isAdmin ? adminMaxRangeMiles : maxRangeMiles;
+
+  void _applyRadiusCap() {
+    final next = (_savedRadiusMiles ?? defaultRangeMiles.round()).clamp(minRangeMiles, radiusCapMiles).toDouble();
+    if (next == rangeMiles) return;
+    rangeMiles = next;
+    notifyListeners();
+  }
+
+  /// Your own "near me" distance: 1–50 miles (10 by default), or up to 5,000
+  /// for admins. Saved on this phone, and sent up with your location so the
+  /// server's "new place near you" alerts use the same distance.
   Future<void> setRadiusMiles(int miles) async {
-    final next = miles.clamp(minRangeMiles, maxRangeMiles).toDouble();
+    final next = miles.clamp(minRangeMiles, radiusCapMiles).toDouble();
+    _savedRadiusMiles = next.round();
     if (next == rangeMiles) return;
     rangeMiles = next;
     notifyListeners();
