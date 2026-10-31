@@ -151,6 +151,31 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
+          // Not signed in and guest browsing couldn't start: say so instead of
+          // showing an empty night.
+          if (!store.signedIn && !store.isGuest && store.guestUnavailableReason != null)
+            FunkyCard(
+              margin: const EdgeInsets.only(top: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Log in to see what's happening near you", style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  Text(
+                    store.guestUnavailableReason == 'No connection.'
+                        ? "We couldn't reach FUNKY — check your connection."
+                        : 'Places, stories and live chat show up once you log in or make a free account.',
+                    style: TextStyle(color: tokens.mute, fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  FunkyChip(
+                    label: 'Log in / Sign up',
+                    active: true,
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen(closeOnSuccess: true))),
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 12),
           _HomeTabBar(selected: _tab, onChanged: (t) => setState(() => _tab = t)),
           if (_tab == _HomeTab.friends)

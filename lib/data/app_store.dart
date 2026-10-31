@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/osm_venues.dart';
 import '../services/push_service.dart';
 import 'geo.dart';
 import 'call_models.dart';
@@ -648,6 +649,11 @@ class AppStore extends ChangeNotifier {
   // people see on a guest's live-chat messages.
   String? guestHandle;
   bool _guestStarting = false;
+
+  /// Why guest browsing couldn't start (anonymous sign-ins switched off in
+  /// Supabase, or no connection) — Home shows a sign-in card instead of an
+  /// empty feed. Null when it's working or hasn't been tried.
+  String? guestUnavailableReason;
 
   /// True when this phone can talk to the server at all: a real account or a guest.
   bool get canUseServer => (signedIn || isGuest) && supabaseUserId != null;
@@ -2687,11 +2693,17 @@ class AppStore extends ChangeNotifier {
       final s = res.session;
       if (s == null || signedIn) return;
       isGuest = true;
+      guestUnavailableReason = null;
       supabaseUserId = s.user.id;
       notifyListeners();
       _startRemoteSync();
-    } catch (_) {
-      // Anonymous sign-ins are off, or no connection — stays local-only.
+    } catch (e) {
+      // Anonymous sign-ins are off in Supabase, or no connection.
+      final text = e.toString().toLowerCase();
+      guestUnavailableReason = text.contains('anonymous') || text.contains('disabled')
+          ? 'Guest browsing is switched off.'
+          : 'No connection.';
+      notifyListeners();
     } finally {
       _guestStarting = false;
     }
@@ -4407,27 +4419,29 @@ class AppStore extends ChangeNotifier {
     // Imports around your dropped pin if you're viewing another area,
     // otherwise around where you really are.
     if (!isViewingElsewhere) await requestLocation();
-    final here = location;
+    final here = location ?? const LatLng(39.3926, -74.6202); // Egg Harbor Twp
+    // The phone asks OpenStreetMap itself, then hands the list to the
+    // database (supabase/phase21.sql).
+    final List<Map<String, dynamic>> rows;
     try {
-      final res = await Supabase.instance.client.functions.invoke(
-        'import-venues',
-        body: here == null ? const <String, dynamic>{} : {'lat': here.lat, 'lng': here.lng},
-      );
-      final data = res.data;
-      await fetchVenueCandidates();
-      if (data is Map) {
-        if (data['error'] != null) return data['error'].toString();
-        final added = data['added'] ?? 0;
-        final found = data['found'] ?? 0;
-        return added == 0 ? 'Nothing new — you have every bar & club already ($found checked).' : '$added new bars & clubs to review.';
-      }
-      return 'Import finished.';
-    } on FunctionException catch (e) {
-      final d = e.details;
-      if (d is Map && d['error'] != null) return d['error'].toString();
-      return "The import didn't run (${e.status}). Is the import-venues function deployed?";
+      rows = await OsmVenueFetcher.fetch(lat: here.lat, lng: here.lng);
     } catch (e) {
-      return "The import didn't run: $e";
+      return e.toString().replaceFirst('Exception: ', '');
+    }
+    if (rows.isEmpty) return 'OpenStreetMap has no bars or clubs listed within 50 miles of here.';
+    try {
+      var added = 0;
+      for (var i = 0; i < rows.length; i += 300) {
+        final chunk = rows.sublist(i, math.min(i + 300, rows.length));
+        final n = await Supabase.instance.client.rpc('import_venue_candidates', params: {'p_rows': chunk});
+        if (n is num) added += n.toInt();
+      }
+      await fetchVenueCandidates();
+      return added == 0
+          ? 'Nothing new — you already have every bar & club near here (${rows.length} checked).'
+          : '$added new bars & clubs to review (out of ${rows.length} found).';
+    } catch (e) {
+      return _featureError(e, feature: 'Venue import', phase: 'phase 21', fallback: "Couldn't save the list");
     }
   }
 
