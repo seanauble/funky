@@ -360,7 +360,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     child: TextButton.icon(
                       onPressed: () async {
                         final to = await Navigator.of(context).push<LatLng>(
-                          MaterialPageRoute(builder: (_) => MovePinScreen(title: 'Move ${place.name}', start: LatLng(place.lat, place.lng))),
+                          MaterialPageRoute(builder: (_) => MovePinScreen(title: 'Move ${place.name}', start: LatLng(place.place.lat, place.place.lng))),
                         );
                         if (to == null || !context.mounted) return;
                         final error = await store.adminMovePlace(place.id, to);
