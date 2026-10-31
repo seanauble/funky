@@ -7,6 +7,7 @@ import '../data/models.dart';
 import '../widgets/place_rating_card.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'move_pin_screen.dart';
 import 'place_story_viewer_screen.dart';
 
 /// The little text box explaining what the verified checkmark (or the
@@ -354,6 +355,22 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     ],
                   ),
                   const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton.icon(
+                      onPressed: () async {
+                        final to = await Navigator.of(context).push<LatLng>(
+                          MaterialPageRoute(builder: (_) => MovePinScreen(title: 'Move ${place.name}', start: LatLng(place.lat, place.lng))),
+                        );
+                        if (to == null || !context.mounted) return;
+                        final error = await store.adminMovePlace(place.id, to);
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error ?? 'Pin moved.')));
+                      },
+                      icon: Icon(Icons.open_with_rounded, size: 18, color: tokens.brand),
+                      label: Text('Move pin (Admin)', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700)),
+                    ),
+                  ),
                   SizedBox(
                     width: double.infinity,
                     child: TextButton.icon(

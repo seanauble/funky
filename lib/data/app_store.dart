@@ -588,7 +588,40 @@ class AppStore extends ChangeNotifier {
   /// unverified report from this account.
   bool get isVerifiedUser => me.points >= 1000 && myStories.length >= 10;
 
-  LatLng? location;
+  // Where your phone really is (GPS).
+  LatLng? _gpsLocation;
+
+  /// Admin "view another area": a spot an admin dropped their pin on to
+  /// watch what's going on there. While it's set, everything (places, live
+  /// chat, polls, stories, the map) acts as if you were standing there —
+  /// until you tap "Return to my location". It's never sent to the server,
+  /// and the 2-mile place-story check always uses your real location.
+  LatLng? locationOverride;
+
+  /// Where the app treats you as being: your dropped pin (admins), else GPS.
+  LatLng? get location => (isAdmin ? locationOverride : null) ?? _gpsLocation;
+
+  /// Your real GPS position, ignoring any dropped pin.
+  LatLng? get gpsLocation => _gpsLocation;
+
+  bool get isViewingElsewhere => isAdmin && locationOverride != null;
+
+  static const _viewAsKey = 'funky.viewAs';
+
+  /// Admin: pretend to be at [to] (null = back to your real location).
+  Future<void> setLocationOverride(LatLng? to) async {
+    if (to != null && !isAdmin) return;
+    locationOverride = to;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (to == null) {
+        await prefs.remove(_viewAsKey);
+      } else {
+        await prefs.setString(_viewAsKey, '${to.lat},${to.lng}');
+      }
+    } catch (_) {}
+  }
   LocationStatus locationStatus = LocationStatus.unknown;
 
   // Account — browsing FUNKY is always anonymous and free; you only need
@@ -723,6 +756,12 @@ class AppStore extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       _avatarPending = prefs.getBool(_avatarPendingKey) ?? false;
       await _loadUnreadState(prefs);
+      final viewAs = prefs.getString(_viewAsKey)?.split(',');
+      if (viewAs != null && viewAs.length == 2) {
+        final lat = double.tryParse(viewAs[0]);
+        final lng = double.tryParse(viewAs[1]);
+        if (lat != null && lng != null) locationOverride = LatLng(lat, lng);
+      }
       final savedRadius = prefs.getInt(_radiusKey);
       if (savedRadius != null) _savedRadiusMiles = savedRadius.clamp(minRangeMiles, adminMaxRangeMiles).toInt();
       rangeMiles = (_savedRadiusMiles ?? defaultRangeMiles.round()).clamp(minRangeMiles, maxRangeMiles).toDouble();
@@ -1002,7 +1041,7 @@ class AppStore extends ChangeNotifier {
         return;
       }
       final pos = await Geolocator.getCurrentPosition();
-      location = LatLng(pos.latitude, pos.longitude);
+      _gpsLocation = LatLng(pos.latitude, pos.longitude);
       locationStatus = LocationStatus.granted;
       notifyListeners();
       _syncLocationUp();
@@ -4359,13 +4398,21 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  /// Runs the OpenStreetMap import (bars, pubs & clubs within 50 miles of
-  /// Egg Harbor).
+  /// Runs the OpenStreetMap import: bars, pubs & clubs within 50 miles of
+  /// where you are right now — or your dropped pin — (Egg Harbor if
+  /// location is off).
   /// Returns a sentence saying how it went.
   Future<String> importVenues() async {
     if (!isAdmin) return 'Admins only.';
+    // Imports around your dropped pin if you're viewing another area,
+    // otherwise around where you really are.
+    if (!isViewingElsewhere) await requestLocation();
+    final here = location;
     try {
-      final res = await Supabase.instance.client.functions.invoke('import-venues');
+      final res = await Supabase.instance.client.functions.invoke(
+        'import-venues',
+        body: here == null ? const <String, dynamic>{} : {'lat': here.lat, 'lng': here.lng},
+      );
       final data = res.data;
       await fetchVenueCandidates();
       if (data is Map) {
@@ -4382,6 +4429,73 @@ class AppStore extends ChangeNotifier {
     } catch (e) {
       return "The import didn't run: $e";
     }
+  }
+
+  /// Admin: moves an imported venue's pin (and the live place, if approved).
+  Future<String?> moveVenue(String id, LatLng to) async {
+    if (!isAdmin) return 'Admins only.';
+    try {
+      await Supabase.instance.client.rpc('set_venue_location', params: {'p_id': id, 'p_lat': to.lat, 'p_lng': to.lng});
+      await fetchVenueCandidates();
+      unawaited(_fetchRemotePlaces());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Moving pins', phase: 'phase 20', fallback: "Couldn't move that pin");
+    }
+  }
+
+  /// Admin: drags a place's pin to a new spot on the map.
+  Future<String?> adminMovePlace(String placeId, LatLng to) async {
+    if (!isAdmin) return 'Admins only.';
+    final i = places.indexWhere((p) => p.id == placeId);
+    if (i == -1) return 'That place is gone.';
+    final old = places[i];
+    // Show it moved right away; the server confirms below.
+    places = [...places]..[i] = old.movedTo(to.lat, to.lng);
+    notifyListeners();
+    if (!_remotePlaceIds.contains(placeId)) {
+      _persist();
+      return null;
+    }
+    try {
+      final rows = await Supabase.instance.client.from('places').update({'lat': to.lat, 'lng': to.lng}).eq('id', placeId).select('id');
+      if (rows.isEmpty) throw Exception('not allowed');
+      return null;
+    } catch (_) {
+      final j = places.indexWhere((p) => p.id == placeId);
+      if (j != -1) {
+        places = [...places]..[j] = old;
+        notifyListeners();
+      }
+      return "Couldn't move that pin — check your connection.";
+    }
+  }
+
+  /// How close you have to be to a place to post to its story.
+  static const double placeStoryMaxMiles = 2;
+
+  /// Before posting to a place's story: makes sure location is on and
+  /// you're within [placeStoryMaxMiles] of it. Null means go ahead;
+  /// otherwise it's the reason to show. Area posts ('main') always pass.
+  Future<String?> placeStoryBlockReason(String place) async {
+    if (place == 'main') return null;
+    Place? target;
+    for (final p in places) {
+      if (p.id == place) target = p;
+    }
+    if (target == null) return null;
+    await requestLocation();
+    // Your real GPS spot, even if an admin has dropped their pin elsewhere.
+    final here = _gpsLocation;
+    if (locationStatus != LocationStatus.granted || here == null) {
+      return "Turn on location for FUNKY to post to ${target.name}'s story — you have to actually be there.";
+    }
+    final miles = milesBetween(here, LatLng(target.lat, target.lng));
+    if (miles > placeStoryMaxMiles) {
+      return 'Too far — you need to be within ${placeStoryMaxMiles.round()} miles of ${target.name} to post to its story '
+          "(you're ${miles.toStringAsFixed(1)} mi away). Post to Area instead.";
+    }
+    return null;
   }
 
   /// Uploads [path] as an imported venue's photo (and swaps it in on the
@@ -5672,7 +5786,8 @@ class AppStore extends ChangeNotifier {
   /// more than a mile.
   void _syncLocationUp() {
     final uid = supabaseUserId;
-    final loc = location;
+    // Always your real spot — a dropped admin pin never goes to the server.
+    final loc = _gpsLocation;
     if (uid == null || loc == null || !notifPrefs.place) return;
     final prev = _syncedLocation;
     final at = _syncedLocationAt;

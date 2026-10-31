@@ -863,6 +863,20 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
       return;
     }
+    // Posting to a place's story: you have to actually be there (within 2 mi).
+    if (_place != 'main') {
+      setState(() {
+        _baking = true;
+        _busyLabel = 'Checking you\'re there…';
+      });
+      final tooFar = await store.placeStoryBlockReason(_place);
+      if (!mounted) return;
+      setState(() => _baking = false);
+      if (tooFar != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tooFar), duration: const Duration(seconds: 4)));
+        return;
+      }
+    }
     setState(() {
       _baking = true;
       _busyLabel = 'Applying filter…';
@@ -1571,10 +1585,17 @@ class _TextStoryPageState extends State<_TextStoryPage> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: canPost
-                  ? () => requireAccountThen(context, store, () {
+                  ? () => requireAccountThen(context, store, () async {
                         final blocked = store.storyBlockReason();
                         if (blocked != null) {
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(blocked)));
+                          return;
+                        }
+                        // A place's story needs you within 2 miles of it.
+                        final tooFar = await store.placeStoryBlockReason(_place);
+                        if (!context.mounted) return;
+                        if (tooFar != null) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tooFar), duration: const Duration(seconds: 4)));
                           return;
                         }
                         unawaited(store.addStory(text: _textController.text.trim(), place: _place, anon: _anon));

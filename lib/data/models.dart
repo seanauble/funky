@@ -156,6 +156,22 @@ class Place {
     this.photoUrl,
   });
 
+  /// The same place somewhere else on the map (an admin moved its pin).
+  Place movedTo(double newLat, double newLng) => Place(
+        id: id,
+        name: name,
+        kind: kind,
+        lat: newLat,
+        lng: newLng,
+        address: address,
+        by: by,
+        t: t,
+        session: session,
+        coverPhotoPath: coverPhotoPath,
+        coverUrl: coverUrl,
+        photoUrl: photoUrl,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,

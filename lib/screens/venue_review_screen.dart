@@ -4,13 +4,16 @@ import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import '../data/geo.dart';
+import '../data/models.dart';
 import '../data/venue_models.dart';
 import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
+import 'move_pin_screen.dart';
 import 'place_detail_screen.dart';
 
-/// Admin → New venues: every bar, pub and club within 50 miles of Egg Harbor
-/// from OpenStreetMap (free). Add a photo, then approve (it goes live as a
+/// Admin → New venues: every bar, pub and club within 50 miles of wherever
+/// you are when you import, from OpenStreetMap (free). Add a photo, then approve (it goes live as a
 /// FUNKY-verified place), deny, or edit — rename it, fix the address, switch
 /// bar/club, leave a note — and come back to it later.
 class VenueReviewScreen extends StatefulWidget {
@@ -98,6 +101,18 @@ class _VenueReviewScreenState extends State<VenueReviewScreen> {
     _toast(error ?? 'Photo added.');
   }
 
+  Future<void> _movePin(AppStore store, VenueCandidate v) async {
+    final to = await Navigator.of(context).push<LatLng>(
+      MaterialPageRoute(builder: (_) => MovePinScreen(title: 'Move ${v.name}', start: LatLng(v.lat, v.lng))),
+    );
+    if (to == null || !mounted) return;
+    setState(() => _busy.add(v.id));
+    final error = await store.moveVenue(v.id, to);
+    if (!mounted) return;
+    setState(() => _busy.remove(v.id));
+    _toast(error ?? 'Pin moved.');
+  }
+
   Future<void> _edit(AppStore store, VenueCandidate v) async {
     final result = await showModalBottomSheet<_EditResult>(
       context: context,
@@ -130,7 +145,7 @@ class _VenueReviewScreenState extends State<VenueReviewScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Bars & clubs within 50 miles of Egg Harbor', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                  Text('Bars & clubs within 50 miles of you', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 4),
                   Text(
                     'Pulls every bar, pub and nightclub from OpenStreetMap (free). Add your own photo to each, fix anything that\'s off, then approve. Safe to run again — it only adds ones you haven\'t seen.',
@@ -189,6 +204,7 @@ class _VenueReviewScreenState extends State<VenueReviewScreen> {
                   onEdit: () => _edit(store, v),
                   onUndo: () => _decide(store, v, 'pending'),
                   onAddPhoto: () => _addPhoto(store, v),
+                  onMovePin: () => _movePin(store, v),
                 ),
             const SizedBox(height: 10),
             Text('Venue list © OpenStreetMap contributors', textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 11)),
@@ -207,6 +223,7 @@ class _VenueCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onUndo;
   final VoidCallback onAddPhoto;
+  final VoidCallback onMovePin;
   const _VenueCard({
     required this.venue,
     required this.busy,
@@ -215,6 +232,7 @@ class _VenueCard extends StatelessWidget {
     required this.onEdit,
     required this.onUndo,
     required this.onAddPhoto,
+    required this.onMovePin,
   });
 
   @override
@@ -332,8 +350,13 @@ class _VenueCard extends StatelessWidget {
                         venue.address.isEmpty ? 'No street address on file — add one in Edit' : venue.address,
                         style: TextStyle(color: tokens.mute, fontSize: 12.5, fontStyle: venue.address.isEmpty ? FontStyle.italic : FontStyle.normal),
                       ),
-                      if (venue.distanceMiles != null)
-                        Text('${venue.distanceMiles!.toStringAsFixed(1)} mi from Egg Harbor', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                      if (store.location != null)
+                        Text(
+                          '${milesBetween(store.location!, LatLng(venue.lat, venue.lng)).toStringAsFixed(1)} mi from you',
+                          style: TextStyle(color: tokens.mute, fontSize: 12),
+                        )
+                      else if (venue.distanceMiles != null)
+                        Text('${venue.distanceMiles!.toStringAsFixed(1)} mi from where you imported', style: TextStyle(color: tokens.mute, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -362,8 +385,12 @@ class _VenueCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
               child: SizedBox(
                 height: 110,
-                child: IgnorePointer(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: IgnorePointer(
                   child: FlutterMap(
+                    key: ValueKey('${venue.lat},${venue.lng}'),
                     options: MapOptions(initialCenter: point, initialZoom: 14.5),
                     children: [
                       TileLayer(
@@ -382,6 +409,29 @@ class _VenueCard extends StatelessWidget {
                       ),
                     ],
                   ),
+                      ),
+                    ),
+                    // Pin in the wrong spot? Drag it to the right one.
+                    Positioned(
+                      right: 6,
+                      bottom: 6,
+                      child: GestureDetector(
+                        onTap: busy ? null : onMovePin,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                          decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.65), borderRadius: BorderRadius.circular(14)),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.open_with_rounded, color: Colors.white, size: 15),
+                              SizedBox(width: 4),
+                              Text('Move pin', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),

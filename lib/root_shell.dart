@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'data/app_store.dart';
+import 'data/geo.dart';
 import 'screens/chat_screen.dart';
 import 'screens/create_sheet.dart';
 import 'screens/home_screen.dart';
@@ -111,7 +112,16 @@ class _RootShellState extends State<RootShell> {
             : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
         actions: const [NotificationBell(), SettingsGearButton()],
       ),
-      body: SafeArea(bottom: false, child: IndexedStack(index: _index, children: _screens)),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            // Admin viewing another area: always show it, with a way back.
+            const _ViewingElsewhereBanner(),
+            Expanded(child: IndexedStack(index: _index, children: _screens)),
+          ],
+        ),
+      ),
       bottomNavigationBar: _TabBar(
         index: _index,
         onTap: (i) {
@@ -121,6 +131,43 @@ class _RootShellState extends State<RootShell> {
           }
           setState(() => _index = i);
         },
+      ),
+    );
+  }
+}
+
+/// Shown across the top while an admin has dropped their pin somewhere else.
+class _ViewingElsewhereBanner extends StatelessWidget {
+  const _ViewingElsewhereBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.watch<AppStore>();
+    if (!store.isViewingElsewhere) return const SizedBox.shrink();
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final gps = store.gpsLocation;
+    final pin = store.location!;
+    final away = gps == null ? null : milesBetween(gps, pin);
+    return Material(
+      color: tokens.brand,
+      child: InkWell(
+        onTap: () => store.setLocationOverride(null),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(
+            children: [
+              const Icon(Icons.travel_explore, color: Colors.white, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  away == null ? 'Viewing another area' : 'Viewing an area ${away.round()} mi away',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+              const Text('Return to my location', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12.5, decoration: TextDecoration.underline, decorationColor: Colors.white)),
+            ],
+          ),
+        ),
       ),
     );
   }

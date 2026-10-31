@@ -8,9 +8,11 @@ import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
+import '../data/mock_data.dart';
 import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
+import 'move_pin_screen.dart';
 import 'place_detail_screen.dart';
 
 const _heatLabel = ['Quiet so far', 'Some activity', 'Active', 'Very active'];
@@ -105,6 +107,23 @@ class _MapRadiusSliderState extends State<_MapRadiusSlider> {
 class PlacesScreen extends StatelessWidget {
   const PlacesScreen({super.key});
 
+  /// Admin: pick a spot on a full map and see the app as if you were there.
+  Future<void> _viewAnotherArea(BuildContext context, AppStore store) async {
+    final start = store.location ?? defaultLocation;
+    final to = await Navigator.of(context).push<LatLng>(
+      MaterialPageRoute(
+        builder: (_) => MovePinScreen(
+          title: 'View another area',
+          start: start,
+          zoom: 11,
+          hint: 'Drag the map to put your pin anywhere. FUNKY will show that area until you return to your location.',
+          confirmLabel: 'View this area',
+        ),
+      ),
+    );
+    if (to != null) await store.setLocationOverride(to);
+  }
+
   void _openPlace(BuildContext context, String placeId) {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
   }
@@ -147,6 +166,8 @@ class PlacesScreen extends StatelessWidget {
                   key: ValueKey('${here.lat.toStringAsFixed(2)},${here.lng.toStringAsFixed(2)},${rangeMiles.round()}'),
                   options: MapOptions(
                     initialCenter: ll.LatLng(here.lat, here.lng),
+                    // Admins: press and hold anywhere to view that area.
+                    onLongPress: store.isAdmin ? (_, point) => store.setLocationOverride(LatLng(point.latitude, point.longitude)) : null,
                     // Starts zoomed out just far enough to show the whole
                     // radius circle (10 miles unless you changed it).
                     initialCameraFit: CameraFit.bounds(
@@ -261,6 +282,30 @@ class PlacesScreen extends StatelessWidget {
                     ),
                   ],
                 ),
+                // Admins: drop your pin anywhere to watch another area.
+                if (store.isAdmin)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: GestureDetector(
+                      onTap: () => _viewAnotherArea(context, store),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(999)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.open_with_rounded, color: Colors.white, size: 14),
+                            const SizedBox(width: 5),
+                            Text(
+                              store.isViewingElsewhere ? 'Move my pin' : 'Drop my pin',
+                              style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w800),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 Positioned(
                   top: 8,
                   left: 8,

@@ -134,7 +134,11 @@ class _DestinationSheetState extends State<_DestinationSheet> {
                       onTap: () => Navigator.of(context).pop(p.id),
                       leading: Icon(Icons.place_outlined, color: tokens.ink),
                       title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                      subtitle: Text(formatMiles(p.distance), style: TextStyle(color: tokens.mute, fontSize: 12)),
+                      // Place stories are for people who are there (within 2 mi).
+                      subtitle: Text(
+                        p.distance > AppStore.placeStoryMaxMiles ? '${formatMiles(p.distance)} · too far to post' : formatMiles(p.distance),
+                        style: TextStyle(color: p.distance > AppStore.placeStoryMaxMiles ? tokens.danger : tokens.mute, fontSize: 12),
+                      ),
                       trailing: mark(widget.current == p.id),
                     ),
                   if (!showArea && places.isEmpty)

@@ -1,6 +1,7 @@
 // FUNKY — import-venues Edge Function (OpenStreetMap, free, no API key).
 //
-// Finds every bar, pub and nightclub within 50 miles of Egg Harbor, NJ from
+// Finds every bar, pub and nightclub within 50 miles of the admin's current
+// location (sent by the app; Egg Harbor, NJ if location is off) from
 // OpenStreetMap and adds them to venue_candidates for the admin to approve,
 // deny, or fix up (and add a photo to) in the app: Admin panel → New venues.
 // Venues already imported, or already on the map under the same name, are
@@ -21,8 +22,8 @@ const admin = createClient(
 
 const OWNER_EMAIL = "seanauble@icloud.com";
 
-// Egg Harbor Township, NJ.
-const CENTER = { lat: 39.3926, lng: -74.6202 };
+// Egg Harbor Township, NJ — used when the app doesn't send a location.
+const DEFAULT_CENTER = { lat: 39.3926, lng: -74.6202 };
 const RADIUS_MILES = 50;
 
 const OVERPASS = [
@@ -103,6 +104,19 @@ Deno.serve(async (req) => {
     if (!profile?.is_admin) return json({ error: "Admins only." }, 403);
   }
 
+  // Search around wherever the admin is right now.
+  let CENTER = DEFAULT_CENTER;
+  try {
+    const body = await req.json();
+    const lat = Number(body?.lat);
+    const lng = Number(body?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      CENTER = { lat, lng };
+    }
+  } catch (_) {
+    // No body — use the default.
+  }
+
   const meters = Math.round(RADIUS_MILES * 1609.344);
   const query = `[out:json][timeout:90];
 (
@@ -170,5 +184,5 @@ out center tags;`;
     if (error) return json({ error: `Saving failed: ${error.message}` }, 500);
   }
 
-  return json({ found: elements.length, added: rows.length, already, duplicate, unnamed });
+  return json({ found: elements.length, added: rows.length, already, duplicate, unnamed, center: CENTER });
 });
