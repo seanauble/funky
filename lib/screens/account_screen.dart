@@ -434,6 +434,16 @@ class _AccountActionRow extends StatelessWidget {
 /// pushes the account screen as a forced prompt and, the moment sign-up or
 /// log-in succeeds, pops back and runs [action] — so from the UI's
 /// perspective, Post/Send just works once they've created an account.
+/// Like [requireAccountThen], but a guest (no account, browsing with a
+/// guest session) may go ahead too — for Places, Live Chat and Stories.
+Future<void> requireGuestOkThen(BuildContext context, AppStore store, VoidCallback action) async {
+  if (store.signedIn || store.isGuest) {
+    action();
+    return;
+  }
+  await requireAccountThen(context, store, action);
+}
+
 Future<void> requireAccountThen(BuildContext context, AppStore store, VoidCallback action) async {
   if (store.signedIn) {
     action();

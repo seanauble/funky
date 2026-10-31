@@ -692,6 +692,44 @@ Future<Uint8List> applyCameraFilterToImageBytes(Uint8List bytes, CameraFilter fi
   }
 }
 
+/// Flips a photo left-to-right. Front-camera shots come out of the camera
+/// un-mirrored, so they look reversed compared to the selfie preview you
+/// just saw — this makes the saved photo match the preview. Capped at
+/// 2048px on the long edge, same as the filter bake above.
+Future<Uint8List> mirrorImageBytes(Uint8List bytes) async {
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  try {
+    const maxEdge = 2048.0;
+    final longEdge = math.max(image.width, image.height).toDouble();
+    final scale = longEdge > maxEdge ? maxEdge / longEdge : 1.0;
+    final outW = (image.width * scale).round();
+    final outH = (image.height * scale).round();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.translate(outW.toDouble(), 0);
+    canvas.scale(-1, 1);
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
+      Paint()..filterQuality = FilterQuality.high,
+    );
+    final picture = recorder.endRecording();
+    final outputImage = await picture.toImage(outW, outH);
+    try {
+      final byteData = await outputImage.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return bytes;
+      return byteData.buffer.asUint8List();
+    } finally {
+      outputImage.dispose();
+    }
+  } finally {
+    image.dispose();
+  }
+}
+
 class FunkyHandle extends StatelessWidget {
   final String handle;
   // Optional — when the full Person is on hand, their point-unlocked

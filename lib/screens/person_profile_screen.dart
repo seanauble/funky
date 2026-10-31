@@ -1,93 +1,17 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
+import 'account_screen.dart';
+import '../widgets/rainbow_ring.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
+import 'admin_manage_user_screen.dart';
 import 'dm_thread_screen.dart';
+import 'profile_parts.dart';
+import 'profile_screen.dart' show shareFunkyProfile;
+import '../root_shell.dart' show rootShellTabRequest;
 import 'story_viewer_screen.dart';
-
-/// A FUNKY Admin-only confirmation before banning — this severs an existing
-/// friendship/pending request and hides the person's Stories/chat/DMs
-/// everywhere on this device, so it's worth one tap to make sure before it
-/// happens rather than a single accidental tap on the profile.
-Future<void> _confirmBan(BuildContext context, AppStore store, String personId, String handle) async {
-  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      backgroundColor: tokens.surface,
-      title: Text('Ban @$handle?', style: TextStyle(color: tokens.ink)),
-      content: Text(
-        "This unfriends them if you're friends, and hides their Stories, chat messages, and DMs from everyone on this device.",
-        style: TextStyle(color: tokens.mute),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: Text('Ban', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
-        ),
-      ],
-    ),
-  );
-  if (confirmed == true) store.banUser(personId);
-}
-
-/// Admin-only: gives (or takes away) points and tells the admin how it went.
-Future<void> _giveAdminPoints(BuildContext context, AppStore store, String personId, String handle, int amount) async {
-  final error = await store.adminGivePoints(personId, amount);
-  if (!context.mounted) return;
-  final text = amount > 0 ? 'Gave @$handle +$amount points.' : 'Removed ${-amount} points from @$handle.';
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(error ?? text), duration: const Duration(seconds: 1)),
-  );
-}
-
-/// Admin-only: type any amount and either give or remove that many points.
-Future<void> _customAdminPoints(BuildContext context, AppStore store, String personId, String handle) async {
-  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  final controller = TextEditingController();
-  final choice = await showDialog<int>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      backgroundColor: tokens.surface,
-      title: Text('Points for @$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-      content: TextField(
-        controller: controller,
-        autofocus: true,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        maxLength: 7,
-        decoration: InputDecoration(hintText: 'Amount', hintStyle: TextStyle(color: tokens.mute), counterText: ''),
-        style: TextStyle(color: tokens.ink),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
-        TextButton(
-          onPressed: () {
-            final n = int.tryParse(controller.text.trim()) ?? 0;
-            Navigator.of(dialogContext).pop(n > 0 ? -n : null);
-          },
-          child: Text('Remove', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
-        ),
-        TextButton(
-          onPressed: () {
-            final n = int.tryParse(controller.text.trim()) ?? 0;
-            Navigator.of(dialogContext).pop(n > 0 ? n : null);
-          },
-          child: Text('Give', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w800)),
-        ),
-      ],
-    ),
-  );
-  controller.dispose();
-  if (choice == null || !context.mounted) return;
-  await _giveAdminPoints(context, store, personId, handle, choice);
-}
 
 /// Pick a reason, send the report to the FUNKY team.
 Future<void> _reportProfile(BuildContext context, AppStore store, String personId, String handle) async {
@@ -122,12 +46,96 @@ Future<void> _reportProfile(BuildContext context, AppStore store, String personI
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
 }
 
-/// The public profile of someone else — reached by tapping their handle in
-/// chat. Old Story posts only show up here once you're mutual friends;
-/// otherwise it's a locked card with an Add Friend button.
-class PersonProfileScreen extends StatelessWidget {
+/// Someone else's profile: big picture, name, bio and title, their
+/// numbers, Add friend / Message, then their Memories and Places in tabs.
+class PersonProfileScreen extends StatefulWidget {
   final String personId;
   const PersonProfileScreen({super.key, required this.personId});
+
+  @override
+  State<PersonProfileScreen> createState() => _PersonProfileScreenState();
+}
+
+class _PersonProfileScreenState extends State<PersonProfileScreen> {
+  int _tab = 0; // 0 = Memories, 1 = Places
+
+  String get personId => widget.personId;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<AppStore>().loadFriendCount(personId);
+    });
+  }
+
+  Future<void> _moreMenu(AppStore store, Person person) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final isFriend = store.isFriendsWith(personId);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(width: 36, height: 4, decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 6),
+            ListTile(
+              leading: Icon(Icons.ios_share, color: tokens.ink),
+              title: Text('Share profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+              onTap: () => Navigator.of(sheetContext).pop('share'),
+            ),
+            if (isFriend)
+              ListTile(
+                leading: Icon(Icons.person_remove_outlined, color: tokens.danger),
+                title: Text('Remove friend', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600)),
+                onTap: () => Navigator.of(sheetContext).pop('remove'),
+              ),
+            if (store.signedIn)
+              ListTile(
+                leading: Icon(Icons.flag_outlined, color: tokens.ink),
+                title: Text('Report this profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+                onTap: () => Navigator.of(sheetContext).pop('report'),
+              ),
+            // Admin tools live on their own screen, never on the profile.
+            if (store.isAdmin)
+              ListTile(
+                leading: Icon(Icons.admin_panel_settings_outlined, color: tokens.gold),
+                title: Text('Manage this account (Admin)', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w700)),
+                onTap: () => Navigator.of(sheetContext).pop('admin'),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case 'share':
+        await shareFunkyProfile(context, person.handle);
+      case 'remove':
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (d) => AlertDialog(
+            backgroundColor: tokens.surface,
+            title: Text('Remove @${person.handle}?', style: TextStyle(color: tokens.ink)),
+            content: Text("You'll stop seeing each other's memories.", style: TextStyle(color: tokens.mute)),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(d).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
+              TextButton(onPressed: () => Navigator.of(d).pop(true), child: Text('Remove', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700))),
+            ],
+          ),
+        );
+        if (ok == true) store.removeFriend(personId);
+      case 'report':
+        await _reportProfile(context, store, personId, person.handle);
+      case 'admin':
+        await Navigator.of(context).push(MaterialPageRoute(builder: (_) => AdminManageUserScreen(personId: personId)));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -146,289 +154,193 @@ class PersonProfileScreen extends StatelessWidget {
       );
     }
 
+    final isSelf = personId == 'me';
     final isFriend = store.isFriendsWith(personId);
     final requestSent = store.hasSentRequestTo(personId);
     final requestReceived = store.hasRequestFrom(personId);
-    final canSeeStories = store.canSeeStoriesOf(personId);
-    final theirStories = canSeeStories ? store.storiesByUser(personId) : const <Story>[];
     final banned = store.isBanned(personId);
-    // The story ring around their picture: tonight's Stories (all of a
-    // friend's recent ones). Anonymous posts don't count — a ring would give
-    // away who posted them.
-    final ringStories = store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
+    // Memories: everything for a friend, only tonight's for anyone else.
+    // Anonymous posts never show here — that would give away who posted them.
+    final memories = banned ? const <Story>[] : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
+    final places = memoryPlacesFrom(memories, store);
+    final title = levelTitleFor(person.points);
+    final friendCount = isSelf ? store.me.friends.length : store.friendCounts[personId];
+
+    // The story ring around their picture: their last 24 hours.
+    final ringStories = store.liveStoriesByUser(personId).where((s) => !s.anon).toList();
     final hasRing = ringStories.isNotEmpty && !banned;
     final ringUnseen = ringStories.any((s) => !s.views.contains('me'));
-    final ringColor = ringUnseen ? (isFriend ? tokens.friend : tokens.orange) : tokens.line;
+
+    const avatarSize = 132.0;
+    final avatar = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: hasRing
+          ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: [personId])))
+          : () => showAvatarPreview(context, person, viewProfile: false),
+      onLongPress: () => showAvatarPreview(context, person, viewProfile: false),
+      child: hasRing && ringUnseen
+          ? RainbowRing(size: avatarSize + 10, strokeWidth: 4, child: PersonAvatar(person: person, size: avatarSize - 6, preview: false))
+          : Container(
+              width: avatarSize + 10,
+              height: avatarSize + 10,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.line, width: 3)),
+              child: PersonAvatar(person: person, size: avatarSize - 6, preview: false),
+            ),
+    );
 
     return Scaffold(
       backgroundColor: tokens.bg,
-      appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: Text('@${person.handle}')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Center(
-            child: Column(
-              children: [
-                // Tap: their Stories (when they have any), otherwise the big
-                // picture. Press and hold: the big picture preview.
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: hasRing
-                      ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: [personId])))
-                      : () => showAvatarPreview(context, person, viewProfile: false),
-                  onLongPress: () => showAvatarPreview(context, person, viewProfile: false),
-                  child: Container(
-                    width: 96,
-                    height: 96,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: hasRing ? Border.all(color: ringColor, width: 3) : null,
-                    ),
-                    child: PersonAvatar(person: person, size: 84, preview: false),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                FunkyHandle(handle: person.handle, person: person),
-                if (person.bio.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute)),
-                ],
-                const SizedBox(height: 4),
-                Text('${person.points} pts · Lv ${levelFor(person.points)}', style: TextStyle(color: tokens.mute, fontSize: 12)),
-              ],
+      appBar: AppBar(
+        backgroundColor: tokens.bg,
+        foregroundColor: tokens.ink,
+        elevation: 0,
+        centerTitle: true,
+        title: Text('@${person.handle}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18)),
+        actions: [
+          Builder(
+            builder: (c) => IconButton(
+              tooltip: 'Share profile',
+              icon: Icon(Icons.ios_share, color: tokens.ink),
+              onPressed: () => shareFunkyProfile(c, person.handle),
             ),
+          ),
+          if (!isSelf)
+            IconButton(
+              tooltip: 'More',
+              icon: Icon(Icons.more_horiz, color: tokens.ink),
+              onPressed: () => _moreMenu(store, person),
+            ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: [
+          Center(child: avatar),
+          const SizedBox(height: 12),
+          Center(
+            child: StyledName(
+              person: person,
+              text: '@${person.handle}',
+              style: TextStyle(color: tokens.ink, fontSize: 26, fontWeight: FontWeight.w800),
+            ),
+          ),
+          if (person.bio.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(person.bio, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 15)),
+          ],
+          if (title != null) ...[
+            const SizedBox(height: 10),
+            Center(child: ProfileTitleChip(title: title)),
+          ],
+          if (banned) ...[
+            const SizedBox(height: 8),
+            Text('This account is banned.', textAlign: TextAlign.center, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+          ],
+          const SizedBox(height: 18),
+          ProfileStatsRow(stats: [
+            (formatCount(memories.length), 'Memories', () => setState(() => _tab = 0)),
+            (friendCount == null ? '–' : formatCount(friendCount), 'Friends', null),
+            (formatCount(places.length), 'Places', () => setState(() => _tab = 1)),
+          ]),
+          const SizedBox(height: 16),
+          if (!isSelf)
+            _FriendButtons(
+              isFriend: isFriend,
+              requestSent: requestSent,
+              requestReceived: requestReceived,
+              onAdd: () => requireAccountThen(context, store, () => store.sendFriendRequest(personId)),
+              onCancel: () => store.cancelFriendRequest(personId),
+              onAccept: () => store.acceptFriendRequest(personId),
+              onDecline: () => store.declineFriendRequest(personId),
+              onFriendsTap: () => _moreMenu(store, person),
+              // Anyone can message anyone on FUNKY — being friends only
+              // gates seeing each other's older memories.
+              onMessage: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: personId))),
+            ),
+          const SizedBox(height: 12),
+          Text(
+            '${formatCount(person.points)} Funky points  ·  Level ${formatCount(levelFor(person.points))}',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: tokens.mute, fontSize: 13.5),
           ),
           const SizedBox(height: 14),
-          // Anyone can message anyone on FUNKY — being friends only gates
-          // seeing each other's old Stories (below), not DMs.
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: personId))),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                side: BorderSide(color: tokens.line),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: Icon(Icons.chat_bubble_outline, size: 18, color: tokens.ink),
-              label: Text('Message', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-            ),
-          ),
-          const SizedBox(height: 10),
-          _FriendAction(
-            isFriend: isFriend,
-            requestSent: requestSent,
-            requestReceived: requestReceived,
-            onAdd: () => store.sendFriendRequest(personId),
-            onCancel: () => store.cancelFriendRequest(personId),
-            onAccept: () => store.acceptFriendRequest(personId),
-            onDecline: () => store.declineFriendRequest(personId),
-            onRemove: () => store.removeFriend(personId),
-          ),
-          if (personId != 'me' && store.signedIn)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Center(
-                child: TextButton.icon(
-                  onPressed: () => _reportProfile(context, store, personId, person.handle),
-                  icon: Icon(Icons.flag_outlined, size: 16, color: tokens.mute),
-                  label: Text('Report this profile', style: TextStyle(color: tokens.mute, fontSize: 13)),
-                ),
-              ),
-            ),
-          // Only a signed-in FUNKY Admin ever sees this — same hardcoded-
-          // admin gate as the place verification controls on
-          // place_detail_screen. Banning severs any friendship/pending
-          // request with them and hides their Stories/chat messages/DMs
-          // everywhere on this device (see AppStore.banUser).
-          if (store.isAdmin && personId != 'me') ...[
-            const SizedBox(height: 10),
-            // Give points — as many times as you like; each tap is applied
-            // on the server and the person's app picks it up live.
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                for (final amount in const [100, 500, 1000, -100, -500, -1000])
-                  OutlinedButton(
-                    onPressed: () => _giveAdminPoints(context, store, personId, person.handle, amount),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: tokens.gold),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    child: Text(
-                      amount > 0 ? '+$amount pts' : '$amount pts',
-                      style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w800),
-                    ),
-                  ),
-                OutlinedButton.icon(
-                  onPressed: () => _customAdminPoints(context, store, personId, person.handle),
-                  icon: Icon(Icons.tune, size: 16, color: tokens.gold),
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: tokens.gold),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  label: Text('Custom', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w800)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => banned ? store.unbanUser(personId) : _confirmBan(context, store, personId, person.handle),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  side: BorderSide(color: tokens.danger),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: Icon(banned ? Icons.lock_open : Icons.block, size: 18, color: tokens.danger),
-                label: Text(
-                  banned ? 'Unban user (Admin)' : 'Ban user (Admin)',
-                  style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-            // Only the owner can hand out (or take back) admin access.
-            if (store.isOwner) ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    final makeAdmin = !person.isAdminUser;
-                    final error = await store.adminSetAdmin(personId, makeAdmin);
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(error ?? (makeAdmin ? '@${person.handle} is now an admin.' : '@${person.handle} is no longer an admin.')),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  },
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    side: BorderSide(color: tokens.gold),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  icon: Icon(person.isAdminUser ? Icons.shield_outlined : Icons.shield, size: 18, color: tokens.gold),
-                  label: Text(
-                    person.isAdminUser ? 'Remove admin access' : 'Make admin',
-                    style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ),
-            ],
-          ],
-          const SectionHeader(title: 'Stories'),
-          if (canSeeStories)
-            if (theirStories.isEmpty)
-              const EmptyNote(text: "Nothing posted yet tonight.")
+          UnderlineTabs(labels: const ['Memories', 'Places'], index: _tab, onTap: (i) => setState(() => _tab = i)),
+          const SizedBox(height: 12),
+          if (_tab == 0) ...[
+            if (memories.isEmpty)
+              EmptyNote(text: isFriend || isSelf ? 'No memories yet.' : 'Nothing posted tonight.')
             else
-              ...theirStories.map((s) {
-                // The viewer plays oldest-first, this list is newest-first.
-                final viewerIndex = theirStories.length - 1 - theirStories.indexOf(s);
-                final hasVideo = s.videoPath != null || s.videoUrl != null;
-                final hasText = s.text != null && s.text!.isNotEmpty;
-                // The picture itself (or a frame of the video) — a friend's
-                // Story only has a signed URL here; their local file lives
-                // on their own phone.
-                Widget? media;
-                if (hasVideo) {
-                  media = VideoFrameThumbnail(path: s.videoPath, url: s.videoPath == null ? s.videoUrl : null);
-                } else if (s.imagePath != null && File(s.imagePath!).existsSync()) {
-                  media = Image.file(File(s.imagePath!), fit: BoxFit.cover);
-                } else if (s.imageUrl != null) {
-                  media = Image.network(
-                    s.imageUrl!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(color: tokens.raised, alignment: Alignment.center, child: Icon(Icons.broken_image_outlined, color: tokens.mute)),
+              GridView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 0.8,
+                ),
+                itemCount: memories.length,
+                itemBuilder: (context, i) {
+                  final s = memories[i];
+                  return MemoryTile(
+                    story: s,
+                    placeName: memoryPlaceName(s, store),
+                    onTap: () => openMemory(context, store, personId, s),
                   );
-                }
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: [personId], initialStoryIndex: viewerIndex)),
-                    ),
-                    child: ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      color: tokens.surface,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (media != null)
-                            SizedBox(
-                              height: 220,
-                              width: double.infinity,
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  media,
-                                  if (hasVideo)
-                                    Center(
-                                      child: Container(
-                                        width: 48,
-                                        height: 48,
-                                        decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                                        child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 32),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (hasText)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 4),
-                                    child: Text(s.text!, style: TextStyle(color: tokens.ink, fontSize: 15, height: 1.3)),
-                                  )
-                                else if (media == null)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 4),
-                                    child: Text('Text story', style: TextStyle(color: tokens.mute)),
-                                  ),
-                                Text(timeAgoLabel(s.t), style: TextStyle(color: tokens.mute, fontSize: 12)),
-                              ],
-                            ),
-                          ),
-                        ],
+                },
+              ),
+            if (!isFriend && !isSelf && !banned)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: FunkyCard(
+                  child: Row(
+                    children: [
+                      Icon(Icons.lock_outline, color: tokens.mute, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          "Add @${person.handle} as a friend to see all their memories.",
+                          style: TextStyle(color: tokens.mute, fontSize: 13),
+                        ),
                       ),
-                    ),
-                    ),
+                    ],
                   ),
-                );
-              })
-          else
-            FunkyCard(
-              child: Row(
+                ),
+              ),
+          ] else ...[
+            if (places.isEmpty)
+              const EmptyNote(text: 'No tagged spots yet.')
+            else
+              PlacesGrid(places: places, personId: personId, scrollable: false),
+          ],
+          const SizedBox(height: 18),
+          Center(
+            child: TextButton.icon(
+              onPressed: () {
+                Navigator.of(context).popUntil((r) => r.isFirst);
+                rootShellTabRequest.value = 3;
+              },
+              icon: Icon(Icons.location_on, color: tokens.brand),
+              label: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.lock_outline, color: tokens.mute, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Only friends can see @${person.handle}'s Stories.",
-                      style: TextStyle(color: tokens.mute, fontSize: 13),
-                    ),
-                  ),
+                  Text('Explore tagged spots in Places', style: TextStyle(color: tokens.mute, fontSize: 14.5)),
+                  Icon(Icons.chevron_right_rounded, color: tokens.mute),
                 ],
               ),
             ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _FriendAction extends StatelessWidget {
+/// "Add friend" (orange) + "Message", or the right state for where your
+/// friendship stands.
+class _FriendButtons extends StatelessWidget {
   final bool isFriend;
   final bool requestSent;
   final bool requestReceived;
@@ -436,9 +348,10 @@ class _FriendAction extends StatelessWidget {
   final VoidCallback onCancel;
   final VoidCallback onAccept;
   final VoidCallback onDecline;
-  final VoidCallback onRemove;
+  final VoidCallback onFriendsTap;
+  final VoidCallback onMessage;
 
-  const _FriendAction({
+  const _FriendButtons({
     required this.isFriend,
     required this.requestSent,
     required this.requestReceived,
@@ -446,82 +359,67 @@ class _FriendAction extends StatelessWidget {
     required this.onCancel,
     required this.onAccept,
     required this.onDecline,
-    required this.onRemove,
+    required this.onFriendsTap,
+    required this.onMessage,
   });
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
+    const pad = EdgeInsets.symmetric(vertical: 14);
+    const label = TextStyle(fontWeight: FontWeight.w800, fontSize: 16);
 
+    Widget filled(IconData icon, String text, VoidCallback onTap) => ElevatedButton.icon(
+          onPressed: onTap,
+          style: ElevatedButton.styleFrom(backgroundColor: tokens.brand, foregroundColor: Colors.white, elevation: 0, padding: pad, shape: shape),
+          icon: Icon(icon, size: 22),
+          label: Text(text, style: label),
+        );
+    Widget outlined(IconData icon, String text, VoidCallback onTap, {Color? color}) => OutlinedButton.icon(
+          onPressed: onTap,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: color ?? tokens.ink,
+            backgroundColor: tokens.surface,
+            padding: pad,
+            side: BorderSide(color: tokens.line),
+            shape: shape,
+          ),
+          icon: Icon(icon, size: 21),
+          label: Text(text, style: label),
+        );
+
+    final Widget first;
     if (isFriend) {
-      return Row(
-        children: [
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
-              alignment: Alignment.center,
-              child: Text('Friends ✓', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-            ),
-          ),
-          const SizedBox(width: 10),
-          TextButton(
-            onPressed: onRemove,
-            child: Text('Remove', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
-          ),
-        ],
-      );
+      first = outlined(Icons.how_to_reg_rounded, 'Friends', onFriendsTap, color: tokens.friend);
+    } else if (requestReceived) {
+      first = filled(Icons.person_add_alt_1_rounded, 'Accept', onAccept);
+    } else if (requestSent) {
+      first = outlined(Icons.schedule_rounded, 'Requested', onCancel, color: tokens.mute);
+    } else {
+      first = filled(Icons.person_add_alt_1_rounded, 'Add friend', onAdd);
     }
 
-    if (requestReceived) {
-      return Row(
-        children: [
-          Expanded(
-            child: ElevatedButton(
-              onPressed: onAccept,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: tokens.brand,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: Text('Accept Friend Request', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-            ),
-          ),
-          const SizedBox(width: 10),
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(child: first),
+            const SizedBox(width: 10),
+            Expanded(child: outlined(Icons.chat_bubble_outline_rounded, 'Message', onMessage)),
+          ],
+        ),
+        if (requestReceived)
           TextButton(
             onPressed: onDecline,
-            child: Text('Decline', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700)),
+            child: Text('Decline request', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700)),
           ),
-        ],
-      );
-    }
-
-    if (requestSent) {
-      return SizedBox(
-        width: double.infinity,
-        child: OutlinedButton(
-          onPressed: onCancel,
-          style: OutlinedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            side: BorderSide(color: tokens.line),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        if (requestSent)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('Tap Requested to cancel it.', style: TextStyle(color: tokens.mute, fontSize: 12)),
           ),
-          child: Text('Request Sent · Cancel', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700)),
-        ),
-      );
-    }
-
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton(
-        onPressed: onAdd,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: tokens.brand,
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-        child: Text('Add Friend', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-      ),
+      ],
     );
   }
 }

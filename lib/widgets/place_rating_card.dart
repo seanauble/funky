@@ -180,7 +180,7 @@ class _PlaceRatingCardState extends State<PlaceRatingCard> {
                   child: ElevatedButton(
                     onPressed: (_busy || _draft == null)
                         ? null
-                        : () => requireAccountThen(context, store, () => _submit(store, _draft!)),
+                        : () => requireGuestOkThen(context, store, () => _submit(store, _draft!)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: tokens.brand,
                       disabledBackgroundColor: tokens.raised,

@@ -5,22 +5,41 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'admin_manage_user_screen.dart';
 import 'camera_capture_screen.dart';
+import 'create_sheet.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
-import 'story_viewer_screen.dart';
+import 'profile_parts.dart';
 
 enum _PhotoSource { camera, library }
 
-const _memoryMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/// Shares a FUNKY profile through the phone's share sheet.
+Future<void> shareFunkyProfile(BuildContext context, String handle, {bool mine = false}) async {
+  final text = mine ? "I'm on FUNKY — add me: @$handle 🕺" : 'Check out @$handle on FUNKY 🕺';
+  try {
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(ShareParams(
+      text: text,
+      subject: 'FUNKY',
+      sharePositionOrigin: box == null ? null : box.localToGlobal(Offset.zero) & box.size,
+    ));
+  } catch (_) {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied — paste it anywhere.')));
+    }
+  }
+}
 
-String _memoryDayLabel(DateTime dt) => '${_memoryMonths[dt.month - 1]} ${dt.day}, ${dt.year}';
-
+/// Your own profile tab: picture, name, bio and title up top, Edit / Share,
+/// your numbers, the places you've posted from, and your Memories by month.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -29,13 +48,325 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  late TextEditingController _handleController;
-  late TextEditingController _bioController;
-  // What the text fields were last filled from — so a name/bio that changes
-  // underneath (you log in and the server's name arrives) shows up here
-  // instead of the old text staying stuck in the box.
-  String _syncedHandle = '';
-  String _syncedBio = '';
+  // One key per month header, so the calendar button can jump to a month.
+  final Map<String, GlobalKey> _monthKeys = {};
+
+  Future<void> _confirmDelete(Story story) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: tokens.surface,
+        title: Text('Delete this memory?', style: TextStyle(color: tokens.ink)),
+        content: Text("This removes it for good — it can't be undone.", style: TextStyle(color: tokens.mute)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Delete', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) context.read<AppStore>().deleteStory(story.id);
+  }
+
+  Future<void> _pickMonth(List<String> months) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 6),
+                child: Text('Jump to', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
+              ),
+              for (final m in months)
+                ListTile(
+                  title: Text(m, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+                  onTap: () => Navigator.of(sheetContext).pop(m),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    final ctx = chosen == null ? null : _monthKeys[chosen]?.currentContext;
+    if (ctx != null && ctx.mounted) {
+      await Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+
+    // Not logged in: there's no profile yet, so don't show a made-up name.
+    if (!store.signedIn) return const _SignedOutProfile();
+
+    final me = store.me;
+    final title = store.myLevelTitle;
+    final badges = store.myBadges;
+    final myStories = store.myStories; // newest first
+    final places = memoryPlacesFrom(myStories, store);
+
+    // Memories by month, newest month first.
+    final byMonth = <String, List<Story>>{};
+    for (final s in myStories) {
+      (byMonth[monthLabel(DateTime.fromMillisecondsSinceEpoch(s.t))] ??= []).add(s);
+    }
+    final months = byMonth.keys.toList();
+    if (months.isEmpty) months.add(monthLabel(DateTime.now()));
+    for (final m in months) {
+      _monthKeys.putIfAbsent(m, () => GlobalKey());
+    }
+
+    Widget memoryGrid(List<Story> stories, {required bool withAdd}) {
+      final count = stories.length + (withAdd ? 1 : 0);
+      return GridView.builder(
+        shrinkWrap: true,
+        padding: EdgeInsets.zero,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: 0.8,
+        ),
+        itemCount: count,
+        itemBuilder: (context, i) {
+          if (i == stories.length) return AddMemoryTile(onTap: () => showCreateSheet(context));
+          final s = stories[i];
+          return MemoryTile(
+            story: s,
+            onTap: () => openMemory(context, store, 'me', s),
+            onLongPress: () => _confirmDelete(s),
+            showBookmark: true,
+            onBookmark: () => s.savedToTimeline ? store.removeFromTimeline(s.id) : store.saveToTimeline(s.id),
+          );
+        },
+      );
+    }
+
+    final buttonStyle = OutlinedButton.styleFrom(
+      backgroundColor: tokens.surface,
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      side: BorderSide(color: tokens.line),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    );
+
+    // No AppBar of its own — the root shell's shared AppBar carries the
+    // title, notification bell, and settings gear.
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 40),
+        children: [
+          // Picture on the left; name, bio and title on the right.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.line, width: 2)),
+                child: PersonAvatar(person: me, size: 104, viewProfile: false),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    StyledName(
+                      person: me,
+                      text: '@${me.handle}',
+                      style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    if (me.bio.isNotEmpty)
+                      Text(me.bio, style: TextStyle(color: tokens.mute, fontSize: 14.5, height: 1.3))
+                    else
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EditProfileScreen())),
+                        child: Text('Add a bio', style: TextStyle(color: tokens.mute.withValues(alpha: 0.7), fontSize: 14.5)),
+                      ),
+                    if (title != null) ...[
+                      const SizedBox(height: 10),
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen())),
+                        child: ProfileTitleChip(title: title),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (badges.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: badges
+                  .map((b) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(999)),
+                        child: Text('${b.emoji} ${b.label}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12)),
+                      ))
+                  .toList(),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const EditProfileScreen())),
+                  style: buttonStyle,
+                  child: Text('Edit profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Builder(
+                  builder: (buttonContext) => OutlinedButton(
+                    onPressed: () => shareFunkyProfile(buttonContext, me.handle, mine: true),
+                    style: buttonStyle,
+                    child: Text('Share profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ProfileStatsRow(stats: [
+            (formatCount(me.points), 'Funky points', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen()))),
+            (formatCount(store.level), 'Level', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen()))),
+            (formatCount(me.friends.length), 'Friends', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen()))),
+          ]),
+          // Admin controls live on their own screen, not on the profile.
+          if (store.isAdmin)
+            Center(
+              child: TextButton.icon(
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminManageUserScreen(personId: 'me'))),
+                icon: Icon(Icons.admin_panel_settings_outlined, size: 16, color: tokens.gold),
+                label: Text('Admin tools', style: TextStyle(color: tokens.gold, fontSize: 13, fontWeight: FontWeight.w700)),
+              ),
+            )
+          else
+            const SizedBox(height: 10),
+          Divider(height: 1, color: tokens.line),
+          if (places.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Icon(Icons.location_on, color: tokens.brand, size: 26),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text("Places I've been", style: TextStyle(color: tokens.ink, fontSize: 19, fontWeight: FontWeight.w800)),
+                      Text('From your tagged memories', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                    ],
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PlacesBeenScreen(personId: 'me'))),
+                  child: Row(
+                    children: [
+                      Text('See all', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 14.5)),
+                      Icon(Icons.chevron_right_rounded, color: tokens.orange),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 150,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final cardWidth = (constraints.maxWidth - 10) / 2;
+                  return ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: places.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 10),
+                    itemBuilder: (_, i) => SizedBox(width: cardWidth, child: PlaceMemoryCard(place: places[i], personId: 'me')),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
+            Divider(height: 1, color: tokens.line),
+          ],
+          const SizedBox(height: 14),
+          Text('Memories', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
+          if (myStories.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 10),
+              child: Text(
+                "Post a Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on one to keep it forever.",
+                style: TextStyle(color: tokens.mute, fontSize: 13),
+              ),
+            ),
+          for (var mi = 0; mi < months.length; mi++) ...[
+            Padding(
+              key: _monthKeys[months[mi]],
+              padding: const EdgeInsets.only(top: 10, bottom: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(months[mi], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5)),
+                  ),
+                  if (mi == 0 && months.length > 1)
+                    GestureDetector(
+                      onTap: () => _pickMonth(months),
+                      child: Icon(Icons.calendar_today_outlined, color: tokens.ink, size: 22),
+                    ),
+                ],
+              ),
+            ),
+            memoryGrid(byMonth[months[mi]] ?? const <Story>[], withAdd: mi == 0),
+          ],
+          if (myStories.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Text(
+                'Memories delete after $memoryRetentionDays days unless you bookmark them. Hold one to delete it.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: tokens.mute, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Edit your picture, username and bio — reached from "Edit profile".
+class EditProfileScreen extends StatefulWidget {
+  const EditProfileScreen({super.key});
+
+  @override
+  State<EditProfileScreen> createState() => _EditProfileScreenState();
+}
+
+class _EditProfileScreenState extends State<EditProfileScreen> {
+  late final TextEditingController _handleController;
+  late final TextEditingController _bioController;
+  // The bio's "12/50" counter only shows while you're editing it.
+  final FocusNode _bioFocus = FocusNode();
 
   @override
   void initState() {
@@ -43,20 +374,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final store = context.read<AppStore>();
     _handleController = TextEditingController(text: store.me.handle);
     _bioController = TextEditingController(text: store.me.bio);
-    _syncedHandle = store.me.handle;
-    _syncedBio = store.me.bio;
+    _bioFocus.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _handleController.dispose();
     _bioController.dispose();
+    _bioFocus.dispose();
     super.dispose();
   }
 
-  /// Picks a new profile photo — either the in-app camera (same as before)
-  /// or an existing photo from the library. Stories stay camera-only; this
-  /// is the one place in the app that opens an actual gallery picker.
+  /// Picks a new profile photo — the in-app camera or the photo library.
   Future<void> _changePhoto(AppStore store) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final source = await showModalBottomSheet<_PhotoSource>(
@@ -66,7 +397,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       builder: (_) => const _PhotoSourceSheet(),
     );
     if (source == null || !mounted) return;
-
     if (source == _PhotoSource.camera) {
       await _changePhotoFromCamera(store);
     } else {
@@ -93,9 +423,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
       if (picked == null || !mounted) return;
-      // Copy into our own app-documents folder, same as every camera
-      // capture already does — the picker's own temp file isn't guaranteed
-      // to stick around.
+      // Copy into our own documents folder — the picker's temp file isn't
+      // guaranteed to stick around.
       final docs = await getApplicationDocumentsDirectory();
       final dir = Directory('${docs.path}/stories');
       if (!await dir.exists()) await dir.create(recursive: true);
@@ -105,21 +434,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final err = await store.setProfilePhoto(savedFile.path);
       if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
     }
   }
 
-  /// Commits whatever's in the handle field right now — called on submit
-  /// (keyboard "done") or the save button, not on every keystroke like
-  /// before, since every keystroke used to try to spend the 15-day cooldown.
   Future<void> _commitHandle(AppStore store) async {
+    if (_handleController.text.trim() == store.me.handle) return;
     final error = await store.setHandle(_handleController.text);
     if (!mounted) return;
     if (error != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
       setState(() => _handleController.text = store.me.handle);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Username saved.'), duration: Duration(seconds: 1)));
     }
   }
 
@@ -127,264 +454,113 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
+    InputDecoration field(String hint, {String? counter, Widget? suffix}) => InputDecoration(
+          hintText: hint,
+          hintStyle: TextStyle(color: tokens.mute),
+          filled: true,
+          fillColor: tokens.surface,
+          counterText: counter,
+          suffixIcon: suffix,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: tokens.line)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: tokens.brand, width: 1.4)),
+        );
 
-    // Not logged in: there's no profile yet, so don't show a made-up name.
-    if (!store.signedIn) return const _SignedOutProfile();
-
-    if (store.me.handle != _syncedHandle) {
-      _syncedHandle = store.me.handle;
-      final fresh = store.me.handle;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _handleController.text != fresh) _handleController.text = fresh;
-      });
-    }
-    if (store.me.bio != _syncedBio) {
-      _syncedBio = store.me.bio;
-      final fresh = store.me.bio;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _bioController.text != fresh) _bioController.text = fresh;
-      });
-    }
-
-    final friends = store.me.friends.length;
-    final title = store.myLevelTitle;
-    final badges = store.myBadges;
-
-    // Grouped by calendar day, same as the old standalone Memories screen —
-    // now rendered straight on the profile page itself instead of behind a
-    // tap-through link.
-    final myStories = store.myStories; // newest first already
-    final memoriesByDay = <String, List<Story>>{};
-    for (final s in myStories) {
-      final key = _memoryDayLabel(DateTime.fromMillisecondsSinceEpoch(s.t));
-      (memoriesByDay[key] ??= []).add(s);
-    }
-
-    // No AppBar of its own anymore — the root shell's shared AppBar now
-    // carries the title, notification bell, and settings gear on every
-    // tab, not just this one.
     return Scaffold(
       backgroundColor: tokens.bg,
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
-        children: [
-          Column(
-            children: [
-              Stack(
-                alignment: Alignment.bottomRight,
-                children: [
-                  // Tap the picture itself for a big preview — the little
-                  // pencil badge below is what changes it.
-                  PersonAvatar(person: store.me, size: 88, viewProfile: false),
-                  Positioned(
-                    right: -2,
-                    bottom: -2,
-                    child: GestureDetector(
-                      onTap: () => _changePhoto(store),
-                      behavior: HitTestBehavior.opaque,
+      appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: const Text('Edit profile')),
+      body: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        behavior: HitTestBehavior.translucent,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
+          children: [
+            Center(
+              child: GestureDetector(
+                onTap: () => _changePhoto(store),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    PersonAvatar(person: store.me, size: 112, preview: false),
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
                       child: Container(
-                        width: 30,
-                        height: 30,
+                        width: 34,
+                        height: 34,
                         alignment: Alignment.center,
-                        decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 2.5)),
-                        // A pencil, not a camera — tapping this opens "take a
-                        // new photo or choose from library" to change the
-                        // profile picture, not a camera/Story capture, and a
-                        // camera icon here read as if it did the latter.
-                        child: const Icon(Icons.edit, color: Colors.white, size: 15),
+                        decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 3)),
+                        child: const Icon(Icons.edit, color: Colors.white, size: 16),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              // A plain Row(mainAxisSize: min) here used to center the
-              // *whole row* — text plus the save icon (plus the verified
-              // badge, when present) — as one block. Since those icons only
-              // sit on the right, that block's true center sat left of the
-              // text field's own center, so the username itself always
-              // looked off-center. Stacking them instead lets the text
-              // field span (and center within) the full width on its own,
-              // with the icons floating on top at the right edge instead of
-              // pushing the text off-balance.
-              Stack(
-                alignment: Alignment.center,
-                children: [
-                  TextField(
-                    controller: _handleController,
-                    onSubmitted: (_) => _commitHandle(store),
-                    textAlign: TextAlign.center,
-                    // Letters, numbers, and underscores only (blocked live
-                    // while typing), capped at 20 — setHandle enforces the
-                    // same two rules again server/store-side as a backstop.
-                    maxLength: 20,
-                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_]'))],
-                    decoration: InputDecoration(
-                      hintText: 'Pick a screen name',
-                      hintStyle: TextStyle(color: tokens.mute),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 52),
-                      counterText: '', // keeps the existing compact layout below
-                    ),
-                    style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w800),
-                  ),
-                  // The badges sit right beside the name itself (not out at
-                  // the screen edge): measure the typed text, then lay out
-                  // [spacer | name-width | badges] so the name stays centred.
-                  if (store.isVerifiedUser || store.isAdmin)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: AnimatedBuilder(
-                          animation: _handleController,
-                          builder: (context, _) {
-                            const nameStyle = TextStyle(fontSize: 20, fontWeight: FontWeight.w800);
-                            final painter = TextPainter(
-                              text: TextSpan(text: _handleController.text.isEmpty ? ' ' : _handleController.text, style: nameStyle),
-                              textDirection: TextDirection.ltr,
-                              textScaler: MediaQuery.textScalerOf(context),
-                              maxLines: 1,
-                            )..layout();
-                            final badgeCount = (store.isVerifiedUser ? 1 : 0) + (store.isAdmin ? 1 : 0);
-                            final badgesWidth = 6.0 + badgeCount * 22.0;
-                            // Never wider than the room the field has for text.
-                            final maxName = (MediaQuery.sizeOf(context).width - 32 - 104 - 2 * badgesWidth).clamp(0.0, 400.0).toDouble();
-                            final nameWidth = painter.width < maxName ? painter.width : maxName;
-                            return Center(
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(width: badgesWidth),
-                                  SizedBox(width: nameWidth),
-                                  const SizedBox(width: 6),
-                                  if (store.isVerifiedUser) Icon(Icons.verified, color: tokens.brand, size: 20),
-                                  // Gold FUNKY Admin badge — same as StyledName
-                                  // shows everywhere else; this row is a plain
-                                  // editable TextField, so it draws its own.
-                                  if (store.isAdmin)
-                                    Padding(
-                                      padding: EdgeInsets.only(left: store.isVerifiedUser ? 2 : 0),
-                                      child: Icon(Icons.verified, color: tokens.gold, size: 20),
-                                    ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  Positioned(
-                    right: 0,
-                    child: IconButton(
-                      onPressed: () => _commitHandle(store),
-                      tooltip: 'Save username',
-                      icon: Icon(Icons.check_circle_outline, color: tokens.brand, size: 20),
-                    ),
-                  ),
-                ],
-              ),
-              Text(
-                store.isAdmin ? 'As an admin you can change your username any time.' : 'Usernames can only change once every 15 days.',
-                style: TextStyle(color: tokens.mute, fontSize: 11),
-              ),
-              TextField(
-                controller: _bioController,
-                onChanged: store.setBio,
-                textAlign: TextAlign.center,
-                // Capped at 50 — the counter Flutter shows for `maxLength`
-                // sits right-aligned below the field by default, which is
-                // what shows you how much room is left as you type.
-                maxLength: 50,
-                decoration: InputDecoration(hintText: 'Add a bio', hintStyle: TextStyle(color: tokens.mute), border: InputBorder.none),
-                style: TextStyle(color: tokens.mute, fontSize: 14),
-              ),
-              if (title != null) ...[
-                const SizedBox(height: 4),
-                Text('${title.emoji} ${title.title}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13)),
-              ],
-              if (badges.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: badges
-                      .map((b) => Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(999)),
-                            child: Text('${b.emoji} ${b.label}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12)),
-                          ))
-                      .toList(),
+                  ],
                 ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              _Stat(
-                label: 'Funky Points · Lv ${store.level}',
-                value: store.me.points,
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen())),
               ),
-              _Stat(
-                label: 'Friends',
-                value: friends,
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen())),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: TextButton(
+                onPressed: () => _changePhoto(store),
+                child: Text('Change picture', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700)),
               ),
-            ],
-          ),
-          const SectionHeader(title: 'Memories'),
-          if (myStories.isEmpty)
-            const FunkyCard(
-              child: EmptyNote(
-                text: "Nothing saved yet. Post a Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on "
-                    "one to keep it on your Timeline forever.",
+            ),
+            const SizedBox(height: 10),
+            Text('Username', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _handleController,
+              onSubmitted: (_) => _commitHandle(store),
+              maxLength: 20,
+              // Letters, numbers and underscores only.
+              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_]'))],
+              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 16),
+              decoration: field(
+                'Pick a username',
+                counter: '',
+                suffix: IconButton(
+                  tooltip: 'Save username',
+                  onPressed: () => _commitHandle(store),
+                  icon: Icon(Icons.check_circle_outline, color: tokens.brand),
+                ),
               ),
-            )
-          else
-            ...memoriesByDay.entries.expand((entry) => <Widget>[
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, bottom: 8),
-                    child: Text(entry.key, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
-                  ),
-                  GridView.builder(
-                    shrinkWrap: true,
-                    padding: EdgeInsets.zero,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      mainAxisSpacing: 8,
-                      crossAxisSpacing: 8,
-                      childAspectRatio: 0.74,
-                    ),
-                    itemCount: entry.value.length,
-                    itemBuilder: (context, i) {
-                      final s = entry.value[i];
-                      // myStories is newest-first; the Story viewer always
-                      // plays oldest-first, so this story's position there
-                      // is counted back from the end rather than reusing
-                      // its position here directly.
-                      final viewerIndex = myStories.length - 1 - myStories.indexOf(s);
-                      return _MemoryGridTile(
-                        story: s,
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: const ['me'], initialStoryIndex: viewerIndex)),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                ]),
-        ],
+            ),
+            Text(
+              store.isAdmin ? 'As an admin you can change your username any time.' : 'Usernames can only change once every 15 days.',
+              style: TextStyle(color: tokens.mute, fontSize: 12),
+            ),
+            const SizedBox(height: 18),
+            Text('Bio', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _bioController,
+              focusNode: _bioFocus,
+              onChanged: store.setBio,
+              maxLength: 50,
+              style: TextStyle(color: tokens.ink, fontSize: 15),
+              // The "12/50" counter only appears while you're typing.
+              decoration: field('Add a bio', counter: _bioFocus.hasFocus ? null : ''),
+            ),
+            const SizedBox(height: 18),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen())),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                side: BorderSide(color: tokens.line),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: Icon(Icons.auto_awesome_outlined, color: tokens.brand, size: 18),
+              label: Text('Title & name style', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-/// The bottom sheet that asks "take a new photo or pick one from your
-/// library" when you tap the camera badge on your profile picture.
-/// What the Profile tab shows when nobody is logged in. It looks like a
-/// profile, but picture / username / bio are locked — tapping any of them
-/// asks the person to create an account instead.
+/// What the Profile tab shows when nobody is logged in: no editable
+/// picture, name or bio (there's no profile yet) — just what an account
+/// gets you, and the buttons to make one or log in.
 class _SignedOutProfile extends StatelessWidget {
   const _SignedOutProfile();
 
@@ -392,91 +568,70 @@ class _SignedOutProfile extends StatelessWidget {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => AccountScreen(closeOnSuccess: true, startInLogIn: logIn)));
   }
 
-  Future<void> _prompt(BuildContext context, String what) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final create = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: tokens.surface,
-        title: Text('Create an account', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
-        content: Text('You need an account to $what. It only takes a minute.', style: TextStyle(color: tokens.mute)),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text('Not now', style: TextStyle(color: tokens.mute))),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text('Create account', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
-          ),
-        ],
-      ),
-    );
-    if (create == true && context.mounted) _openAccount(context, false);
-  }
-
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    Widget perk(IconData icon, String title, String body) => Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.14), shape: BoxShape.circle),
+                child: Icon(icon, size: 20, color: tokens.brand),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14.5)),
+                    const SizedBox(height: 2),
+                    Text(body, style: TextStyle(color: tokens.mute, fontSize: 13, height: 1.35)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
     return Scaffold(
       backgroundColor: tokens.bg,
       body: ListView(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
         children: [
           Center(
-            child: Stack(
-              alignment: Alignment.bottomRight,
-              children: [
-                GestureDetector(
-                  onTap: () => _prompt(context, 'add a profile picture'),
-                  child: Container(
-                    width: 88,
-                    height: 88,
-                    decoration: BoxDecoration(color: tokens.raised, shape: BoxShape.circle),
-                    child: Icon(Icons.person_outline, size: 48, color: tokens.mute),
-                  ),
-                ),
-                Positioned(
-                  right: -2,
-                  bottom: -2,
-                  child: GestureDetector(
-                    onTap: () => _prompt(context, 'add a profile picture'),
-                    behavior: HitTestBehavior.opaque,
-                    child: Container(
-                      width: 30,
-                      height: 30,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 2.5)),
-                      child: const Icon(Icons.edit, color: Colors.white, size: 15),
-                    ),
-                  ),
-                ),
-              ],
+            child: Container(
+              width: 88,
+              height: 88,
+              decoration: BoxDecoration(color: tokens.raised, shape: BoxShape.circle),
+              child: Icon(Icons.person_outline, size: 48, color: tokens.mute),
             ),
           ),
-          const SizedBox(height: 12),
-          GestureDetector(
-            onTap: () => _prompt(context, 'pick a username'),
-            behavior: HitTestBehavior.opaque,
-            child: Center(
-              child: Text('Not logged in', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800)),
-            ),
-          ),
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: () => _prompt(context, 'add a bio'),
-            behavior: HitTestBehavior.opaque,
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Text('Add a bio', style: TextStyle(color: tokens.mute, fontSize: 14)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
           Text(
-            'Log in or create an account to get a username, a profile picture, friends and Funky Points.',
+            'Make the night yours',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            store.isGuest
+                ? "You're browsing as a guest — you can already check out places, join Live Chat and watch Stories. A free account unlocks the rest:"
+                : 'A free account takes about a minute and unlocks:',
             textAlign: TextAlign.center,
             style: TextStyle(color: tokens.mute, fontSize: 14, height: 1.4),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 22),
+          perk(Icons.camera_alt_outlined, 'Post Stories', 'Share the night at your spot, and keep your favorites as Memories.'),
+          perk(Icons.people_alt_outlined, 'Friends & DMs', 'Add friends, message anyone, start group chats and video calls.'),
+          perk(Icons.favorite_border, 'Like & react', 'Heart Stories and react to Live Chat messages.'),
+          perk(Icons.badge_outlined, 'Your own profile', 'Pick a username, add a picture and a bio.'),
+          perk(Icons.stars_outlined, 'Funky Points', 'Earn points for going out, level up and unlock name styles.'),
+          const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
@@ -486,7 +641,7 @@ class _SignedOutProfile extends StatelessWidget {
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 14),
               ),
-              child: const Text('Create account', style: TextStyle(fontWeight: FontWeight.w800)),
+              child: const Text('Create a free account', style: TextStyle(fontWeight: FontWeight.w800)),
             ),
           ),
           const SizedBox(height: 10),
@@ -499,7 +654,7 @@ class _SignedOutProfile extends StatelessWidget {
                 side: BorderSide(color: tokens.mute),
                 padding: const EdgeInsets.symmetric(vertical: 14),
               ),
-              child: const Text('Log in', style: TextStyle(fontWeight: FontWeight.w700)),
+              child: const Text('I already have an account — log in', style: TextStyle(fontWeight: FontWeight.w700)),
             ),
           ),
         ],
@@ -508,6 +663,8 @@ class _SignedOutProfile extends StatelessWidget {
   }
 }
 
+/// The bottom sheet that asks "take a new photo or pick one from your
+/// library" when you tap the pencil badge on your profile picture.
 class _PhotoSourceSheet extends StatelessWidget {
   const _PhotoSourceSheet();
 
@@ -538,163 +695,3 @@ class _PhotoSourceSheet extends StatelessWidget {
   }
 }
 
-/// A compact grid tile for the Memories grid — a clean, Instagram-profile-
-/// style 2-up collage instead of the old full-width info cards. Tap opens
-/// the full Story viewer at exactly this memory; long-press deletes it
-/// right here without having to go in first. The bookmark in the top-left
-/// corner is tappable on its own to toggle Save to Timeline; everything
-/// else the old card showed (place/time, expiry countdown, screenshot
-/// count) either didn't fit a small tile cleanly or is still reachable
-/// from the Story viewer once you tap in.
-class _MemoryGridTile extends StatelessWidget {
-  final Story story;
-  final VoidCallback onTap;
-  const _MemoryGridTile({required this.story, required this.onTap});
-
-  Future<void> _confirmDelete(BuildContext context) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: tokens.surface,
-        title: Text('Delete this memory?', style: TextStyle(color: tokens.ink)),
-        content: Text('This removes it for good — it can\'t be undone.', style: TextStyle(color: tokens.mute)),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: Text('Delete', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700))),
-        ],
-      ),
-    );
-    if (confirmed == true && context.mounted) {
-      context.read<AppStore>().deleteStory(story.id);
-    }
-  }
-
-  void _toggleTimeline(BuildContext context) {
-    final store = context.read<AppStore>();
-    if (story.savedToTimeline) {
-      store.removeFromTimeline(story.id);
-    } else {
-      store.saveToTimeline(story.id);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final hasVideo = story.videoPath != null || story.videoUrl != null;
-    final daysLeft = memoryDaysLeft(story);
-
-    Widget media;
-    if (hasVideo) {
-      media = VideoFrameThumbnail(path: story.videoPath, url: story.videoUrl);
-    } else if (story.imagePath != null) {
-      media = Image.file(File(story.imagePath!), fit: BoxFit.cover, width: double.infinity, height: double.infinity);
-    } else if (story.imageUrl != null) {
-      // A Memory synced from another device you posted it on has no local
-      // file here — only the signed URL fetched from the real backend (see
-      // Story.imageUrl's doc comment in models.dart).
-      media = Image.network(story.imageUrl!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
-    } else {
-      media = Container(
-        color: tokens.raised,
-        padding: const EdgeInsets.all(10),
-        alignment: Alignment.center,
-        child: Text(
-          story.text?.isNotEmpty == true ? story.text! : 'Text story',
-          maxLines: 5,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.center,
-          style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13),
-        ),
-      );
-    }
-
-    return GestureDetector(
-      onTap: onTap,
-      onLongPress: () => _confirmDelete(context),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            media,
-            // Bottom gradient scrim carrying the view count (left) and a
-            // days-left countdown (right) — only shown once it's saved
-            // doesn't need one, same rule as the old card's expiry row.
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(8, 22, 8, 6),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black54]),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.remove_red_eye, size: 12, color: Colors.white),
-                    const SizedBox(width: 3),
-                    Text('${story.views.length}', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
-                    const Spacer(),
-                    if (!story.savedToTimeline)
-                      Text(
-                        daysLeft <= 0 ? 'today' : '${daysLeft}d',
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (hasVideo)
-              const Positioned(
-                top: 6,
-                right: 6,
-                child: Icon(Icons.videocam, color: Colors.white, size: 16, shadows: [Shadow(blurRadius: 4, color: Colors.black54)]),
-              ),
-            Positioned(
-              top: 4,
-              left: 4,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => _toggleTimeline(context),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(
-                    story.savedToTimeline ? Icons.bookmark : Icons.bookmark_outline,
-                    size: 18,
-                    color: story.savedToTimeline ? tokens.brand : Colors.white,
-                    shadows: const [Shadow(blurRadius: 4, color: Colors.black45)],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Stat extends StatelessWidget {
-  final String label;
-  final int value;
-  final VoidCallback? onTap;
-  const _Stat({required this.label, required this.value, this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          children: [
-            Text('$value', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 20)),
-            Text(label, style: TextStyle(color: tokens.mute, fontSize: 12)),
-          ],
-        ),
-      ),
-    );
-  }
-}

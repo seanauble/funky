@@ -175,7 +175,10 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
     // the server you've seen what they sent — idempotent and throttled in
     // the store, so calling it every build is cheap.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<AppStore>().markDmSeen(widget.personId);
+      if (!mounted) return;
+      final store = context.read<AppStore>();
+      store.markDmSeen(widget.personId);
+      store.markThreadRead(dmRoomId('me', widget.personId));
     });
     // Land on the newest message when the thread opens or something new
     // arrives (yours or theirs).

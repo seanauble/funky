@@ -1,6 +1,8 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'data/app_store.dart';
 import 'screens/chat_screen.dart';
 import 'screens/create_sheet.dart';
 import 'screens/home_screen.dart';
@@ -124,87 +126,79 @@ class _RootShellState extends State<RootShell> {
   }
 }
 
+/// The bottom bar: Home, Chat, a rounded-square orange "+" in the middle
+/// (opens the Story/Poll/Place sheet), Map, Profile. Bigger icons and labels,
+/// the active tab in orange, everything else soft gray.
 class _TabBar extends StatelessWidget {
   final int index;
   final ValueChanged<int> onTap;
   const _TabBar({required this.index, required this.onTap});
 
-  static const double _barHeight = 60;
-  // How far the raised camera button's top edge sits above the bar's own
-  // top edge (matches what the old Transform.translate(0, -10) on a 66px
-  // button centered in a 60px row worked out to). The bug wasn't this
-  // amount of "raise" itself — Instagram/Snapchat-style buttons really do
-  // poke up like this on purpose — it's that Transform.translate just
-  // painted the button outside the bar Container's own 60px bounds, which
-  // Scaffold never knew to reserve space for. That overflow landed directly
-  // on top of whatever sat at the very bottom of the screen above the bar
-  // (the Chat tab's message composer has no bottom padding, so it was the
-  // most visible place it broke). Wrapping everything in a Stack sized to
-  // _barHeight + _buttonPoke makes this the bar's real height, so Scaffold
-  // reserves the extra space and the button stays inside its own territory.
-  static const double _buttonPoke = 13;
-  static const double _buttonSize = 66;
+  static const double _barHeight = 74;
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return SizedBox(
-      height: _barHeight + _buttonPoke,
-      child: Stack(
+    // The home-indicator gap sits under the bar, not inside its 74px, so the
+    // icons never get squeezed on Face ID iPhones.
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final unread = context.select<AppStore, int>((s) => s.totalUnreadMessages);
+    return Container(
+      height: _barHeight + bottomInset,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      decoration: BoxDecoration(
+        color: tokens.bg,
+        border: Border(top: BorderSide(color: tokens.line, width: 0.6)),
+      ),
+      child: Row(
         children: [
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Container(
-              height: _barHeight,
-              decoration: BoxDecoration(color: tokens.glass, border: Border(top: BorderSide(color: tokens.line))),
-              child: SafeArea(
-                top: false,
-                child: Row(
-                  children: [
-                    _TabItem(icon: Icons.home, label: 'Home', active: index == 0, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(0)),
-                    _TabItem(icon: Icons.chat_bubble, label: 'Chat', active: index == 1, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(1)),
-                    // Empty middle slot — the raised button is drawn
-                    // separately below so it can extend above this row
-                    // without being clipped by it, but this Expanded still
-                    // keeps the side tab items spaced exactly as before.
-                    const Expanded(child: SizedBox.shrink()),
-                    _TabItem(icon: Icons.map, label: 'Map', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
-                    _TabItem(icon: Icons.person, label: 'Profile', active: index == 4, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(4)),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            child: Center(
-              child: GestureDetector(
-                onTap: () => onTap(2),
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  width: _buttonSize,
-                  height: _buttonSize,
-                  decoration: BoxDecoration(
-                    color: tokens.brand,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: tokens.glass, width: 4),
-                    boxShadow: [BoxShadow(color: tokens.brand.withValues(alpha: 0.5), blurRadius: 14, offset: const Offset(0, 5))],
-                  ),
-                  // A plus instead of a camera — the camera icon made this
-                  // button read as "take a photo" specifically, when it
-                  // actually opens the full create flow (camera Story,
-                  // text Story, poll, or place). A generic "add" symbol
-                  // doesn't bias toward any one of those.
-                  child: const Icon(Icons.add, color: Colors.white, size: 32),
-                ),
-              ),
-            ),
-          ),
+          _TabItem(icon: Icons.home_rounded, label: 'Home', active: index == 0, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(0)),
+          _TabItem(icon: Icons.chat_bubble_rounded, label: 'Chat', active: index == 1, color: tokens.orange, mute: tokens.mute, badge: unread, onTap: () => onTap(1)),
+          Expanded(child: Center(child: _PlusButton(color: tokens.brand, onTap: () => onTap(2)))),
+          _TabItem(icon: Icons.map_rounded, label: 'Map', active: index == 3, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(3)),
+          _TabItem(icon: Icons.person_rounded, label: 'Profile', active: index == 4, color: tokens.orange, mute: tokens.mute, onTap: () => onTap(4)),
         ],
+      ),
+    );
+  }
+}
+
+/// The orange rounded-square "+" — squishes a little while pressed.
+class _PlusButton extends StatefulWidget {
+  final Color color;
+  final VoidCallback onTap;
+  const _PlusButton({required this.color, required this.onTap});
+
+  @override
+  State<_PlusButton> createState() => _PlusButtonState();
+}
+
+class _PlusButtonState extends State<_PlusButton> {
+  bool _down = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _down = true),
+      onTapCancel: () => setState(() => _down = false),
+      onTapUp: (_) => setState(() => _down = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _down ? 0.9 : 1,
+        duration: const Duration(milliseconds: 110),
+        child: Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: widget.color,
+            borderRadius: BorderRadius.circular(17),
+            boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.35), blurRadius: 12, offset: const Offset(0, 4))],
+          ),
+          // A plus, not a camera: it opens the whole create flow (camera
+          // Story, text Story, poll, or place).
+          child: const Icon(Icons.add_rounded, color: Colors.white, size: 36),
+        ),
       ),
     );
   }
@@ -217,10 +211,13 @@ class _TabItem extends StatelessWidget {
   final Color color;
   final Color mute;
   final VoidCallback onTap;
-  const _TabItem({required this.icon, required this.label, required this.active, required this.color, required this.mute, required this.onTap});
+  // Unread messages, shown as a small orange count on the icon.
+  final int badge;
+  const _TabItem({required this.icon, required this.label, required this.active, required this.color, required this.mute, required this.onTap, this.badge = 0});
 
   @override
   Widget build(BuildContext context) {
+    final c = active ? color : mute;
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
@@ -228,9 +225,35 @@ class _TabItem extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: active ? color : mute, size: 22),
-            const SizedBox(height: 2),
-            Text(label, style: TextStyle(color: active ? color : mute, fontSize: 10.5, fontWeight: FontWeight.w600)),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedScale(
+                  scale: active ? 1.08 : 1,
+                  duration: const Duration(milliseconds: 160),
+                  child: Icon(icon, color: c, size: 29),
+                ),
+                if (badge > 0)
+                  Positioned(
+                    right: -9,
+                    top: -5,
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 18),
+                      height: 18,
+                      padding: const EdgeInsets.symmetric(horizontal: 5),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: Theme.of(context).scaffoldBackgroundColor, width: 1.5),
+                      ),
+                      child: Text(badge > 99 ? '99+' : '$badge', style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w800)),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(label, style: TextStyle(color: c, fontSize: 13, fontWeight: active ? FontWeight.w800 : FontWeight.w600)),
           ],
         ),
       ),

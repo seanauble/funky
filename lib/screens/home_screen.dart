@@ -10,16 +10,27 @@ import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/place_rating_card.dart';
 import '../widgets/poll_bars.dart';
+import '../widgets/rainbow_ring.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
+import 'account_screen.dart';
+import 'add_friends_screen.dart';
 import 'create_sheet.dart';
 import 'places_screen.dart';
 import 'place_detail_screen.dart';
 import '../root_shell.dart';
 import 'story_viewer_screen.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  // Which tab under the story rings is showing — Tonight is the full feed.
+  _HomeTab _tab = _HomeTab.tonight;
 
   @override
   Widget build(BuildContext context) {
@@ -50,10 +61,11 @@ class HomeScreen extends StatelessWidget {
     // that happens to have stories" (that mismatch was why rings used to
     // show up for the wrong people and did nothing when tapped), and not
     // someone whose only Story tonight is at an unconfirmed venue.
-    bool hasUnseenFrom(String uid) => store.storiesByUser(uid).any((s) => !s.views.contains('me'));
+    // Only Stories from the last 24 hours make a ring.
+    bool hasUnseenFrom(String uid) => store.liveStoriesByUser(uid).any((s) => !s.views.contains('me'));
     final storytellerIds = <String>{
       for (final s in store.stories)
-        if (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!)) s.uid,
+        if (store.isLiveStory(s) && (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!))) s.uid,
     }..remove('me')..removeWhere(store.isBanned);
     bool isFriend(String uid) => store.me.friends.contains(uid);
     // Friends always lead the queue (green ring), full stop — ahead of
@@ -70,7 +82,9 @@ class HomeScreen extends StatelessWidget {
         final bSeen = hasUnseenFrom(b) ? 0 : 1;
         return aSeen.compareTo(bSeen);
       });
-    final myStories = store.myStories;
+    // Signed out: "Your story" is just the plain add ring — no leftover
+    // picture or Stories from the account that signed out.
+    final myStories = store.signedIn ? store.myLiveStories : const <Story>[];
     final hasMyStories = myStories.isNotEmpty;
     // Same order as the rings below — "Your story" first (when you have
     // one), then everyone else, unseen first — shared with the viewer so a
@@ -102,9 +116,9 @@ class HomeScreen extends StatelessWidget {
                   // anything for your own Stories, so this just always
                   // reads as the neutral/gray border.
                   unseen: false,
-                  seed: store.me.id,
-                  photoPath: store.me.photoPath,
-                  photoUrl: store.me.photoUrl,
+                  seed: store.signedIn ? store.me.id : 'guest',
+                  photoPath: store.signedIn ? store.me.photoPath : null,
+                  photoUrl: store.signedIn ? store.me.photoUrl : null,
                   onTap: hasMyStories
                       ? () => Navigator.of(context)
                           .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0)))
@@ -133,6 +147,13 @@ class HomeScreen extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 12),
+          _HomeTabBar(selected: _tab, onChanged: (t) => setState(() => _tab = t)),
+          if (_tab == _HomeTab.friends)
+            const _FriendsTonight()
+          else if (_tab != _HomeTab.tonight)
+            _PlacesOfKind(tab: _tab)
+          else ...[
           FunkyCard(
             margin: const EdgeInsets.only(top: 14),
             child: Column(
@@ -316,6 +337,386 @@ class HomeScreen extends StatelessWidget {
               );
             }),
           FootNote(text: 'Chat, Stories, places and polls are wiped at 2 PM. Next fresh start in ${session.untilReset()}.'),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The tabs under the story rings. Tonight and Friends lead; the rest
+/// narrow the night down to one kind of spot.
+enum _HomeTab { tonight, friends, bars, parties, events, tailgate, fraternity }
+
+extension on _HomeTab {
+  String get label => switch (this) {
+        _HomeTab.tonight => 'Tonight',
+        _HomeTab.friends => 'Friends',
+        _HomeTab.bars => 'Bars',
+        _HomeTab.parties => 'Parties',
+        _HomeTab.events => 'Events',
+        _HomeTab.tailgate => 'Tailgate',
+        _HomeTab.fraternity => 'Fraternity',
+      };
+
+  IconData get icon => switch (this) {
+        _HomeTab.tonight => Icons.calendar_today_outlined,
+        _HomeTab.friends => Icons.groups_rounded,
+        _HomeTab.bars => Icons.local_bar_outlined,
+        _HomeTab.parties => Icons.celebration_outlined,
+        _HomeTab.events => Icons.confirmation_number_outlined,
+        _HomeTab.tailgate => Icons.sports_football_outlined,
+        _HomeTab.fraternity => Icons.account_balance_outlined,
+      };
+
+  /// The kinds of place each spot tab lists (bars include clubs).
+  Set<PlaceKind> get kinds => switch (this) {
+        _HomeTab.bars => const {PlaceKind.bar, PlaceKind.club},
+        _HomeTab.parties => const {PlaceKind.party},
+        _HomeTab.events => const {PlaceKind.event},
+        _HomeTab.tailgate => const {PlaceKind.tailgate},
+        _HomeTab.fraternity => const {PlaceKind.frat},
+        _ => const <PlaceKind>{},
+      };
+
+  /// "bars", "parties"… for empty-state sentences.
+  String get plural => switch (this) {
+        _HomeTab.bars => 'bars',
+        _HomeTab.parties => 'parties',
+        _HomeTab.events => 'events',
+        _HomeTab.tailgate => 'tailgates',
+        _HomeTab.fraternity => 'frat parties',
+        _ => 'spots',
+      };
+}
+
+class _HomeTabBar extends StatelessWidget {
+  final _HomeTab selected;
+  final ValueChanged<_HomeTab> onChanged;
+  const _HomeTabBar({required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 46,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        itemCount: _HomeTab.values.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final tab = _HomeTab.values[i];
+          return _HomeTabChip(tab: tab, active: tab == selected, onTap: () => onChanged(tab));
+        },
+      ),
+    );
+  }
+}
+
+class _HomeTabChip extends StatelessWidget {
+  final _HomeTab tab;
+  final bool active;
+  final VoidCallback onTap;
+  const _HomeTabChip({required this.tab, required this.active, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: active ? tokens.brand : tokens.surface,
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: active ? tokens.brand : tokens.line, width: 1.2),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(tab.icon, size: 19, color: active ? Colors.white : tokens.mute),
+            const SizedBox(width: 8),
+            Text(
+              tab.label,
+              style: TextStyle(color: active ? Colors.white : tokens.ink, fontSize: 14.5, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Home's Friends tab: where your friends said they're going tonight.
+class _FriendsTonight extends StatelessWidget {
+  const _FriendsTonight();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+
+    if (!store.signedIn) {
+      return _TabNote(
+        text: 'Make an account to add friends and see where they are headed tonight.',
+        action: 'Create a free account',
+        onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen(closeOnSuccess: true))),
+      );
+    }
+    final friends = store.myFriends.where((f) => !store.isBanned(f.id)).toList();
+    if (friends.isEmpty) {
+      return _TabNote(
+        text: 'No friends on FUNKY yet. Add some to see where everyone is going tonight.',
+        action: 'Find friends',
+        onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AddFriendsScreen())),
+      );
+    }
+
+    final byPlace = <String, List<Person>>{};
+    final stayingIn = <Person>[];
+    final undecided = <Person>[];
+    for (final f in friends) {
+      final move = f.move;
+      if (move == null) {
+        undecided.add(f);
+      } else if (move == 'in') {
+        stayingIn.add(f);
+      } else {
+        (byPlace[move] ??= []).add(f);
+      }
+    }
+    final placeIds = byPlace.keys.toList()..sort((a, b) => byPlace[b]!.length.compareTo(byPlace[a]!.length));
+    Place? placeFor(String id) {
+      for (final p in store.places) {
+        if (p.id == id) return p;
+      }
+      return null;
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(title: 'Where your friends are going'),
+        if (placeIds.isEmpty)
+          const EmptyNote(text: "None of your friends has picked a spot yet tonight.")
+        else
+          ...placeIds.map((id) {
+            final place = placeFor(id);
+            final going = byPlace[id]!;
+            return GestureDetector(
+              onTap: place == null ? null : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: id))),
+              behavior: HitTestBehavior.opaque,
+              child: FunkyCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: PlaceMediaThumbnail(
+                          story: store.latestMediaStoryFor(id),
+                          coverPhotoPath: place?.coverPhotoPath,
+                          coverUrl: place?.coverUrl,
+                          photoUrl: place?.photoUrl,
+                          fallbackLabel: (place?.name.isNotEmpty ?? false) ? place!.name.substring(0, 1) : '?',
+                          fontSize: 20,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(place?.name ?? 'Somewhere nearby',
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 6),
+                          _AvatarRow(people: going),
+                        ],
+                      ),
+                    ),
+                    Text('${going.length}', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 18)),
+                  ],
+                ),
+              ),
+            );
+          }),
+        if (stayingIn.isNotEmpty) ...[
+          const SectionHeader(title: 'Staying in'),
+          FunkyCard(child: _AvatarRow(people: stayingIn)),
+        ],
+        if (undecided.isNotEmpty) ...[
+          const SectionHeader(title: "Haven't picked yet"),
+          FunkyCard(child: _AvatarRow(people: undecided)),
+        ],
+      ],
+    );
+  }
+}
+
+/// A few overlapping friend avatars plus their names.
+class _AvatarRow extends StatelessWidget {
+  final List<Person> people;
+  const _AvatarRow({required this.people});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final shown = people.take(5).toList();
+    final names = people.take(3).map((p) => '@${p.handle}').join(', ');
+    final extra = people.length - 3;
+    return Row(
+      children: [
+        SizedBox(
+          width: 22.0 * shown.length + 8,
+          height: 30,
+          child: Stack(
+            children: [
+              for (var i = 0; i < shown.length; i++)
+                Positioned(
+                  left: 22.0 * i,
+                  child: Container(
+                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.surface, width: 2)),
+                    child: PersonAvatar(person: shown[i], size: 26),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            extra > 0 ? '$names and $extra more' : names,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: tokens.mute, fontSize: 12.5),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Home's Bars / Parties / Events / Tailgate / Fraternity tabs: every spot of
+/// that kind within your range, busiest first.
+class _PlacesOfKind extends StatelessWidget {
+  final _HomeTab tab;
+  const _PlacesOfKind({required this.tab});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final kinds = tab.kinds;
+    final list = store.rankedPlaces.where((p) => kinds.contains(p.kind) && !store.isBanned(p.place.by)).toList();
+    final friendIds = store.me.friends.toSet();
+    if (list.isEmpty) {
+      return _TabNote(
+        text: 'No ${tab.plural} listed within ${rangeLabel()} yet. Put the first one on the map.',
+        action: 'Add a place or event',
+        onAction: () => showCreateSheet(context, initial: CreateKind.place),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(title: '${tab.label} near you'),
+        ...list.map((p) {
+          final verified = store.isPlaceVerified(p.id);
+          final friendsGoing = friendIds.where((id) => store.people[id]?.move == p.id).length;
+          return GestureDetector(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
+            behavior: HitTestBehavior.opaque,
+            child: FunkyCard(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: SizedBox(
+                      width: 64,
+                      height: 64,
+                      child: PlaceMediaThumbnail(
+                        story: store.latestMediaStoryFor(p.id),
+                        coverPhotoPath: p.coverPhotoPath,
+                        coverUrl: p.coverUrl,
+                        photoUrl: p.photoUrl,
+                        fallbackLabel: p.name.isNotEmpty ? p.name.substring(0, 1) : '?',
+                        fontSize: 22,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(p.name,
+                                  maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                            ),
+                            if (verified) ...[
+                              const SizedBox(width: 4),
+                              Icon(Icons.verified, size: 15, color: store.isAdminVerified(p.id) ? tokens.gold : tokens.brand),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${placeKindLabel(p.kind)} · ${p.distance < 0.1 ? 'right by you' : '${formatMiles(p.distance)} away'}',
+                          style: TextStyle(color: tokens.mute, fontSize: 12),
+                        ),
+                        const SizedBox(height: 2),
+                        RatingSummaryLine(placeId: p.id),
+                        if (p.going > 0 || friendsGoing > 0) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            [
+                              if (p.going > 0) '🔥 ${p.going} going',
+                              if (friendsGoing > 0) '$friendsGoing friend${friendsGoing == 1 ? '' : 's'}',
+                            ].join(' · '),
+                            style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, color: tokens.mute),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+}
+
+/// An empty-state card with one button, used by the Home tabs.
+class _TabNote extends StatelessWidget {
+  final String text;
+  final String action;
+  final VoidCallback onAction;
+  const _TabNote({required this.text, required this.action, required this.onAction});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return FunkyCard(
+      margin: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(text, style: TextStyle(color: tokens.ink)),
+          const SizedBox(height: 10),
+          FunkyChip(label: action, active: true, onPressed: onAction),
         ],
       ),
     );
@@ -367,7 +768,7 @@ class _StoryRing extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final showBadge = isAdd || onAddBadgeTap != null;
-    final Color ringColor = isAdd ? tokens.line : (unseen ? (isFriend ? tokens.friend : tokens.orange) : tokens.line);
+    final Color ringColor = tokens.line;
     return GestureDetector(
       onTap: onTap,
       onLongPress: onLongPress,
@@ -380,16 +781,25 @@ class _StoryRing extends StatelessWidget {
             Stack(
               clipBehavior: Clip.none,
               children: [
-                Container(
-                  width: 64,
-                  height: 64,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: ringColor, width: 2.5),
+                // A Story you haven't watched yet: spinning rainbow ring.
+                // Already watched (or your own): plain gray.
+                if (!isAdd && unseen)
+                  RainbowRing(
+                    size: 64,
+                    strokeWidth: 3,
+                    child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
+                  )
+                else
+                  Container(
+                    width: 64,
+                    height: 64,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: ringColor, width: 2.5),
+                    ),
+                    child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
                   ),
-                  child: FunkyAvatar(seed: seed, label: label, size: 56, photoPath: photoPath, photoUrl: photoUrl),
-                ),
                 if (showBadge)
                   Positioned(
                     right: -2,
@@ -511,7 +921,7 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
 
   Widget _row(BuildContext context, AppStore store, ChatMessage m, Animation<double> anim, {bool leaving = false}) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final handle = m.uid == 'me' ? store.me.handle : (store.people[m.uid]?.handle ?? m.uid);
+    final handle = m.uid == 'me' ? store.myChatHandle : (store.people[m.uid]?.handle ?? m.uid);
     final content = Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -519,7 +929,7 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
         children: [
           m.anon
               ? Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12))
-              : FunkyHandle(handle: handle, person: m.uid == 'me' ? store.me : store.people[m.uid]),
+              : FunkyHandle(handle: handle, person: m.uid == 'me' ? (store.signedIn ? store.me : null) : store.people[m.uid]),
           if (m.uid != 'me' && m.lat != null && m.lng != null && store.location != null)
             Text(
               awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!))),

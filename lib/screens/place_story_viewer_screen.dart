@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
+import 'account_screen.dart';
 import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/avatar_preview.dart';
@@ -285,7 +286,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
               bottom: pad.bottom + 24,
               right: 18,
               child: IconButton(
-                onPressed: () => store.likeStory(story.id),
+                onPressed: () => requireAccountThen(context, store, () => store.likeStory(story.id)),
                 icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.redAccent : Colors.white, size: 30),
               ),
             ),

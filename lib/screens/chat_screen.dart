@@ -8,6 +8,7 @@ import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
+import 'add_friends_screen.dart';
 import 'dm_thread_screen.dart';
 import 'group_thread_screen.dart';
 import '../widgets/avatar_preview.dart';
@@ -63,7 +64,7 @@ Future<void> _showReactionPicker(BuildContext context, AppStore store, ChatMessa
       ),
     ),
   );
-  if (chosen != null) store.toggleReaction(message.id, chosen);
+  if (chosen != null) requireAccountThen(context, store, () => store.toggleReaction(message.id, chosen));
 }
 
 /// The pop-up shown the moment you flip on ghost mode in Live Chat — the
@@ -199,16 +200,11 @@ class _ChatScreenState extends State<ChatScreen> {
             // chat" shortcut switches to this tab instead of pushing a
             // standalone copy of this screen (which is what used to leave
             // people stuck in here with no way back out).
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(10)),
-              child: Row(
-                children: [
-                  _SegButton(label: 'Live Chat', active: _segment == 0, onTap: () => setState(() => _segment = 0)),
-                  _SegButton(label: 'Messages', active: _segment == 1, onTap: () => setState(() => _segment = 1)),
-                ],
-              ),
+            // Two plain tabs with an orange line under the one you're on.
+            _ChatTabs(
+              index: _segment,
+              unread: store.totalUnreadMessages,
+              onTap: (i) => setState(() => _segment = i),
             ),
             Expanded(
               child: _segment == 1
@@ -304,7 +300,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           if (_anon) {
                             send();
                           } else {
-                            requireAccountThen(context, store, send);
+                            requireGuestOkThen(context, store, send);
                           }
                         },
                         child: Container(
@@ -326,104 +322,335 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// The "Messages" segment — every DM thread 'me' has going, most recently
-/// active first. NOTE: this only ever reflects DMs sent from this one
-/// device (see the comment on AppStore.dmConversations) — there's no
-/// backend yet to actually deliver a message to someone else's phone.
-class _MessagesList extends StatelessWidget {
+/// The "Messages" segment — every DM thread and group, most recently active
+/// first, with a search bar on top.
+class _MessagesList extends StatefulWidget {
   final AppStore store;
   const _MessagesList({required this.store});
 
-  static String _preview(ChatMessage last, {String? who}) {
-    final body = last.mediaType == null
-        ? last.text
-        : '${last.mediaType == 'video' ? '🎥 Video' : '📷 Photo'}${last.text.isEmpty ? '' : ' · ${last.text}'}';
-    if (last.uid == 'me') return 'You: $body';
-    return who != null ? '$who: $body' : body;
+  @override
+  State<_MessagesList> createState() => _MessagesListState();
+}
+
+class _MessagesListState extends State<_MessagesList> {
+  final TextEditingController _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  /// "now", "2m", "18m", "1h", "3d", or "10/4" for older threads.
+  static String _ago(int t) {
+    if (t <= 0) return '';
+    final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(t));
+    if (diff.inMinutes < 1) return 'now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    if (diff.inDays < 7) return '${diff.inDays}d';
+    final d = DateTime.fromMillisecondsSinceEpoch(t);
+    return '${d.month}/${d.day}';
   }
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final conversations = store.dmConversations;
-    final groups = store.groupConversations;
+    final store = widget.store;
+    final q = _query.trim().toLowerCase();
 
     // DMs and groups in one list, newest activity first.
     final entries = <_ConvoEntry>[];
-    for (final person in conversations) {
-      final msgs = store.messagesFor(dmRoomId('me', person.id));
-      entries.add(_ConvoEntry(person: person, last: msgs.isNotEmpty ? msgs.last : null, t: msgs.isNotEmpty ? msgs.last.t : 0));
+    for (final person in store.dmConversations) {
+      final room = dmRoomId('me', person.id);
+      final msgs = store.messagesFor(room);
+      entries.add(_ConvoEntry(person: person, room: room, msgs: msgs, t: msgs.isNotEmpty ? msgs.last.t : 0));
     }
-    for (final g in groups) {
+    for (final g in store.groupConversations) {
       final msgs = store.messagesFor(g.room);
-      entries.add(_ConvoEntry(group: g, last: msgs.isNotEmpty ? msgs.last : null, t: msgs.isNotEmpty ? msgs.last.t : g.createdAt.millisecondsSinceEpoch));
+      entries.add(_ConvoEntry(group: g, room: g.room, msgs: msgs, t: msgs.isNotEmpty ? msgs.last.t : g.createdAt.millisecondsSinceEpoch));
     }
     entries.sort((a, b) => b.t.compareTo(a.t));
 
-    final newGroup = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: TextButton.icon(
-          onPressed: () => requireAccountThen(
-            context,
-            store,
-            () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
+    // Search: matches a name/@handle/group name, or anything said in the
+    // thread (then that message is what's previewed).
+    final shown = <(_ConvoEntry, ChatMessage?)>[];
+    for (final e in entries) {
+      final last = e.msgs.isNotEmpty ? e.msgs.last : null;
+      if (q.isEmpty) {
+        shown.add((e, last));
+        continue;
+      }
+      final name = e.group?.name ?? e.person?.handle ?? '';
+      if (name.toLowerCase().contains(q)) {
+        shown.add((e, last));
+        continue;
+      }
+      ChatMessage? hit;
+      for (final m in e.msgs.reversed) {
+        if (m.text.toLowerCase().contains(q)) {
+          hit = m;
+          break;
+        }
+      }
+      if (hit != null) shown.add((e, hit));
+    }
+
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 4),
+      child: Row(
+        children: [
+          Expanded(child: Text('Messages', style: TextStyle(color: tokens.ink, fontSize: 21, fontWeight: FontWeight.w800))),
+          TextButton.icon(
+            onPressed: () => requireAccountThen(
+              context,
+              store,
+              () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CreateGroupScreen())),
+            ),
+            icon: Icon(Icons.group_add_outlined, size: 21, color: tokens.brand),
+            label: Text('New group', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 15)),
           ),
-          icon: Icon(Icons.group_add_outlined, size: 18, color: tokens.brand),
-          label: Text('New group', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+
+    final searchBar = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+      child: TextField(
+        controller: _search,
+        onChanged: (v) => setState(() => _query = v),
+        textInputAction: TextInputAction.search,
+        style: TextStyle(color: tokens.ink, fontSize: 15.5),
+        decoration: InputDecoration(
+          hintText: 'Search messages',
+          hintStyle: TextStyle(color: tokens.mute, fontSize: 15.5),
+          prefixIcon: Icon(Icons.search_rounded, color: tokens.mute),
+          suffixIcon: _query.isEmpty
+              ? null
+              : IconButton(
+                  icon: Icon(Icons.close_rounded, color: tokens.mute, size: 20),
+                  onPressed: () => setState(() {
+                    _search.clear();
+                    _query = '';
+                  }),
+                ),
+          filled: true,
+          fillColor: tokens.surface,
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 14),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: tokens.line)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: tokens.brand, width: 1.4)),
         ),
       ),
     );
 
-    if (entries.isEmpty) {
-      return ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          newGroup,
-          const EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
-          const FootNote(text: 'Private messages, group chats and friends stay. Everything else is wiped at 2 PM.'),
-        ],
-      );
+    final invite = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => requireAccountThen(
+          context,
+          store,
+          () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AddFriendsScreen())),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          decoration: BoxDecoration(
+            color: tokens.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: tokens.line),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.people_outline_rounded, color: tokens.ink, size: 26),
+              const SizedBox(width: 14),
+              Expanded(child: Text('Bring your friends to Funky', style: TextStyle(color: tokens.ink, fontSize: 15.5, fontWeight: FontWeight.w600))),
+              Icon(Icons.chevron_right_rounded, color: tokens.ink),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final rows = <Widget>[];
+    for (var i = 0; i < shown.length; i++) {
+      final (e, preview) = shown[i];
+      rows.add(_ConvoRow(entry: e, preview: preview, time: _ago(preview?.t ?? e.t), store: store));
+      if (i < shown.length - 1) {
+        rows.add(Divider(height: 1, thickness: 0.6, indent: 16 + 58 + 14, endIndent: 16, color: tokens.line));
+      }
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: entries.length + 1,
-      itemBuilder: (context, i) {
-        if (i == 0) return newGroup;
-        final e = entries[i - 1];
-        final last = e.last;
-        final group = e.group;
-        if (group != null) {
-          final sender = last == null || last.uid == 'me' ? null : store.personById(last.uid)?.handle;
-          return ListTile(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: group.id))),
-            leading: GroupAvatar(group: group, size: 44),
-            title: Text(group.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-            subtitle: Text(
-              last == null ? '${group.memberIds.length} people' : _preview(last, who: sender == null ? null : '@$sender'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: tokens.mute),
+    return GestureDetector(
+      onTap: () => FocusScope.of(context).unfocus(),
+      behavior: HitTestBehavior.translucent,
+      child: ListView(
+        padding: EdgeInsets.zero,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        children: [
+          searchBar,
+          header,
+          if (entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: EmptyNote(text: 'No messages yet tonight. Find someone in the chat or on a Story, add them, and plan the pregame.'),
+            )
+          else if (shown.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: EmptyNote(text: 'Nothing matches "${_query.trim()}".'),
+            )
+          else
+            ...rows,
+          invite,
+        ],
+      ),
+    );
+  }
+}
+
+/// One conversation row: big picture (green dot when they're online), name,
+/// last message, how long ago, and an orange unread count.
+class _ConvoRow extends StatelessWidget {
+  final _ConvoEntry entry;
+  final ChatMessage? preview;
+  final String time;
+  final AppStore store;
+  const _ConvoRow({required this.entry, required this.preview, required this.time, required this.store});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final group = entry.group;
+    final person = entry.person;
+    final unread = store.unreadCountFor(entry.room);
+    final hasUnread = unread > 0;
+    final online = person != null && store.isOnline(person.id);
+    final isFriend = person != null && store.isFriendsWith(person.id);
+
+    const avatarSize = 58.0;
+    Widget avatar;
+    if (group != null) {
+      avatar = GroupAvatar(group: group, size: avatarSize);
+    } else {
+      avatar = Container(
+        width: avatarSize,
+        height: avatarSize,
+        padding: EdgeInsets.all(isFriend ? 2.5 : 0),
+        decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 2)) : null,
+        child: PersonAvatar(person: person!, size: isFriend ? avatarSize - 9 : avatarSize),
+      );
+    }
+    avatar = SizedBox(
+      width: avatarSize,
+      height: avatarSize,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          avatar,
+          if (online)
+            Positioned(
+              right: 1,
+              bottom: 1,
+              child: Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF34D058),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: tokens.bg, width: 3),
+                ),
+              ),
             ),
-          );
-        }
-        final person = e.person!;
-        final isFriend = store.isFriendsWith(person.id);
-        return ListTile(
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id))),
-          leading: Container(
-            padding: EdgeInsets.all(isFriend ? 2 : 0),
-            decoration: isFriend ? BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.friend, width: 2)) : null,
-            child: PersonAvatar(person: person, size: 44),
-          ),
-          title: StyledName(person: person, text: '@${person.handle}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-          subtitle: last == null
-              ? null
-              : Text(_preview(last), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute)),
+        ],
+      ),
+    );
+
+    final nameStyle = TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5);
+    final Widget title = group != null
+        ? Text(group.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: nameStyle)
+        : StyledName(person: person!, text: '@${person.handle}', style: nameStyle);
+
+    // The preview line: "You: thats why", "@sam: yo", or a camera + "Photo".
+    final msg = preview;
+    final previewColor = hasUnread ? tokens.ink : tokens.mute;
+    final previewStyle = TextStyle(color: previewColor, fontSize: 14.5, fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400);
+    Widget subtitle;
+    if (msg == null) {
+      subtitle = Text(group != null ? '${group.memberIds.length} people' : 'Say hey 👋', style: previewStyle);
+    } else {
+      String prefix = '';
+      if (msg.uid == 'me') {
+        prefix = 'You: ';
+      } else if (group != null) {
+        final who = store.personById(msg.uid)?.handle;
+        if (who != null) prefix = '@$who: ';
+      }
+      if (msg.mediaType != null) {
+        final isVideo = msg.mediaType == 'video';
+        subtitle = Row(
+          children: [
+            if (prefix.isNotEmpty) Text(prefix, style: previewStyle),
+            Icon(isVideo ? Icons.videocam_rounded : Icons.photo_camera_rounded, size: 18, color: previewColor),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                msg.text.isEmpty ? (isVideo ? 'Video' : 'Photo') : msg.text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: previewStyle,
+              ),
+            ),
+          ],
         );
-      },
+      } else {
+        subtitle = Text('$prefix${msg.text}', maxLines: 1, overflow: TextOverflow.ellipsis, style: previewStyle);
+      }
+    }
+
+    return InkWell(
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => group != null ? GroupThreadScreen(groupId: group.id) : DmThreadScreen(personId: person!.id),
+      )),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            avatar,
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  title,
+                  const SizedBox(height: 4),
+                  subtitle,
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(time, style: TextStyle(color: hasUnread ? tokens.brand : tokens.mute, fontSize: 13, fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500)),
+                const SizedBox(height: 6),
+                if (hasUnread)
+                  Container(
+                    constraints: const BoxConstraints(minWidth: 24),
+                    height: 24,
+                    padding: const EdgeInsets.symmetric(horizontal: 7),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(12)),
+                    child: Text(unread > 99 ? '99+' : '$unread', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                  )
+                else
+                  const SizedBox(height: 24),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -431,9 +658,10 @@ class _MessagesList extends StatelessWidget {
 class _ConvoEntry {
   final Person? person;
   final GroupChat? group;
-  final ChatMessage? last;
+  final String room;
+  final List<ChatMessage> msgs;
   final int t;
-  const _ConvoEntry({this.person, this.group, required this.last, required this.t});
+  const _ConvoEntry({this.person, this.group, required this.room, required this.msgs, required this.t});
 }
 
 /// "9:41 PM" for today, "Yesterday 11:58 PM" for last night's side of the
@@ -480,8 +708,10 @@ class _LiveChat extends StatelessWidget {
         const SizedBox(height: 16),
         if (msgs.isEmpty) Text('Nobody has said anything here tonight. Start it off.', style: TextStyle(color: tokens.mute)),
         ...msgs.map((m) {
-          final sender = m.uid == 'me' ? store.me : store.people[m.uid];
-          final handle = sender?.handle ?? m.uid;
+          // A guest's own messages go out under their guest name, not the
+          // signed-out account's.
+          final sender = m.uid == 'me' ? (store.signedIn ? store.me : null) : store.people[m.uid];
+          final handle = m.uid == 'me' ? store.myChatHandle : (sender?.handle ?? m.uid);
           Widget nameLine;
           Widget avatar;
           if (m.anon) {
@@ -511,7 +741,7 @@ class _LiveChat extends StatelessWidget {
             child: GestureDetector(
               // Double-tap for a quick ❤️ (toggles it back off if you
               // already reacted with a heart) — hold for the full strip.
-              onDoubleTap: () => store.toggleReaction(m.id, '❤️'),
+              onDoubleTap: () => requireAccountThen(context, store, () => store.toggleReaction(m.id, '❤️')),
               onLongPress: () => _showReactionPicker(context, store, m),
               behavior: HitTestBehavior.opaque,
               child: Row(
@@ -567,7 +797,7 @@ class _LiveChat extends StatelessWidget {
                       children: m.reactions.entries.map((entry) {
                         final mine = entry.value.contains('me');
                         return GestureDetector(
-                          onTap: () => store.toggleReaction(m.id, entry.key),
+                          onTap: () => requireAccountThen(context, store, () => store.toggleReaction(m.id, entry.key)),
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
@@ -634,27 +864,86 @@ class _BlinkingDotState extends State<_BlinkingDot> with SingleTickerProviderSta
   }
 }
 
-class _SegButton extends StatelessWidget {
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-  const _SegButton({required this.label, required this.active, required this.onTap});
+/// "Live Chat | Messages" — plain text tabs with a sliding orange line
+/// under the one you're on (no box). Messages shows an unread count.
+class _ChatTabs extends StatelessWidget {
+  final int index;
+  final int unread;
+  final ValueChanged<int> onTap;
+  const _ChatTabs({required this.index, required this.unread, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          decoration: BoxDecoration(
-            color: active ? tokens.surface : null,
-            borderRadius: BorderRadius.circular(8),
+    Widget tab(int i, String label) {
+      final active = index == i;
+      return Expanded(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onTap(i),
+          child: SizedBox(
+            height: 48,
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 160),
+                    style: TextStyle(
+                      color: active ? tokens.ink : tokens.mute,
+                      fontSize: 17,
+                      fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                    ),
+                    child: Text(label),
+                  ),
+                  if (i == 1 && unread > 0) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      constraints: const BoxConstraints(minWidth: 20),
+                      height: 20,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(10)),
+                      child: Text(unread > 99 ? '99+' : '$unread',
+                          style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w800)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
-          alignment: Alignment.center,
-          child: Text(label, style: TextStyle(color: active ? tokens.ink : tokens.mute, fontWeight: FontWeight.w700, fontSize: 14)),
         ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+      child: Stack(
+        children: [
+          // A hairline under both tabs…
+          Positioned(left: 0, right: 0, bottom: 0, child: Container(height: 1, color: tokens.line)),
+          Column(
+            children: [
+              Row(children: [tab(0, 'Live Chat'), tab(1, 'Messages')]),
+              // …and the orange line that slides to the active one.
+              AnimatedAlign(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                alignment: index == 0 ? Alignment.centerLeft : Alignment.centerRight,
+                child: FractionallySizedBox(
+                  widthFactor: 0.5,
+                  child: Center(
+                    child: Container(
+                      width: 96,
+                      height: 3,
+                      decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(2)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

@@ -6,13 +6,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
+import 'account_screen.dart';
 import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'dm_thread_screen.dart';
-import 'person_profile_screen.dart';
-import 'profile_screen.dart';
 
 /// Full-screen Story playback — tap the right half to advance, the left
 /// half to go back, down-arrow/back button to close, and swipe left/right
@@ -29,7 +28,10 @@ class StoryViewerScreen extends StatefulWidget {
   // a specific memory on the Profile page jump straight to that memory
   // instead of always starting from the very first one.
   final int initialStoryIndex;
-  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0, this.initialStoryIndex = 0});
+  // false (rings): only Stories from the last 24 hours. true (tapping a
+  // Memory on a profile): everything that person lets you see.
+  final bool memories;
+  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0, this.initialStoryIndex = 0, this.memories = false});
 
   @override
   State<StoryViewerScreen> createState() => _StoryViewerScreenState();
@@ -182,7 +184,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     final person = store.personById(personId);
     // Oldest first, like watching through the night in order. Non-friends
     // only ever get tonight's — memories are friends-only (visibleStoriesByUser).
-    final stories = store.visibleStoriesByUser(personId).reversed.toList(growable: false);
+    final stories = (widget.memories
+            ? store.visibleStoriesByUser(personId).where((s) => personId == 'me' || !s.anon).toList()
+            : store.liveStoriesByUser(personId))
+        .reversed
+        .toList(growable: false);
 
     if (person == null || stories.isEmpty) {
       // Nothing left to show for THIS person (they deleted it, or the 2 PM
@@ -623,9 +629,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                           )
                         : GestureDetector(
                             behavior: HitTestBehavior.opaque,
-                            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                              builder: (_) => story.uid == 'me' ? const ProfileScreen() : PersonProfileScreen(personId: story.uid),
-                            )),
+                            onTap: () => openProfile(context, story.uid),
                             child: Row(
                               children: [
                                 PersonAvatar(person: person, size: 32),
@@ -669,7 +673,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
               bottom: pad.bottom + 24,
               right: 18,
               child: IconButton(
-                onPressed: () => store.likeStory(story.id),
+                onPressed: () => requireAccountThen(context, store, () => store.likeStory(story.id)),
                 icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.redAccent : Colors.white, size: 30),
               ),
             ),

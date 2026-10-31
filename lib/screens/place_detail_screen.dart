@@ -254,7 +254,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
             uploading: _uploadingPhoto,
             hasPicture: place.photoUrl != null,
             isAdmin: store.isAdmin,
-            onAdd: () => requireAccountThen(context, store, () => _addPicture(store)),
+            onAdd: () => requireGuestOkThen(context, store, () => _addPicture(store)),
             onClear: () => store.clearPlacePhoto(place.id),
           ),
           PlaceRatingCard(placeId: place.id),
@@ -300,7 +300,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     ElevatedButton(
                       onPressed: iConfirmedVenue
                           ? null
-                          : () => requireAccountThen(context, store, () {
+                          : () => requireGuestOkThen(context, store, () {
                                 final error = store.confirmPlace(place.id);
                                 if (error != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
                               }),

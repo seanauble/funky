@@ -444,7 +444,7 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     _persist();
     final uid = supabaseUserId;
-    if (signedIn && uid != null && _remotePlaceIds.contains(placeId)) {
+    if (canUseServer && uid != null && _remotePlaceIds.contains(placeId)) {
       _fireAndForgetInsert('place_confirmations', {'place_id': placeId, 'user_id': uid});
     }
     return null;
@@ -469,6 +469,7 @@ class AppStore extends ChangeNotifier {
   // Inviting a friend who joins isn't wired up yet — there's no real invite
   // link/backend for FUNKY to know an invite actually converted.
   void _award(int n) {
+    if (!signedIn) return; // guests don't earn points
     me = me.copyWith(points: me.points + n);
   }
 
@@ -602,6 +603,22 @@ class AppStore extends ChangeNotifier {
   String? supabaseUserId;
   bool signedIn = false;
 
+  // Guest mode: no account, but a Supabase *anonymous* session so a guest
+  // can still see and add to Places, Live Chat and Stories (just not like,
+  // message or friend anyone). Needs "Allow anonymous sign-ins" switched on
+  // in Supabase → Authentication. signedIn stays false for a guest.
+  bool isGuest = false;
+  // The random name the server gave this guest ("NeonFox482") — what other
+  // people see on a guest's live-chat messages.
+  String? guestHandle;
+  bool _guestStarting = false;
+
+  /// True when this phone can talk to the server at all: a real account or a guest.
+  bool get canUseServer => (signedIn || isGuest) && supabaseUserId != null;
+
+  /// The name your own live-chat messages show here.
+  String get myChatHandle => signedIn ? me.handle : (guestHandle ?? 'guest');
+
   // Anti-spam: the server-free equivalent of a rate limit. Covers chat
   // messages (sendMessage) — see also the 15-day cooldown on setHandle just
   // below, which reuses the same "store the last-change timestamp, compare
@@ -702,6 +719,7 @@ class AppStore extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       _avatarPending = prefs.getBool(_avatarPendingKey) ?? false;
+      await _loadUnreadState(prefs);
       final savedRadius = prefs.getInt(_radiusKey);
       if (savedRadius != null) rangeMiles = savedRadius.clamp(minRangeMiles, maxRangeMiles).toDouble();
       final raw = prefs.getString(_storageKey);
@@ -808,10 +826,9 @@ class AppStore extends ChangeNotifier {
             seen: const [],
             likes: const [],
           );
-          // Places are tonight-only too — but a place a FUNKY Admin has
-          // verified outright keeps living across the reset (and, once
-          // places sync with the backend, so does anything the crowd has
-          // verified with 15+ confirmations — see _applyRemotePlaces).
+          // Places are tonight-only too — only a place a FUNKY Admin has
+          // verified keeps living across the reset. Anything only the crowd
+          // confirmed clears out after 24 hours (see _applyRemotePlaces).
           places = parsedPlaces.where((p) => adminVerifiedPlaceIds.contains(p.id)).toList();
           // Your own Stories are permanent (Memories), even though the
           // *place* records and everyone else's tonight-only Stories get
@@ -862,8 +879,10 @@ class AppStore extends ChangeNotifier {
       // that session on its own, so this just mirrors whatever it already
       // restored rather than trusting (possibly stale) local JSON.
       final session = Supabase.instance.client.auth.currentSession;
-      signedIn = session != null;
-      accountEmail = session?.user.email;
+      final anonymous = session?.user.isAnonymous ?? false;
+      isGuest = session != null && anonymous;
+      signedIn = session != null && !anonymous;
+      accountEmail = signedIn ? session?.user.email : null;
       supabaseUserId = session?.user.id;
       // Age out old Memories before anyone ever sees them — otherwise the
       // very first frame could flash a Memory that's about to disappear.
@@ -880,7 +899,11 @@ class AppStore extends ChangeNotifier {
       // — pick the real backend sync back up the same as a fresh signIn
       // would, so Stories/DMs start flowing in without waiting for you to
       // touch the account screen.
-      if (signedIn) _startRemoteSync();
+      if (signedIn || isGuest) {
+        _startRemoteSync();
+      } else {
+        unawaited(_startGuestSession());
+      }
       _listenForAuthChanges();
       // Pick location back up automatically on every launch instead of
       // waiting for a tap on LocationGate's "Enable location" button —
@@ -1047,7 +1070,19 @@ class AppStore extends ChangeNotifier {
     return list;
   }
 
-  List<Story> storiesFor(String ring) => stories.where((s) => s.place == ring).toList();
+  /// How long a Story stays up on rings and at places: 24 hours after it
+  /// was posted. Older ones only live on as Memories on profiles.
+  static const int storyLifetimeMs = 24 * 60 * 60 * 1000;
+
+  bool isLiveStory(Story s) => DateTime.now().millisecondsSinceEpoch - s.t < storyLifetimeMs;
+
+  /// Someone's Stories from the last 24 hours, newest first — what their
+  /// ring on Home (and the viewer opened from it) shows.
+  List<Story> liveStoriesByUser(String uid) => storiesByUser(uid).where(isLiveStory).toList();
+
+  List<Story> get myLiveStories => myStories.where(isLiveStory).toList();
+
+  List<Story> storiesFor(String ring) => stories.where((s) => s.place == ring && isLiveStory(s)).toList();
 
   /// The newest Story at [placeId] that actually has a photo or video —
   /// what a place's thumbnail/banner switches to showing once something's
@@ -1059,6 +1094,8 @@ class AppStore extends ChangeNotifier {
     Story? latest;
     for (final s in stories) {
       if (s.place != placeId) continue;
+      // Past 24 hours the place goes back to its own default picture.
+      if (!isLiveStory(s)) continue;
       // Others' Stories arrive as signed URLs rather than local files —
       // those count too (before, only your own device's media ever did).
       if (s.videoPath == null && s.imagePath == null && s.videoUrl == null && s.imageUrl == null) continue;
@@ -1538,7 +1575,7 @@ class AppStore extends ChangeNotifier {
     if (cleanName.isEmpty) return null;
     if (similarNearbyPlace(cleanName, at: at) != null) return null;
     final uid = supabaseUserId;
-    if (!signedIn || uid == null) {
+    if (!canUseServer || uid == null) {
       lastPlaceError = 'Log in to add a place.';
       return null;
     }
@@ -1725,7 +1762,7 @@ class AppStore extends ChangeNotifier {
       uid: 'me',
       text: capped,
       anon: anon,
-      status: room == 'main' && signedIn ? 'sending' : 'delivered',
+      status: room == 'main' && canUseServer ? 'sending' : 'delivered',
       lat: room == 'main' ? here?.lat : null,
       lng: room == 'main' ? here?.lng : null,
     );
@@ -1733,7 +1770,7 @@ class AppStore extends ChangeNotifier {
     _lastMessageAt = now;
     notifyListeners();
     _persist();
-    if (room == 'main' && signedIn && supabaseUserId != null) {
+    if (room == 'main' && canUseServer) {
       unawaited(_sendLiveChatRemote(message));
     }
     return null;
@@ -1846,7 +1883,7 @@ class AppStore extends ChangeNotifier {
   void retryChatMessage(String messageId) {
     if (_tooSoon('chatRetry', 1500)) return;
     final i = messages.indexWhere((m) => m.id == messageId && m.status == 'failed' && m.uid == 'me' && m.room == 'main');
-    if (i == -1 || !signedIn || supabaseUserId == null) return;
+    if (i == -1 || !canUseServer) return;
     _sendErrors.remove(messageId);
     final retrying = messages[i].copyWith(status: 'sending');
     messages = [...messages]..[i] = retrying;
@@ -2313,7 +2350,7 @@ class AppStore extends ChangeNotifier {
     stories = [...stories]..[i] = updated;
     notifyListeners();
     _persist();
-    if (signedIn && supabaseUserId != null && _remoteStoryIds.contains(storyId)) {
+    if (canUseServer && _remoteStoryIds.contains(storyId)) {
       _fireAndForgetInsert('story_views', {'story_id': storyId, 'viewer_id': supabaseUserId});
     }
   }
@@ -2359,7 +2396,7 @@ class AppStore extends ChangeNotifier {
     _persist();
     // Shows up instantly under a temporary id; the server's real id (the one
     // everyone else's confirmations attach to) swaps in once it's saved.
-    if (signedIn && supabaseUserId != null && _remotePlaceIds.contains(placeId)) {
+    if (canUseServer && _remotePlaceIds.contains(placeId)) {
       unawaited(_saveReportRemote(report));
     }
     return report;
@@ -2435,7 +2472,7 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
     _persist();
     final uid = supabaseUserId;
-    if (signedIn && uid != null && _remoteReportIds.contains(reportId)) {
+    if (canUseServer && uid != null && _remoteReportIds.contains(reportId)) {
       _fireAndForgetInsert('report_confirmations', {'report_id': reportId, 'user_id': uid});
     }
     return null;
@@ -2501,7 +2538,8 @@ class AppStore extends ChangeNotifier {
     _authSub?.cancel();
     _authSub = Supabase.instance.client.auth.onAuthStateChange.listen((data) {
       final s = data.session;
-      if (data.event == AuthChangeEvent.signedIn && s != null && !signedIn) {
+      if (data.event == AuthChangeEvent.signedIn && s != null && !signedIn && !s.user.isAnonymous) {
+        _leaveGuest();
         accountEmail = s.user.email;
         supabaseUserId = s.user.id;
         signedIn = true;
@@ -2528,6 +2566,7 @@ class AppStore extends ChangeNotifier {
       if (response.session == null) {
         return 'Check your email to confirm your account, then log in.';
       }
+      _leaveGuest();
       accountEmail = response.user?.email;
       supabaseUserId = response.user?.id;
       signedIn = true;
@@ -2549,6 +2588,7 @@ class AppStore extends ChangeNotifier {
         password: password,
       );
       if (response.session == null) return 'Email or password is wrong.';
+      _leaveGuest();
       accountEmail = response.user?.email;
       supabaseUserId = response.user?.id;
       signedIn = true;
@@ -2583,6 +2623,39 @@ class AppStore extends ChangeNotifier {
     supabaseUserId = null;
     notifyListeners();
     _persist();
+    // Keep browsing as a guest (places, live chat, stories).
+    unawaited(_startGuestSession());
+  }
+
+  /// Opens a guest (anonymous) session so someone without an account can
+  /// still use Places, Live Chat and Stories. Quietly does nothing if
+  /// anonymous sign-ins are switched off in Supabase or the phone is offline.
+  Future<void> _startGuestSession() async {
+    if (signedIn || isGuest || _guestStarting) return;
+    _guestStarting = true;
+    try {
+      final res = await Supabase.instance.client.auth.signInAnonymously();
+      final s = res.session;
+      if (s == null || signedIn) return;
+      isGuest = true;
+      supabaseUserId = s.user.id;
+      notifyListeners();
+      _startRemoteSync();
+    } catch (_) {
+      // Anonymous sign-ins are off, or no connection — stays local-only.
+    } finally {
+      _guestStarting = false;
+    }
+  }
+
+  /// Drops the guest session's data the moment a real account takes over.
+  void _leaveGuest() {
+    if (!isGuest) return;
+    _stopRemoteSync();
+    _clearRemoteData();
+    isGuest = false;
+    guestHandle = null;
+    supabaseUserId = null;
   }
 
   /// Re-signs-in with the current password first — proof you're really you
@@ -2704,25 +2777,29 @@ class AppStore extends ChangeNotifier {
     if (uid == null) return;
     _stopRemoteSync();
     _lastFullRefresh = DateTime.now();
-    _resetLocalIfDifferentAccount(uid);
+    final guest = isGuest;
+    // A guest session never takes over (or wipes) this phone's own account data.
+    if (!guest) _resetLocalIfDifferentAccount(uid);
     unawaited(_fetchRemoteProfiles());
-    unawaited(_fetchRemoteFriendships());
     unawaited(_fetchRemotePlaces(purge: true));
     unawaited(_fetchPlaceRatings());
-    unawaited(_fetchPhotoSuggestions());
-    unawaited(_fetchProfileReports());
-    unawaited(_fetchGroups());
-    unawaited(refreshGroupCalls());
-    unawaited(fetchCallLog());
-    unawaited(fetchGroupCallLog());
     unawaited(_fetchRemoteChat());
     unawaited(_fetchRemotePolls());
     unawaited(_fetchRemoteReports());
     unawaited(_fetchRemoteStories());
-    unawaited(_fetchRemoteMessages());
-    unawaited(_fetchNotifications());
-    unawaited(_fetchNotifPrefs());
-    unawaited(_registerPush());
+    if (!guest) {
+      unawaited(_fetchRemoteFriendships());
+      unawaited(_fetchPhotoSuggestions());
+      unawaited(_fetchProfileReports());
+      unawaited(_fetchGroups());
+      unawaited(refreshGroupCalls());
+      unawaited(fetchCallLog());
+      unawaited(fetchGroupCallLog());
+      unawaited(_fetchRemoteMessages());
+      unawaited(_fetchNotifications());
+      unawaited(_fetchNotifPrefs());
+      unawaited(_registerPush());
+    }
 
     final client = Supabase.instance.client;
     _notificationsChannel = client.channel('public:notifications:sync')
@@ -2985,11 +3062,135 @@ class AppStore extends ChangeNotifier {
         callback: (_) => _scheduleGroupCallRefresh(),
       )
       ..subscribe();
+
+    // Who's online right now (the green dot in Messages). Only real
+    // accounts announce themselves; guests just aren't shown.
+    if (!guest) _startPresence(client, uid);
+  }
+
+  // --- Friend counts (profiles) ------------------------------------------
+
+  /// How many friends someone has, for the number on their profile —
+  /// fetched from the server's count-only friend_count function.
+  final Map<String, int> friendCounts = {};
+
+  Future<void> loadFriendCount(String personId) async {
+    if (personId == 'me' || !_isRealPersonId(personId) || supabaseUserId == null) return;
+    try {
+      final n = await Supabase.instance.client.rpc('friend_count', params: {'p_user': personId});
+      if (n is num && friendCounts[personId] != n.toInt()) {
+        friendCounts[personId] = n.toInt();
+        notifyListeners();
+      }
+    } catch (_) {
+      // Offline, or phase 17 not run yet — the profile just shows "–".
+    }
+  }
+
+  // --- Online status -------------------------------------------------------
+
+  RealtimeChannel? _presenceChannel;
+
+  /// Ids of people whose app is open right now.
+  Set<String> onlineIds = {};
+
+  bool isOnline(String personId) => personId != 'me' && onlineIds.contains(personId);
+
+  void _startPresence(SupabaseClient client, String uid) {
+    final channel = client.channel('online_users');
+    channel.onPresenceSync((_) {
+      final next = <String>{};
+      try {
+        for (final state in channel.presenceState()) {
+          for (final presence in state.presences) {
+            final id = presence.payload['uid'];
+            if (id is String && id != uid) next.add(id);
+          }
+        }
+      } catch (_) {}
+      if (next.length != onlineIds.length || !next.containsAll(onlineIds)) {
+        onlineIds = next;
+        notifyListeners();
+      }
+    });
+    channel.subscribe((status, error) async {
+      if (status != RealtimeSubscribeStatus.subscribed) return;
+      try {
+        await channel.track({'uid': uid});
+      } catch (_) {}
+    });
+    _presenceChannel = channel;
+  }
+
+  // --- Unread messages -----------------------------------------------------
+
+  // room -> when you last had that DM/group thread open (ms). Messages from
+  // other people after that count as unread. Anything from before this
+  // phone started tracking (_unreadBaseline) is treated as already read.
+  final Map<String, int> _threadReadAt = {};
+  int _unreadBaseline = 0;
+  static const _threadReadKey = 'funky.threadReadAt';
+  static const _unreadBaselineKey = 'funky.unreadBaseline';
+
+  Future<void> _loadUnreadState(SharedPreferences prefs) async {
+    var baseline = prefs.getInt(_unreadBaselineKey);
+    if (baseline == null) {
+      baseline = DateTime.now().millisecondsSinceEpoch;
+      await prefs.setInt(_unreadBaselineKey, baseline);
+    }
+    _unreadBaseline = baseline;
+    final raw = prefs.getString(_threadReadKey);
+    if (raw != null) {
+      try {
+        final map = jsonDecode(raw) as Map<String, dynamic>;
+        for (final e in map.entries) {
+          final v = e.value;
+          if (v is num) _threadReadAt[e.key] = v.toInt();
+        }
+      } catch (_) {}
+    }
+  }
+
+  /// How many messages from other people in [room] you haven't seen yet.
+  int unreadCountFor(String room) {
+    final since = math.max(_unreadBaseline, _threadReadAt[room] ?? 0);
+    var n = 0;
+    for (final m in messages) {
+      if (m.room == room && m.uid != 'me' && m.t > since) n++;
+    }
+    return n;
+  }
+
+  /// Unread messages across every DM and group thread — the Chat tab badge.
+  int get totalUnreadMessages {
+    var n = 0;
+    for (final p in dmConversations) {
+      n += unreadCountFor(dmRoomId('me', p.id));
+    }
+    for (final g in groups) {
+      n += unreadCountFor(g.room);
+    }
+    return n;
+  }
+
+  /// Call while a DM/group thread is open: everything in it counts as read.
+  void markThreadRead(String room) {
+    final hadUnread = unreadCountFor(room) > 0;
+    _threadReadAt[room] = DateTime.now().millisecondsSinceEpoch;
+    if (!hadUnread) return;
+    notifyListeners();
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_threadReadKey, jsonEncode(_threadReadAt));
+      } catch (_) {}
+    }());
   }
 
   void _stopRemoteSync() {
     final client = Supabase.instance.client;
     for (final channel in [
+      _presenceChannel,
       _storiesChannel,
       _storyViewsChannel,
       _storyLikesChannel,
@@ -3032,6 +3233,8 @@ class AppStore extends ChangeNotifier {
     _profilesChannel = null;
     _callsChannel = null;
     _groupCallsChannel = null;
+    _presenceChannel = null;
+    onlineIds = {};
     _activeGroupCalls = {};
     callLog = [];
     groupCallLog = [];
@@ -3253,6 +3456,13 @@ class AppStore extends ChangeNotifier {
   }
 
   void _applyOwnProfileRow(Map<String, dynamic> row) {
+    if (isGuest) {
+      // A guest's server row never touches this phone's own profile.
+      guestHandle = row['handle'] as String? ?? guestHandle;
+      selfBanned = row['banned'] as bool? ?? false;
+      notifyListeners();
+      return;
+    }
     selfBanned = row['banned'] as bool? ?? false;
     final wasRemoteAdmin = _remoteAdmin;
     _remoteAdmin = row['is_admin'] as bool? ?? false;
@@ -3593,6 +3803,7 @@ class AppStore extends ChangeNotifier {
       final chatRows = await client.from('group_chats').select();
       final memberRows = await client.from('group_members').select();
       final membersByGroup = <String, List<String>>{};
+      final joinsByGroup = <String, List<GroupJoin>>{};
       final others = <String>{};
       for (final raw in memberRows) {
         final r = raw as Map<String, dynamic>;
@@ -3601,6 +3812,16 @@ class AppStore extends ChangeNotifier {
         if (gid == null || u == null) continue;
         (membersByGroup[gid] ??= []).add(u == uid ? 'me' : u);
         if (u != uid) others.add(u);
+        final addedBy = r['added_by'] as String?;
+        if (addedBy != null && addedBy != uid) others.add(addedBy);
+        (joinsByGroup[gid] ??= []).add(GroupJoin(
+          userId: u == uid ? 'me' : u,
+          addedBy: addedBy == null ? null : (addedBy == uid ? 'me' : addedBy),
+          at: DateTime.tryParse((r['joined_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+      }
+      for (final list in joinsByGroup.values) {
+        list.sort((a, b) => a.at.compareTo(b.at));
       }
       final next = <GroupChat>[];
       for (final raw in chatRows) {
@@ -3608,6 +3829,7 @@ class AppStore extends ChangeNotifier {
         final id = r['id'] as String?;
         if (id == null) continue;
         final by = r['created_by'] as String?;
+        if (by != null && by != uid) others.add(by);
         next.add(GroupChat(
           id: id,
           name: (r['name'] as String?) ?? 'Group',
@@ -3615,6 +3837,7 @@ class AppStore extends ChangeNotifier {
           createdBy: by == uid ? 'me' : (by ?? ''),
           createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
           photoUrl: (r['photo_url'] as String?)?.isNotEmpty == true ? r['photo_url'] as String : null,
+          joins: joinsByGroup[id] ?? const [],
         ));
       }
       if (others.isNotEmpty) await _ensurePeopleFor(others);
@@ -3881,7 +4104,7 @@ class AppStore extends ChangeNotifier {
       groups = [
         for (final g in groups)
           if (g.id == groupId)
-            GroupChat(id: g.id, name: g.name, memberIds: g.memberIds, createdBy: g.createdBy, createdAt: g.createdAt, photoUrl: url)
+            GroupChat(id: g.id, name: g.name, memberIds: g.memberIds, createdBy: g.createdBy, createdAt: g.createdAt, photoUrl: url, joins: g.joins)
           else
             g,
       ];
@@ -4077,10 +4300,10 @@ class AppStore extends ChangeNotifier {
     );
   }
 
-  /// Replaces the backend-sourced places with a fresh copy. Tonight's places
-  /// always show; an older one only survives if a FUNKY Admin verified it or
-  /// 15+ people confirmed it — that's the nightly "unverified places clear
-  /// out, verified ones stay" rule.
+  /// Replaces the backend-sourced places with a fresh copy. A place lasts 24
+  /// hours from when it was added; only a place a FUNKY Admin verified stays
+  /// past that. Crowd confirmations still mark a place verified for the
+  /// night, but no longer keep it around.
   void _applyRemotePlaces(List<dynamic> rows, List<dynamic> confRows) {
     final uid = supabaseUserId;
     final confByPlace = <String, List<String>>{};
@@ -4090,7 +4313,6 @@ class AppStore extends ChangeNotifier {
       if (pid == null || u == null) continue;
       (confByPlace[pid] ??= []).add(u == uid ? 'me' : u);
     }
-    final today = sessionKey();
     final fetched = <Place>[];
     final verifiedByAdmin = <String>{};
     for (final raw in rows) {
@@ -4098,9 +4320,9 @@ class AppStore extends ChangeNotifier {
       final place = _placeFromRow(row);
       if (place == null) continue;
       final adminVerified = row['admin_verified'] as bool? ?? false;
-      final confirmations = confByPlace[place.id]?.length ?? 0;
-      final verified = adminVerified || confirmations >= venueVerificationThreshold;
-      if (place.session != today && !verified) continue;
+      final created = DateTime.tryParse((row['created_at'] as String?) ?? '');
+      final expired = created != null && DateTime.now().difference(created.toLocal()) > const Duration(hours: 24);
+      if (!adminVerified && expired) continue;
       fetched.add(place);
       if (adminVerified) verifiedByAdmin.add(place.id);
     }
@@ -4809,7 +5031,11 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> refreshNow({bool rebuildRealtime = false}) async {
-    if (!signedIn || supabaseUserId == null) return;
+    if (!signedIn && !isGuest) {
+      await _startGuestSession();
+      return;
+    }
+    if (supabaseUserId == null) return;
     _lastFullRefresh = DateTime.now();
     if (rebuildRealtime) {
       _startRemoteSync();

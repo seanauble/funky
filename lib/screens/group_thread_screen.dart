@@ -304,6 +304,39 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
     });
   }
 
+  /// "You created the group" / "@sean added @alex and @sam" lines built from
+  /// who-added-who on the server. People added together (within a minute of
+  /// each other by the same person) share one line.
+  List<GroupEvent> _joinEvents(AppStore store, GroupChat group) {
+    String nameOf(String id) => id == 'me' ? 'You' : '@${store.personById(id)?.handle ?? 'someone'}';
+    String lower(String id) => id == 'me' ? 'you' : '@${store.personById(id)?.handle ?? 'someone'}';
+    final events = <GroupEvent>[];
+    final batches = <({String adder, DateTime at, List<String> added})>[];
+    for (final j in group.joins) {
+      final by = j.addedBy;
+      if (by == null) continue;
+      if (by == j.userId) continue; // the creator's own row
+      final i = batches.indexWhere((b) => b.adder == by && j.at.difference(b.at).inSeconds.abs() <= 60);
+      if (i >= 0) {
+        batches[i].added.add(j.userId);
+      } else {
+        batches.add((adder: by, at: j.at, added: [j.userId]));
+      }
+    }
+    final creator = group.createdBy;
+    if (creator.isNotEmpty) {
+      events.add(GroupEvent(at: group.createdAt, text: '${nameOf(creator)} created ${group.name}'));
+    }
+    for (final b in batches) {
+      final names = b.added.map(lower).toList();
+      final who = names.length == 1
+          ? names.first
+          : '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}';
+      events.add(GroupEvent(at: b.at, text: '${nameOf(b.adder)} added $who'));
+    }
+    return events;
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -323,15 +356,23 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
 
     final msgs = store.messagesFor(group.room);
     // Messages and video-call lines, oldest first.
-    final timeline = <Object>[...msgs, ...store.groupCallLogFor(group.id)]
+    final timeline = <Object>[...msgs, ...store.groupCallLogFor(group.id), ..._joinEvents(store, group)]
       ..sort((a, b) {
-        int at(Object o) => o is ChatMessage ? o.t : (o as GroupCallLogEntry).at.millisecondsSinceEpoch;
+        int at(Object o) => o is ChatMessage
+            ? o.t
+            : o is GroupEvent
+                ? o.at.millisecondsSinceEpoch
+                : (o as GroupCallLogEntry).at.millisecondsSinceEpoch;
         return at(a).compareTo(at(b));
       });
     if (timeline.length != _shownCount) {
       _shownCount = timeline.length;
       _scrollToEnd();
     }
+    // Everything in here counts as read while the thread is open.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<AppStore>().markThreadRead(group.room);
+    });
     var lastMine = -1;
     for (var i = timeline.length - 1; i >= 0; i--) {
       final item = timeline[i];
@@ -425,6 +466,14 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                       itemCount: timeline.length,
                       itemBuilder: (context, i) {
                         final item = timeline[i];
+                        if (item is GroupEvent) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Center(
+                              child: Text(item.text, textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontSize: 12)),
+                            ),
+                          );
+                        }
                         if (item is GroupCallLogEntry) {
                           return CallLogLine(
                             tokens: tokens,

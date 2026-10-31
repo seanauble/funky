@@ -512,8 +512,15 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       // The raw shot is kept as-is: the chosen filter is previewed live on
       // the review screen (and can still be changed there), then baked into
       // the file only when you post or save it (see _finalMedia).
-      final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedFile = await File(shot.path).copy(dest);
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final File savedFile;
+      if (_isFrontCamera) {
+        // Match the selfie preview instead of coming out reversed.
+        final flipped = await mirrorImageBytes(await File(shot.path).readAsBytes());
+        savedFile = await File('${dir.path}/story_$stamp.png').writeAsBytes(flipped);
+      } else {
+        savedFile = await File(shot.path).copy('${dir.path}/story_$stamp.jpg');
+      }
       if (!mounted) return;
       setState(() {
         _mediaFile = savedFile;
@@ -675,6 +682,9 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   void _cancelRecording() {
     if (_isRecording) _finishRecording();
   }
+
+  bool get _isFrontCamera =>
+      _cameraIndex >= 0 && _cameraIndex < _cameras.length && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
 
   void _flipCamera() {
     if (_cameras.length < 2 || _busy || _isRecording) return;
@@ -1016,7 +1026,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onDoubleTap: _flipDuringRecording,
+              onDoubleTap: () => _isRecording ? _flipDuringRecording() : _flipCamera(),
               onScaleStart: _onZoomStart,
               onScaleUpdate: _onZoomUpdate,
             ),
@@ -2054,7 +2064,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: canPost
-                  ? () => requireAccountThen(context, store, () async {
+                  ? () => requireGuestOkThen(context, store, () async {
                         // Places are shared with everyone, so this waits on
                         // the server for the new place's real id.
                         // Typed an address but never tapped a suggestion?

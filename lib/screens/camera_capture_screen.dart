@@ -251,15 +251,18 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
       final shot = await controller.takePicture();
       final dir = await _storiesDir();
       final filter = cameraFilters[_filterIndex];
+      final front = _cameraIndex >= 0 && _cameraIndex < _cameras.length && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
       File savedFile;
-      if (filter.colorFilter == null) {
+      if (filter.colorFilter == null && !front) {
         final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
         savedFile = await File(shot.path).copy(dest);
       } else {
         // Bake the filter into the actual saved file — see
         // applyCameraFilterToImageBytes's doc comment for why this comes
-        // back as PNG rather than JPEG.
-        final rawBytes = await File(shot.path).readAsBytes();
+        // back as PNG rather than JPEG. A front-camera shot is also flipped
+        // to match the selfie preview instead of coming out reversed.
+        var rawBytes = await File(shot.path).readAsBytes();
+        if (front) rawBytes = await mirrorImageBytes(rawBytes);
         final filteredBytes = await applyCameraFilterToImageBytes(rawBytes, filter);
         final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.png';
         savedFile = await File(dest).writeAsBytes(filteredBytes);
@@ -411,12 +414,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
               ),
             ),
 
-          // Pinch anywhere on the open preview to zoom. Sits behind the top
+          // Pinch to zoom, double-tap to flip the camera. Sits behind the top
           // bar and shutter controls below it in the Stack, so it never
           // steals their taps — just the empty preview area.
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
+              onDoubleTap: _flipCamera,
               onScaleStart: _onZoomStart,
               onScaleUpdate: _onZoomUpdate,
             ),
