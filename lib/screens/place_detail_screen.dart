@@ -20,6 +20,7 @@ import '../widgets/full_art_image.dart';
 import '../widgets/org_badge.dart';
 import 'profile_parts.dart';
 import 'event_chat_screen.dart';
+import '../widgets/invite_friends_sheet.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 /// The little text box explaining what the verified checkmark (or the
@@ -59,7 +60,8 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       final store = context.read<AppStore>();
       store.fetchPostsAt(widget.placeId);
       final p = store.rankedPlaceById(widget.placeId)?.place;
-      if (p != null && p.isPrivate && store.isEventInsider(p)) store.fetchEventGuests(widget.placeId);
+      // Private: re-check the details (you may have just been invited).
+      if (p != null && p.isPrivate) store.refreshPrivateEvent(widget.placeId);
     });
   }
 
@@ -518,7 +520,29 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     }
 
     final address = p.address.trim().isEmpty || p.address == 'Address not given' ? p.name : p.address;
+    final inviters = store.invitedBy(p.id);
     final details = <Widget>[
+      if (inviters.isNotEmpty)
+        Builder(builder: (context) {
+          final first = store.personById(inviters.first);
+          return Container(
+            margin: const EdgeInsets.only(top: 6, bottom: 4),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            decoration: BoxDecoration(color: tokens.orange.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(14)),
+            child: Row(
+              children: [
+                if (first != null) PersonAvatar(person: first, size: 30, preview: false) else Icon(Icons.mail_outline_rounded, color: tokens.orange),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '@${first?.handle ?? 'A friend'} invited you${inviters.length > 1 ? ' (+${inviters.length - 1} more)' : ''}',
+                    style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
       if (locked)
         _PrivateLockCard(
           night: p.startsAt == null ? 'Tonight' : (tonight ? 'Tonight' : dayLabel(p.startsAt!)),
@@ -551,6 +575,13 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
             onShare: () => shareFunkyPlace(context, p.name, when: p.startsAt == null ? null : dayLabel(p.startsAt!), code: secret.passcode),
           ),
       ],
+      if (store.signedIn && !over && (priv ? isHost || store.isAdmin : true))
+        infoRow(
+          Icons.person_add_alt_1_outlined,
+          'Invite friends',
+          priv ? "They'll get in without the code" : 'Send them an invite right on FUNKY',
+          onTap: () => showInviteFriendsSheet(context, p),
+        ),
       if (isParty && insider)
         infoRow(
           Icons.forum_outlined,

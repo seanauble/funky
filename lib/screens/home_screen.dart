@@ -10,7 +10,9 @@ import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/place_rating_card.dart';
-import '../widgets/poll_bars.dart';
+import '../widgets/move_poll_card.dart';
+import '../widgets/rainbow_wordmark.dart';
+import '../widgets/top_bar_actions.dart';
 import '../widgets/poll_card.dart';
 import '../widgets/rainbow_ring.dart';
 import '../widgets/avatar_preview.dart';
@@ -58,6 +60,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final allPeople = {...store.people, 'me': store.me};
     final stayingInCount = allPeople.values.where((p) => p.move == 'in').length;
     final moveCounts = [...moveOptions.map((p) => p.going), stayingInCount];
+    // Faces along the bottom of the poll: friends who voted first.
+    final moveIds = {...moveOptions.map((p) => p.id), 'in'};
+    final moveVoters = allPeople.values.where((p) => p.move != null && moveIds.contains(p.move) && !store.isHidden(p.id)).toList()
+      ..sort((a, b) {
+        int rank(Person p) => p.id == 'me' ? 0 : (store.isFriendsWith(p.id) ? 1 : 2);
+        return rank(a).compareTo(rank(b));
+      });
     int? moveSelectedIndex;
     if (store.me.move != null) {
       moveSelectedIndex = store.me.move == 'in' ? moveOptions.length : moveOptions.indexWhere((p) => p.id == store.me.move);
@@ -111,8 +120,12 @@ class _HomeScreenState extends State<HomeScreen> {
       // Everything on Home sits flat on the page — no boxed-in sections.
       child: FlatCards(
         child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 40),
         children: [
+          // The logo, your town and the bell — part of the page, so they
+          // scroll away and leave the whole screen for what's going on.
+          const _HomeHeader(),
+          const SizedBox(height: 10),
           SizedBox(
             height: 84,
             child: ListView(
@@ -216,27 +229,15 @@ class _HomeScreenState extends State<HomeScreen> {
           else if (_kind != _HomeKind.all)
             _TonightKind(kind: _kind)
           else ...[
-          FunkyCard(
-            margin: const EdgeInsets.only(top: 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("WHAT'S THE MOVE TONIGHT?", style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w800, fontSize: 13, letterSpacing: 0.4)),
-                const SizedBox(height: 10),
-                PollBars(
-                  options: moveLabels,
-                  counts: moveCounts,
-                  selectedIndex: moveSelectedIndex,
-                  onSelect: (i) => store.setMove(i == moveOptions.length ? 'in' : moveOptions[i].id),
-                ),
-                const SizedBox(height: 10),
-                Center(
-                  child: Text(
-                    '${moveCounts.fold<int>(0, (a, b) => a + b)} votes, ${session.untilReset()} left',
-                    style: TextStyle(color: tokens.mute, fontSize: 12),
-                  ),
-                ),
-              ],
+          Padding(
+            padding: const EdgeInsets.only(top: 14, bottom: 6),
+            child: MovePollCard(
+              labels: moveLabels,
+              counts: moveCounts,
+              selected: moveSelectedIndex,
+              onSelect: (i) => store.setMove(i == moveOptions.length ? 'in' : moveOptions[i].id),
+              voters: moveVoters,
+              timeLeft: session.untilReset(),
             ),
           ),
           SectionHeader(
@@ -540,50 +541,52 @@ class _SideSwitch extends StatelessWidget {
         onTap: () => onChanged(s),
         child: Padding(
           padding: const EdgeInsets.only(right: 22, top: 4, bottom: 2),
-          child: IntrinsicWidth(
-           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
+          // The label sets the width; the orange line fills the bottom of
+          // it (scaled, not measured, so a tab can never collapse).
+          child: Stack(
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 160),
-                    style: TextStyle(
-                      color: active ? tokens.ink : tokens.mute,
-                      fontSize: 22,
-                      fontWeight: active ? FontWeight.w900 : FontWeight.w700,
-                      letterSpacing: -0.3,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 7),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 160),
+                      style: TextStyle(
+                        color: active ? tokens.ink : tokens.mute,
+                        fontSize: 22,
+                        fontWeight: active ? FontWeight.w900 : FontWeight.w700,
+                        letterSpacing: -0.3,
+                      ),
+                      child: Text(title),
                     ),
-                    child: Text(title),
-                  ),
-                  if (count > 0) ...[
-                    const SizedBox(width: 3),
-                    Text('$count', style: TextStyle(color: active ? tokens.orange : tokens.mute, fontSize: 12, fontWeight: FontWeight.w800)),
+                    if (count > 0) ...[
+                      const SizedBox(width: 3),
+                      Text('$count', style: TextStyle(color: active ? tokens.orange : tokens.mute, fontSize: 12, fontWeight: FontWeight.w800)),
+                    ],
                   ],
-                ],
+                ),
               ),
-              const SizedBox(height: 4),
-              // A full line under the whole label of the tab you're on.
-              TweenAnimationBuilder<double>(
-                tween: Tween(end: active ? 1 : 0),
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOut,
-                builder: (context, f, _) => Align(
-                  alignment: Alignment.centerLeft,
-                  child: FractionallySizedBox(
-                    widthFactor: f,
-                    child: Container(
-                      height: 3,
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 3,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(end: active ? 1 : 0),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOut,
+                  builder: (context, f, _) => Transform(
+                    alignment: Alignment.centerLeft,
+                    transform: Matrix4.diagonal3Values(f, 1, 1),
+                    child: DecoratedBox(
                       decoration: BoxDecoration(color: tokens.orange, borderRadius: BorderRadius.circular(2)),
                     ),
                   ),
                 ),
               ),
             ],
-           ),
           ),
         ),
       );
@@ -1340,6 +1343,53 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [for (final m in shown) _row(context, store, m, const AlwaysStoppedAnimation<double>(1))],
+      ),
+    );
+  }
+}
+
+/// Top of Home: the FUNKY wordmark (tap for confetti), the town you're in,
+/// and the notification bell.
+class _HomeHeader extends StatelessWidget {
+  const _HomeHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final area = context.select<AppStore, String?>((s) => s.areaName);
+    return SizedBox(
+      height: 50,
+      child: Row(
+        children: [
+          Builder(
+            builder: (logoContext) => GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => popFunkyConfetti(logoContext),
+              child: const RainbowWordmark(height: 36),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: area == null
+                ? const SizedBox.shrink()
+                : Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.location_on, color: tokens.orange, size: 19),
+                      const SizedBox(width: 3),
+                      Flexible(
+                        child: Text(
+                          area,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 16),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          const NotificationBell(),
+        ],
       ),
     );
   }

@@ -63,6 +63,7 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
     case 'report':
     case 'photo':
     case 'friends_going':
+    case 'invite':
       final placeId = data['place_id'];
       if (placeId is! String) return;
       navigator.popUntil((r) => r.isFirst);

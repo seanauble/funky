@@ -245,6 +245,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             (formatCount(store.level), 'Level', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PointsInfoScreen()))),
             (formatCount(me.friends.length), 'Friends', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen()))),
           ]),
+          PlacesBeenFlex(personId: 'me', handle: me.handle),
+          const SizedBox(height: 6),
           // Admin controls live on their own screen, not on the profile.
           if (store.isAdmin)
             Center(
@@ -271,8 +273,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text("Places I've been", style: TextStyle(color: tokens.ink, fontSize: 16.5, fontWeight: FontWeight.w800)),
-                      Text('From your tagged memories', style: TextStyle(color: tokens.mute, fontSize: 12)),
+                      Text('Memories by place', style: TextStyle(color: tokens.ink, fontSize: 16.5, fontWeight: FontWeight.w800)),
+                      Text('Your photos and videos at each spot', style: TextStyle(color: tokens.mute, fontSize: 12)),
                     ],
                   ),
                 ),

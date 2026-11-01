@@ -128,6 +128,7 @@ class _EventChatScreenState extends State<EventChatScreen> {
 
     return Scaffold(
       backgroundColor: tokens.bg,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: tokens.bg,
         foregroundColor: tokens.ink,
@@ -149,12 +150,11 @@ class _EventChatScreenState extends State<EventChatScreen> {
         children: [
           Expanded(child: body),
           if (insider)
-            Container(
+            ComposerArea(
+              color: tokens.bg,
+              border: Border(top: BorderSide(color: tokens.line, width: 0.5)),
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-              decoration: BoxDecoration(color: tokens.bg, border: Border(top: BorderSide(color: tokens.line, width: 0.5))),
-              child: SafeArea(
-                top: false,
-                child: Row(
+              child: Row(
                   children: [
                     Expanded(
                       child: TextField(
@@ -193,7 +193,6 @@ class _EventChatScreenState extends State<EventChatScreen> {
                     ),
                   ],
                 ),
-              ),
             ),
         ],
       ),

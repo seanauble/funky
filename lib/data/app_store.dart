@@ -606,7 +606,7 @@ class AppStore extends ChangeNotifier {
     if (myStories.length >= 50) badges.add(const FunkyBadge('📸', 'Storyteller'));
     final verifiedReports = placeReports.where((r) => r.reporterId == 'me' && r.verified).length;
     if (verifiedReports >= 25) badges.add(const FunkyBadge('✓', 'Reliable Source'));
-    if (me.placesVisited.length >= 20) badges.add(const FunkyBadge('🗺️', 'Explorer'));
+    if (placesBeenCount >= 20) badges.add(const FunkyBadge('🗺️', 'Explorer'));
     return badges;
   }
 
@@ -2419,22 +2419,24 @@ class AppStore extends ChangeNotifier {
 
   // --- Places you've been ("been here" badge) -----------------------------
 
-  // Nights you've been at each place, from the server's place_visits
-  // (phase 27) — counts every night you tapped "I'm going" there or posted
-  // a Story there, from any device.
+  // Nights you've been at each place, from the server's place_visits —
+  // since phase 37 that's only nights you posted a Story there (tapping
+  // "I'm going" doesn't count), from any device.
   Map<String, int> _visitNights = {};
 
-  /// Whether you've ever been at [placeId]: tapped "I'm going" there, or
-  /// posted a Story there (tonight or any night before).
+  /// How many different places you've posted a Story at.
+  int get placesBeenCount => _visitNights.length;
+
+  /// Whether you've been at [placeId]: posted a Story there (tonight or any
+  /// night before).
   bool hasBeenTo(String placeId) {
     if (!signedIn) return false;
     final id = placeId.toLowerCase();
     if ((_visitNights[id] ?? 0) > 0) return true;
-    if (me.move == placeId || me.placesVisited.contains(placeId)) return true;
     return stories.any((s) => s.uid == 'me' && s.place == placeId);
   }
 
-  /// How many different nights you've been at [placeId] (0 if never).
+  /// How many different nights you've posted a Story at [placeId] (0 if never).
   int nightsAt(String placeId) {
     if (!signedIn) return 0;
     final server = _visitNights[placeId.toLowerCase()] ?? 0;
@@ -2442,10 +2444,136 @@ class AppStore extends ChangeNotifier {
       for (final s in stories)
         if (s.uid == 'me' && s.place == placeId) s.session,
     };
-    if (me.move == placeId) local.add(sessionKey());
-    var n = local.length;
-    if (n == 0 && me.placesVisited.contains(placeId)) n = 1;
-    return server > n ? server : n;
+    return server > local.length ? server : local.length;
+  }
+
+  // --- Places been: the flex on profiles (phase 37) -------------------------
+
+  final Map<String, PlacesBeen> _placesBeen = {};
+
+  PlacesBeen? placesBeenFor(String personId) => _placesBeen[personId];
+
+  /// Loads someone's places been (yours with 'me'). Friends and you get the
+  /// list; anyone else just the count.
+  Future<void> fetchPlacesBeen(String personId) async {
+    final real = personId == 'me' ? supabaseUserId : personId;
+    if (real == null || supabaseUserId == null) return;
+    try {
+      final res = await Supabase.instance.client.rpc('places_been', params: {'p_user': real});
+      if (res is! Map) return;
+      final raw = res['places'];
+      final list = <PlaceBeen>[];
+      if (raw is List) {
+        for (final r in raw) {
+          if (r is! Map) continue;
+          final id = r['id'] as String?;
+          if (id == null) continue;
+          list.add(PlaceBeen(
+            placeId: id,
+            name: (r['name'] as String?) ?? 'A spot',
+            kind: r['kind'] as String?,
+            nights: (r['nights'] as num?)?.toInt() ?? 1,
+            last: DateTime.tryParse((r['last'] as String?) ?? ''),
+          ));
+        }
+      }
+      _placesBeen[personId] = PlacesBeen(
+        count: (res['count'] as num?)?.toInt() ?? 0,
+        nights: (res['nights'] as num?)?.toInt() ?? 0,
+        places: raw is List ? list : null,
+      );
+      notifyListeners();
+    } catch (_) {
+      // Phase 37 not run yet — the profile just skips the section.
+    }
+  }
+
+  // --- Invites (phase 37) ---------------------------------------------------
+
+  // Who invited you to each place, and who you've invited.
+  Map<String, List<String>> _invitesToMe = {};
+  Map<String, Set<String>> _invitesSent = {};
+
+  /// Friends who invited you to [placeId] (newest first).
+  List<String> invitedBy(String placeId) => (_invitesToMe[placeId] ?? const <String>[]).where((u) => !isHidden(u)).toList();
+
+  bool hasInvited(String placeId, String personId) => _invitesSent[placeId]?.contains(personId) ?? false;
+
+  Future<void> _fetchPlaceInvites() async {
+    final uid = supabaseUserId;
+    if (uid == null || isGuest) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('place_invites')
+          .select('place_id,from_uid,to_uid')
+          .order('created_at', ascending: false)
+          .limit(500);
+      final toMe = <String, List<String>>{};
+      final sent = <String, Set<String>>{};
+      final people = <String>{};
+      for (final r in rows) {
+        final place = r['place_id'] as String?;
+        final from = r['from_uid'] as String?;
+        final to = r['to_uid'] as String?;
+        if (place == null || from == null || to == null) continue;
+        if (to == uid) {
+          (toMe[place] ??= []).add(from);
+          people.add(from);
+        }
+        if (from == uid) (sent[place] ??= {}).add(to);
+      }
+      if (people.isNotEmpty) await _ensurePeopleFor(people.toList());
+      _invitesToMe = toMe;
+      _invitesSent = sent;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Invites friends to a place. Returns a message to show.
+  Future<String> inviteFriendsTo(String placeId, List<String> personIds) async {
+    if (!signedIn || supabaseUserId == null) return 'Make an account to invite friends.';
+    final ids = personIds.where((p) => p != 'me').toList();
+    if (ids.isEmpty) return 'Pick a friend first.';
+    try {
+      final res = await Supabase.instance.client.rpc('invite_to_place', params: {'p_place': placeId, 'p_to': ids});
+      if (res is Map && res['error'] is String) return res['error'] as String;
+      final sent = res is Map ? ((res['sent'] as num?)?.toInt() ?? 0) : 0;
+      _invitesSent[placeId] = {...?_invitesSent[placeId], ...ids};
+      notifyListeners();
+      unawaited(_fetchPlaceInvites());
+      final p = _placeById(placeId);
+      if (p != null && p.isPrivate) unawaited(fetchEventGuests(placeId));
+      if (sent == 0) return 'Already invited.';
+      return sent == 1 ? 'Invite sent.' : 'Invited $sent friends.';
+    } catch (e) {
+      return _featureError(e, feature: 'Invites', phase: 'phase 37', fallback: "Couldn't send the invites");
+    }
+  }
+
+  Place? _placeById(String id) {
+    for (final p in places) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  /// Re-checks one private event (e.g. you were just invited to it): its
+  /// details if you can see them, your RSVP, and the guest list.
+  Future<void> refreshPrivateEvent(String placeId) async {
+    final uid = supabaseUserId;
+    if (uid == null || !_privateEventsOk) return;
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client.from('private_event_details').select().eq('place_id', placeId).limit(1);
+      final mine = await client.from('event_guests').select('status').eq('place_id', placeId).eq('user_id', uid).limit(1);
+      if (rows.isNotEmpty) {
+        _privateDetails[placeId] = _detailsFromRow(rows.first);
+        _applyPrivateToPlace(placeId);
+      }
+      if (mine.isNotEmpty) _myEventStatus[placeId] = (mine.first['status'] as String?) ?? 'unlocked';
+      notifyListeners();
+      if (rows.isNotEmpty) await fetchEventGuests(placeId);
+    } catch (_) {}
   }
 
   Future<void> _fetchPlaceVisits() async {
@@ -2460,6 +2588,7 @@ class AppStore extends ChangeNotifier {
         out[id] = (out[id] ?? 0) + 1;
       }
       _visitNights = out;
+      if (_placesBeen.containsKey('me')) unawaited(fetchPlacesBeen('me'));
       notifyListeners();
     } catch (_) {
       // Offline, or phase 27 not run yet — the local guess still works.
@@ -4367,6 +4496,7 @@ class AppStore extends ChangeNotifier {
       unawaited(_fetchProfileReports());
       unawaited(_fetchStoryReports());
       unawaited(_fetchPlaceVisits());
+      unawaited(_fetchPlaceInvites());
       unawaited(_fetchBlocks());
       unawaited(_pushAgreement());
       unawaited(_fetchGroups());
@@ -7435,6 +7565,7 @@ class AppStore extends ChangeNotifier {
       _fetchProfileReports(),
       _fetchStoryReports(),
       _fetchPlaceVisits(),
+      _fetchPlaceInvites(),
       _fetchBlocks(),
       _fetchPosts(),
       _awardAndLoadTopPosts(),
@@ -7487,6 +7618,12 @@ class AppStore extends ChangeNotifier {
     if (n == null) return;
     final i = notifications.indexWhere((x) => x.id == n.id);
     if (i == -1) {
+      // A new invite: show it on the place (and let you into a private one).
+      if (n.kind == 'invite') {
+        unawaited(_fetchPlaceInvites());
+        final placeId = n.data['place_id'];
+        if (placeId is String) unawaited(refreshPrivateEvent(placeId));
+      }
       notifications = [n, ...notifications];
     } else {
       final next = List<AppNotification>.from(notifications);

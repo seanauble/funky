@@ -50,6 +50,7 @@ class NotificationsScreen extends StatelessWidget {
       case 'report':
       case 'photo':
       case 'friends_going':
+      case 'invite':
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
@@ -179,6 +180,8 @@ class _NotificationTile extends StatelessWidget {
         return Icons.mode_comment_outlined;
       case 'event_chat':
         return Icons.forum_outlined;
+      case 'invite':
+        return Icons.mail_outline_rounded;
       case 'post_like':
         return Icons.local_fire_department_outlined;
       case 'friend_post':

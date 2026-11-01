@@ -120,8 +120,8 @@ class EmptyNote extends StatelessWidget {
 }
 
 /// The little green "you've been here" pin-with-a-check next to a place's
-/// name — shown on places where you've tapped "I'm going" or posted a Story
-/// (see AppStore.hasBeenTo). Tapping it says what it means.
+/// name — shown on places where you've posted a Story (see
+/// AppStore.hasBeenTo). Tapping it says what it means.
 class BeenHereBadge extends StatelessWidget {
   final double size;
   final int nights;
@@ -139,7 +139,7 @@ class BeenHereBadge extends StatelessWidget {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
             ..showSnackBar(SnackBar(
-              content: Text('$label — you tapped "I\'m going" or posted a story here.'),
+              content: Text('$label — you posted a story here.'),
               duration: const Duration(seconds: 2),
             ));
         },
@@ -1013,6 +1013,37 @@ class _BlurredWordState extends State<_BlurredWord> {
               imageFilter: ui.ImageFilter.blur(sigmaX: 4, sigmaY: 3),
               child: Text(widget.word, style: widget.style),
             ),
+    );
+  }
+}
+
+/// The bottom of a screen with a message box pinned to it (DMs, groups,
+/// comments, event chat): sits right on the keyboard when it's up, and
+/// otherwise fills the home-indicator gap with its own color.
+///
+/// iOS sometimes leaves a small keyboard inset behind after the keyboard
+/// closes, which used to show as an empty black bar under the box — small
+/// insets like that are ignored. Use it in a Scaffold with
+/// `resizeToAvoidBottomInset: false`.
+class ComposerArea extends StatelessWidget {
+  final Widget child;
+  final Color color;
+  final BoxBorder? border;
+  final EdgeInsets padding;
+  const ComposerArea({super.key, required this.child, required this.color, this.border, this.padding = const EdgeInsets.all(10)});
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final keyboard = mq.viewInsets.bottom > 120 ? mq.viewInsets.bottom : 0.0;
+    final gap = keyboard > 0 ? 0.0 : mq.viewPadding.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboard),
+      child: Container(
+        decoration: BoxDecoration(color: color, border: border),
+        padding: padding.copyWith(bottom: padding.bottom + gap),
+        child: MediaQuery.removePadding(context: context, removeBottom: true, child: child),
+      ),
     );
   }
 }

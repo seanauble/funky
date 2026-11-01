@@ -394,6 +394,7 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
 
     return Scaffold(
       backgroundColor: tokens.bg,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: tokens.bg,
         foregroundColor: tokens.ink,
@@ -437,6 +438,7 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
         ],
       ),
       body: SafeArea(
+        bottom: false,
         child: Column(
           children: [
             // A call is going on in this group right now.
@@ -518,12 +520,10 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                       },
                     ),
             ),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
-              child: SafeArea(
-                top: false,
-                child: Row(
+            ComposerArea(
+              color: tokens.surface,
+              border: Border(top: BorderSide(color: tokens.line)),
+              child: Row(
                   children: [
                     IconButton(
                       tooltip: 'Snap a photo or video',
@@ -578,7 +578,6 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                     ),
                   ],
                 ),
-              ),
             ),
           ],
         ),

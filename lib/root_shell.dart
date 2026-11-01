@@ -68,31 +68,16 @@ class _RootShellState extends State<RootShell> {
 
   static const _titles = ['Home', 'Chat', '', 'Map', 'Profile'];
 
-  // A little easter egg: tapping the FUNKY wordmark on Home pops a small
-  // confetti burst from right where you tapped. Pure CustomPainter — no
-  // new package, same caution as everywhere else in this app.
-  void _popConfetti(BuildContext tapContext) {
-    final renderBox = tapContext.findRenderObject() as RenderBox?;
-    if (renderBox == null) return;
-    final origin = renderBox.localToGlobal(Offset(renderBox.size.width / 2, renderBox.size.height));
-    final overlay = Overlay.of(context);
-    late OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (_) => _ConfettiBurst(origin: origin, onDone: () => entry.remove()),
-    );
-    overlay.insert(entry);
-  }
-
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
 
     return Scaffold(
       backgroundColor: tokens.bg,
-      // Shown on every tab now (Home, Chat, Places, Profile) so the
-      // notification bell and settings gear are always reachable, not just
-      // from Profile.
-      appBar: AppBar(
+      // Only on Profile now (with the bell and the settings gear), so Home,
+      // Chat and the Map get the whole screen. Home has the logo, town and
+      // bell at the top of its own page instead.
+      appBar: _index != 4 ? null : AppBar(
         backgroundColor: tokens.bg,
         elevation: 0,
         // Left: the wordmark on Home, the tab's name elsewhere. Middle: the
@@ -107,7 +92,7 @@ class _RootShellState extends State<RootShell> {
                 ? Builder(
                     builder: (logoContext) => GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTap: () => _popConfetti(logoContext),
+                      onTap: () => popFunkyConfetti(logoContext),
                       child: const RainbowWordmark(height: 38),
                     ),
                   )
@@ -148,6 +133,20 @@ class _RootShellState extends State<RootShell> {
       ),
     );
   }
+}
+
+/// A little easter egg: tapping the FUNKY wordmark pops a small confetti
+/// burst from right where you tapped. Pure CustomPainter — no new package.
+void popFunkyConfetti(BuildContext tapContext) {
+  final renderBox = tapContext.findRenderObject() as RenderBox?;
+  if (renderBox == null) return;
+  final origin = renderBox.localToGlobal(Offset(renderBox.size.width / 2, renderBox.size.height));
+  final overlay = Overlay.of(tapContext, rootOverlay: true);
+  late OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (_) => _ConfettiBurst(origin: origin, onDone: () => entry.remove()),
+  );
+  overlay.insert(entry);
 }
 
 /// The middle of the top bar: a pin and the town closest to you, e.g.

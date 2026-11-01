@@ -163,6 +163,16 @@ class UpcomingPlaceCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text('$what · $where', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                  if (store.invitedBy(p.id).isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        '💌 Invited by @${store.personById(store.invitedBy(p.id).first)?.handle ?? 'a friend'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12),
+                      ),
+                    ),
                   const SizedBox(height: 6),
                   Row(
                     children: [

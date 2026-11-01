@@ -1048,3 +1048,21 @@ int effectiveMoveStreak(Person p) {
     return 0;
   }
 }
+
+/// One place someone posted a Story at, for the "places been" flex.
+class PlaceBeen {
+  final String placeId;
+  final String name;
+  final String? kind; // 'bar', 'club', 'party'…
+  final int nights;
+  final DateTime? last;
+  const PlaceBeen({required this.placeId, required this.name, this.kind, this.nights = 1, this.last});
+}
+
+/// Someone's places been: how many, and (for friends and yourself) which.
+class PlacesBeen {
+  final int count;
+  final int nights;
+  final List<PlaceBeen>? places; // null when you can only see the count
+  const PlacesBeen({required this.count, required this.nights, this.places});
+}

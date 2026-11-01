@@ -28,46 +28,62 @@ class PollCard extends StatelessWidget {
     Widget pill(int i) {
       final share = total == 0 ? 0.0 : counts[i] / total;
       final picked = mine == i;
+      final showResults = mine != null || total > 0;
       final pct = '${(share * 100).round()}%';
       return GestureDetector(
         onTap: () => store.votePoll(poll.id, i),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            height: 46,
-            color: picked ? tokens.brand.withValues(alpha: 0.16) : tokens.raised,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          height: 46,
+          decoration: BoxDecoration(
+            color: tokens.raised,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: picked ? tokens.brand : Colors.transparent, width: 1.6),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12.5),
             child: Stack(
               children: [
-                // How much of the vote this option has.
-                if (mine != null || total > 0)
-                  FractionallySizedBox(
-                    widthFactor: share.clamp(0.0, 1.0),
-                    heightFactor: 1,
-                    child: Container(color: picked ? tokens.brand : tokens.line.withValues(alpha: 0.9)),
+                // How much of the vote this option has: a soft fill, so the
+                // words and the % on top always stay readable.
+                if (showResults)
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: share.clamp(0.0, 1.0),
+                      child: ColoredBox(color: picked ? tokens.brand.withValues(alpha: 0.28) : tokens.line.withValues(alpha: 0.7)),
+                    ),
                   ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          maskBadWords(poll.options[i]),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: picked && share > 0.45 ? tokens.onOrange : tokens.ink,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14.5,
+                Positioned.fill(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  maskBadWords(poll.options[i]),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14.5),
+                                ),
+                              ),
+                              if (picked) ...[
+                                const SizedBox(width: 5),
+                                Icon(Icons.check_circle_rounded, size: 17, color: tokens.brand),
+                              ],
+                            ],
                           ),
                         ),
-                      ),
-                      if (picked) ...[
-                        Icon(Icons.check_circle_rounded, size: 18, color: share > 0.6 ? tokens.onOrange : tokens.brand),
-                        const SizedBox(width: 6),
+                        if (showResults) ...[
+                          const SizedBox(width: 6),
+                          Text(pct, style: TextStyle(color: picked ? tokens.ink : tokens.mute, fontWeight: FontWeight.w800, fontSize: 13.5)),
+                        ],
                       ],
-                      if (mine != null || total > 0)
-                        Text(pct, style: TextStyle(color: picked ? tokens.brand : tokens.mute, fontWeight: FontWeight.w800, fontSize: 13.5)),
-                    ],
+                    ),
                   ),
                 ),
               ],

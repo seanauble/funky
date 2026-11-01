@@ -286,15 +286,16 @@ class _PostCardState extends State<PostCard> {
             ),
           ] else ...[
             // Photos, with the place pinned on top.
-            // Edge to edge and close to its real shape (tall phone photos
-            // go up to 7:10 before any cropping).
+            // Wide photos show whole; tall ones are cropped to a square so
+            // one post never fills the screen.
             if (urls.isNotEmpty)
             Padding(
-              padding: EdgeInsets.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(FlatCards.of(context) ? 12 : 0),
+                borderRadius: BorderRadius.circular(14),
                 child: AspectRatio(
-                  aspectRatio: (_aspects[urls.first] ?? 4 / 5).clamp(0.7, 1.91),
+                  // On the post's own page it can be a little taller (4:5).
+                  aspectRatio: (_aspects[urls.first] ?? 1.0).clamp(widget.inDetail ? 0.8 : 1.0, 1.91),
                   child: GestureDetector(
                     onDoubleTap: () => _like(store, post, onlyLike: true),
                     onTap: widget.inDetail ? null : _openDetail,
@@ -1088,6 +1089,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
     return Scaffold(
       backgroundColor: tokens.bg,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: const Text('Post')),
       body: post == null
           ? Center(
@@ -1122,12 +1124,11 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                     ],
                   ),
                 ),
-                Container(
+                ComposerArea(
+                  color: tokens.surface,
+                  border: Border(top: BorderSide(color: tokens.line)),
                   padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-                  decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
-                  child: SafeArea(
-                    top: false,
-                    child: Column(
+                  child: Column(
                      mainAxisSize: MainAxisSize.min,
                      children: [
                       if (_replyTo != null)
@@ -1188,7 +1189,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                       ),
                      ],
                     ),
-                  ),
                 ),
               ],
             ),

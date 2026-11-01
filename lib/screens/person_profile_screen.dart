@@ -255,6 +255,7 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
             (friendCount == null ? '–' : formatCount(friendCount), 'Friends', null),
             (formatCount(memories.length), 'Memories', () => setState(() => _tab = 1)),
           ]),
+          if (!hidden) PlacesBeenFlex(personId: personId, handle: person.handle),
           const SizedBox(height: 16),
           if (!isSelf && !hidden)
             _FriendButtons(

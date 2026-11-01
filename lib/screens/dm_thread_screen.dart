@@ -222,6 +222,8 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
 
     return Scaffold(
       backgroundColor: tokens.bg,
+      // The message box handles the keyboard itself (see ComposerArea).
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: tokens.bg,
         foregroundColor: tokens.ink,
@@ -264,6 +266,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
         ],
       ),
       body: SafeArea(
+        bottom: false,
         child: Column(
           children: [
             Expanded(
@@ -319,12 +322,12 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                     ),
             ),
             if (store.isBlocked(person.id) || store.hasBlockedMe(person.id))
-              Container(
-                width: double.infinity,
+              ComposerArea(
+                color: tokens.surface,
+                border: Border(top: BorderSide(color: tokens.line)),
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
-                child: SafeArea(
-                  top: false,
+                child: SizedBox(
+                  width: double.infinity,
                   child: Text(
                     store.isBlocked(person.id) ? "You blocked @${person.handle}. Unblock them from their profile to message." : "You can't message this account.",
                     textAlign: TextAlign.center,
@@ -340,12 +343,10 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                 tokens: tokens,
                 onCancel: () => setState(() => _replyStory = null),
               ),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
-              child: SafeArea(
-                top: false,
-                child: Row(
+            ComposerArea(
+              color: tokens.surface,
+              border: Border(top: BorderSide(color: tokens.line)),
+              child: Row(
                   children: [
                     IconButton(
                       tooltip: 'Snap a photo or video',
@@ -401,7 +402,6 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                     ),
                   ],
                 ),
-              ),
             ),
             ],
           ],

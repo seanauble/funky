@@ -575,3 +575,169 @@ class UnderlineTabs extends StatelessWidget {
     );
   }
 }
+
+/// The "places been" flex on a profile: how many spots someone has posted a
+/// Story at (and how many nights), with the spots themselves for friends.
+class PlacesBeenFlex extends StatefulWidget {
+  final String personId; // 'me' for your own profile
+  final String handle;
+  const PlacesBeenFlex({super.key, required this.personId, required this.handle});
+
+  @override
+  State<PlacesBeenFlex> createState() => _PlacesBeenFlexState();
+}
+
+class _PlacesBeenFlexState extends State<PlacesBeenFlex> {
+  bool _all = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<AppStore>().fetchPlacesBeen(widget.personId);
+    });
+  }
+
+  static String _emoji(String? kind) => switch (kind) {
+        'bar' => '🍺',
+        'club' => '🪩',
+        'party' => '🎉',
+        'event' => '🎟️',
+        'tailgate' => '🏈',
+        'frat' => '🏛️',
+        _ => '📍',
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final data = store.placesBeenFor(widget.personId);
+    final mine = widget.personId == 'me';
+    if (data == null) return const SizedBox.shrink();
+    if (data.count == 0 && !mine) return const SizedBox.shrink();
+    final list = data.places;
+    final shown = list == null ? const <PlaceBeen>[] : (_all ? list : list.take(8).toList());
+
+    return Container(
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: tokens.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: tokens.line.withValues(alpha: 0.7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: tokens.orange.withValues(alpha: 0.15), shape: BoxShape.circle),
+                child: Icon(Icons.where_to_vote_rounded, color: tokens.orange, size: 26),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('PLACES BEEN', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w800, fontSize: 11.5, letterSpacing: 0.6)),
+                    Text.rich(
+                      TextSpan(children: [
+                        TextSpan(text: '${data.count}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w900, fontSize: 26)),
+                        TextSpan(
+                          text: data.count == 1 ? ' spot' : ' spots',
+                          style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 16),
+                        ),
+                        if (data.nights > 0)
+                          TextSpan(
+                            text: '  ·  ${data.nights == 1 ? '1 night out' : '${data.nights} nights out'}',
+                            style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600, fontSize: 13.5),
+                          ),
+                      ]),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (data.count == 0 && mine) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Post a Story at a bar, club or party and it lands here for good. Only your friends see where.',
+              style: TextStyle(color: tokens.mute, fontSize: 13, height: 1.3),
+            ),
+          ] else if (list == null) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(Icons.lock_outline_rounded, color: tokens.mute, size: 17),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text('Add @${widget.handle} as a friend to see where.', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                ),
+              ],
+            ),
+          ] else if (shown.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                for (final p in shown)
+                  GestureDetector(
+                    onTap: () {
+                      final stillHere = store.places.any((x) => x.id == p.placeId);
+                      if (stillHere) {
+                        Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.placeId)));
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${p.name} is over, but it still counts.')));
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(999)),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(_emoji(p.kind), style: const TextStyle(fontSize: 14)),
+                          const SizedBox(width: 5),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 190),
+                            child: Text(
+                              p.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13),
+                            ),
+                          ),
+                          if (p.nights > 1) ...[
+                            const SizedBox(width: 5),
+                            Text('×${p.nights}', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            if (list.length > 8)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: GestureDetector(
+                  onTap: () => setState(() => _all = !_all),
+                  child: Text(
+                    _all ? 'Show less' : 'Show all ${list.length}',
+                    style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800, fontSize: 13.5),
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}

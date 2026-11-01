@@ -1983,7 +1983,9 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
           );
     final isPrivate = _private && _canHaveDate;
     final codeOk = !isPrivate || RegExp(r'^\S{3,20}$').hasMatch(_codeController.text.trim());
-    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && (!_anotherNight || _startsAt != null) && codeOk;
+    // Parties, events, tailgates and frat parties need a start time.
+    final needsTime = _canHaveDate && _startsAt == null;
+    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && !needsTime && codeOk;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
@@ -2067,7 +2069,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
               GestureDetector(
                 onTap: _pickTonightTime,
                 child: Text(
-                  _startsAt == null ? '+ Add a start time (optional)' : 'Starts ${clockLabel(_startsAt!)} · tap to change',
+                  _startsAt == null ? '+ Pick a start time' : 'Starts ${clockLabel(_startsAt!)} · tap to change',
                   style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13),
                 ),
               )
@@ -2374,6 +2376,12 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
               child: Text('Add place', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
             ),
           ),
+          if (needsTime && trimmedName.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: Text('Pick a start time to add it.', style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w600)),
+            ),
+          ],
         ],
       ),
     );
