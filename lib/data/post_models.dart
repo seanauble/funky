@@ -82,5 +82,29 @@ class PostComment {
   final String uid; // 'me' for your own
   final String text;
   final int t;
-  const PostComment({required this.id, required this.postId, required this.uid, required this.text, required this.t});
+  /// The comment this one answers, if it's a reply.
+  final String? replyTo;
+  final int likes;
+  final bool likedByMe;
+  const PostComment({
+    required this.id,
+    required this.postId,
+    required this.uid,
+    required this.text,
+    required this.t,
+    this.replyTo,
+    this.likes = 0,
+    this.likedByMe = false,
+  });
+
+  PostComment copyWith({int? likes, bool? likedByMe}) => PostComment(
+        id: id,
+        postId: postId,
+        uid: uid,
+        text: text,
+        t: t,
+        replyTo: replyTo,
+        likes: likes ?? this.likes,
+        likedByMe: likedByMe ?? this.likedByMe,
+      );
 }

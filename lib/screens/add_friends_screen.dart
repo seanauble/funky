@@ -124,7 +124,7 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
       );
     }
     if (_loading && _results == null) {
-      return const Center(child: Padding(padding: EdgeInsets.only(top: 40), child: CircularProgressIndicator()));
+      return const Center(child: Padding(padding: EdgeInsets.only(top: 40), child: CircularProgressIndicator.adaptive()));
     }
     final results = _results ?? const [];
     if (results.isEmpty) {

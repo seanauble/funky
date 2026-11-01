@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:easy_video_editor/easy_video_editor.dart';
+import 'package:flutter/cupertino.dart' show CupertinoDatePickerMode;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:image_picker/image_picker.dart';
@@ -17,6 +18,7 @@ import '../data/session.dart';
 import '../data/when_labels.dart';
 import '../services/address_search.dart';
 import '../theme/colors.dart';
+import '../widgets/ios_ui.dart';
 import '../widgets/kind_picker.dart';
 import '../widgets/place_destination_picker.dart';
 import '../widgets/send_to_sheet.dart';
@@ -1757,37 +1759,6 @@ const _placeKinds = [
 
 enum _PlacePhotoSource { camera, library }
 
-/// The bottom sheet that asks "take a new photo or pick one from your
-/// library" when you tap the cover-photo box on the Add Place form — same
-/// shape as the one profile photos use (see profile_screen.dart), just
-/// duplicated locally since that one's private to its own file.
-class _PlacePhotoSourceSheet extends StatelessWidget {
-  const _PlacePhotoSourceSheet();
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          ListTile(
-            leading: Icon(Icons.camera_alt, color: tokens.ink),
-            title: Text('Take Photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.of(context).pop(_PlacePhotoSource.camera),
-          ),
-          ListTile(
-            leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
-            title: Text('Choose from Library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.of(context).pop(_PlacePhotoSource.library),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-}
 
 /// Page 3 — add a place.
 class _PlaceFormPage extends StatefulWidget {
@@ -1812,6 +1783,16 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   // Events: what kind, and the bar or club it's at.
   String? _eventType;
   Place? _host;
+  // Private: the address and time are only for people with the code.
+  bool _private = false;
+  final _codeController = TextEditingController(text: _newEventCode());
+
+  static String _newEventCode() {
+    // No 0/O or 1/I/L, so it's easy to read out loud.
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    final r = math.Random.secure();
+    return List.generate(6, (_) => chars[r.nextInt(chars.length)]).join();
+  }
 
   bool get _canHaveDate => const {PlaceKind.party, PlaceKind.event, PlaceKind.tailgate, PlaceKind.frat}.contains(_kind);
 
@@ -1824,38 +1805,36 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   }
 
   Future<void> _pickTonightTime() async {
-    final t = await showTimePicker(
-      context: context,
-      initialTime: _startsAt != null ? TimeOfDay.fromDateTime(_startsAt!) : const TimeOfDay(hour: 22, minute: 0),
+    final day = _tonightDay();
+    final picked = await showIosDateTimePicker(
+      context,
+      mode: CupertinoDatePickerMode.time,
+      title: 'Start time',
+      initial: _startsAt ?? DateTime(day.year, day.month, day.day, 22),
     );
-    if (t == null || !mounted) return;
-    var d = _tonightDay();
+    if (picked == null || !mounted) return;
+    var d = day;
     // After midnight is still tonight.
-    if (t.hour < 14) d = d.add(const Duration(days: 1));
-    setState(() => _startsAt = DateTime(d.year, d.month, d.day, t.hour, t.minute));
+    if (picked.hour < 14) d = d.add(const Duration(days: 1));
+    setState(() => _startsAt = DateTime(d.year, d.month, d.day, picked.hour, picked.minute));
   }
 
   Future<void> _pickAnotherNight() async {
     final today = _tonightDay();
     final first = today.add(const Duration(days: 1));
-    final date = await showDatePicker(
-      context: context,
-      initialDate: _startsAt != null && _startsAt!.isAfter(first) ? DateUtils.dateOnly(_startsAt!) : first,
-      firstDate: first,
-      lastDate: today.add(const Duration(days: 60)),
-      helpText: 'What day?',
+    final last = today.add(const Duration(days: 60, hours: 23));
+    final current = _startsAt;
+    final picked = await showIosDateTimePicker(
+      context,
+      title: 'When is it?',
+      initial: current != null && current.isAfter(first) ? current : DateTime(first.year, first.month, first.day, 22),
+      minimum: first,
+      maximum: last,
     );
-    if (date == null || !mounted) return;
-    final t = await showTimePicker(
-      context: context,
-      initialTime: _startsAt != null ? TimeOfDay.fromDateTime(_startsAt!) : const TimeOfDay(hour: 22, minute: 0),
-      helpText: 'What time does it start?',
-    );
-    if (!mounted) return;
-    final time = t ?? const TimeOfDay(hour: 22, minute: 0);
+    if (picked == null || !mounted) return;
     setState(() {
       _anotherNight = true;
-      _startsAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      _startsAt = picked;
     });
   }
 
@@ -1887,6 +1866,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     _addressDebounce?.cancel();
     _nameController.dispose();
     _addressController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
@@ -1932,12 +1912,12 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   }
 
   Future<void> _addCoverPhoto() async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final source = await showModalBottomSheet<_PlacePhotoSource>(
-      context: context,
-      backgroundColor: tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => const _PlacePhotoSourceSheet(),
+    final source = await showIosActionSheet<_PlacePhotoSource>(
+      context,
+      actions: const [
+        IosSheetAction('Take Photo', _PlacePhotoSource.camera),
+        IosSheetAction('Choose from Library', _PlacePhotoSource.library),
+      ],
     );
     if (source == null || !mounted) return;
     if (source == _PlacePhotoSource.camera) {
@@ -2001,7 +1981,9 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             night: dated == null ? null : sessionKey(dated),
             ignoreId: _kind == PlaceKind.event ? _host?.id : null,
           );
-    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && (!_anotherNight || _startsAt != null);
+    final isPrivate = _private && _canHaveDate;
+    final codeOk = !isPrivate || RegExp(r'^\S{3,20}$').hasMatch(_codeController.text.trim());
+    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && (!_anotherNight || _startsAt != null) && codeOk;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
@@ -2101,6 +2083,77 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
               const SizedBox(height: 4),
               Text("It shows under Upcoming until that night, then moves to Tonight.", style: TextStyle(color: tokens.mute, fontSize: 12)),
             ],
+            const SizedBox(height: 14),
+            // Private event: like an RSVP invite.
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+              decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(14)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.lock_outline_rounded, color: isPrivate ? tokens.brand : tokens.ink, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Private event', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15)),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Everyone sees the name and night. Only people with your code see the address and time, RSVP, and get the event chat.',
+                              style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch.adaptive(
+                        value: _private,
+                        activeTrackColor: tokens.brand,
+                        onChanged: (v) => setState(() => _private = v),
+                      ),
+                    ],
+                  ),
+                  if (isPrivate) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _codeController,
+                            maxLength: 20,
+                            textCapitalization: TextCapitalization.characters,
+                            autocorrect: false,
+                            onChanged: (_) => setState(() {}),
+                            style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, letterSpacing: 2),
+                            decoration: InputDecoration(
+                              labelText: 'Code to get in',
+                              labelStyle: TextStyle(color: tokens.mute),
+                              counterText: '',
+                              isDense: true,
+                              filled: true,
+                              fillColor: tokens.surface,
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'New code',
+                          onPressed: () => setState(() => _codeController.text = _newEventCode()),
+                          icon: Icon(Icons.refresh_rounded, color: tokens.ink),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      codeOk ? 'Send this to the people you invite. You can see it on the event page any time.' : 'The code needs 3 to 20 letters or numbers, no spaces.',
+                      style: TextStyle(color: codeOk ? tokens.mute : tokens.danger, fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ],
           if (_kind == PlaceKind.event) ...[
             const SizedBox(height: 14),
@@ -2151,7 +2204,10 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             ),
           ],
           const SizedBox(height: 14),
-          Text(_host == null ? 'Address' : 'Address (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
+          Text(
+            isPrivate ? 'Address (only guests with the code see it)' : (_host == null ? 'Address' : 'Address (optional)'),
+            style: TextStyle(color: tokens.mute, fontSize: 13),
+          ),
           const SizedBox(height: 6),
           TextField(
             controller: _addressController,
@@ -2164,7 +2220,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
               fillColor: tokens.raised,
               prefixIcon: Icon(Icons.search, color: tokens.mute, size: 20),
               suffixIcon: _searchingAddress
-                  ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))
+                  ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator.adaptive(strokeWidth: 2)))
                   : (picked != null ? Icon(Icons.check_circle, color: tokens.brand, size: 20) : null),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
             ),
@@ -2289,6 +2345,8 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                           startsAt: _canHaveDate ? _startsAt : null,
                           eventType: _kind == PlaceKind.event ? _eventType : null,
                           hostPlaceId: host?.id,
+                          isPrivate: isPrivate,
+                          passcode: isPrivate ? _codeController.text.trim() : null,
                         );
                         if (!context.mounted) return;
                         if (place == null) {

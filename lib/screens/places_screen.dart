@@ -78,7 +78,7 @@ class _MapRadiusSliderState extends State<_MapRadiusSlider> {
           Icon(Icons.radar, size: 18, color: tokens.orange),
           const SizedBox(width: 6),
           Expanded(
-            child: Slider(
+            child: Slider.adaptive(
               value: value,
               min: 0,
               max: (stops.length - 1).toDouble(),

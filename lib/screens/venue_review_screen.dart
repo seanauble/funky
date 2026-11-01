@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../data/models.dart';
@@ -69,27 +70,12 @@ class _VenueReviewScreenState extends State<VenueReviewScreen> {
   }
 
   Future<void> _addPhoto(AppStore store, VenueCandidate v) async {
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: Theme.of(context).extension<FunkyTokens>()!.tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose from library'),
-              onTap: () => Navigator.of(sheetContext).pop(ImageSource.gallery),
-            ),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('Take a photo'),
-              onTap: () => Navigator.of(sheetContext).pop(ImageSource.camera),
-            ),
-          ],
-        ),
-      ),
+    final source = await showIosActionSheet<ImageSource>(
+      context,
+      actions: const [
+        IosSheetAction('Choose from Library', ImageSource.gallery),
+        IosSheetAction('Take a Photo', ImageSource.camera),
+      ],
     );
     if (source == null || !mounted) return;
     final picked = await ImagePicker().pickImage(source: source, maxWidth: 1600, imageQuality: 85);
@@ -187,7 +173,7 @@ class _VenueReviewScreenState extends State<VenueReviewScreen> {
             ),
             const SizedBox(height: 12),
             if (!store.venueCandidatesLoaded)
-              const Padding(padding: EdgeInsets.only(top: 40), child: Center(child: CircularProgressIndicator()))
+              const Padding(padding: EdgeInsets.only(top: 40), child: Center(child: CircularProgressIndicator.adaptive()))
             else if (shown.isEmpty)
               EmptyNote(
                 text: all.isEmpty
@@ -309,7 +295,7 @@ class _VenueCard extends StatelessWidget {
                         store.venuePhotoUrl(photo.ref),
                         fit: BoxFit.cover,
                         loadingBuilder: (_, child, progress) =>
-                            progress == null ? child : Container(color: tokens.raised, alignment: Alignment.center, child: const CircularProgressIndicator(strokeWidth: 2)),
+                            progress == null ? child : Container(color: tokens.raised, alignment: Alignment.center, child: const CircularProgressIndicator.adaptive(strokeWidth: 2)),
                         errorBuilder: (_, __, ___) => Container(
                           color: tokens.raised,
                           alignment: Alignment.center,
@@ -443,7 +429,7 @@ class _VenueCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.all(12),
             child: busy
-                ? const Center(child: Padding(padding: EdgeInsets.all(6), child: CircularProgressIndicator(strokeWidth: 2)))
+                ? const Center(child: Padding(padding: EdgeInsets.all(6), child: CircularProgressIndicator.adaptive(strokeWidth: 2)))
                 : _actions(context, tokens),
           ),
         ],

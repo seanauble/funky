@@ -1,3 +1,4 @@
+import '../widgets/ios_ui.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -23,9 +24,9 @@ import 'live_chat_view.dart';
 /// profile page, which made it unclear what it actually covered).
 void _showAnonymousDialog(BuildContext context) {
   final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  showDialog<void>(
+  showIosDialog<void>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (dialogContext) => IosAlert(
       backgroundColor: tokens.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       title: const Text('👀👻', textAlign: TextAlign.center, style: TextStyle(fontSize: 44)),
@@ -227,7 +228,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   onTap: () => Navigator.of(sheetContext).pop(p.id),
                   leading: Icon(Icons.event_rounded, color: tokens.brand),
                   title: Text(p.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                  subtitle: Text(whenLabel(p.place.startsAt!), style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                  subtitle: Text(
+                    p.place.shownTime == null ? '${dayLabel(p.place.startsAt!)}${p.place.isPrivate ? ' · 🔒 Private' : ''}' : whenLabel(p.place.startsAt!),
+                    style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                  ),
                 ),
             ],
           ),
@@ -252,6 +256,18 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _sharePoll(AppStore store) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final polls = store.rankedVisiblePolls;
+    final canMake = !store.signedIn || store.canAddPollToday;
+    if (polls.isEmpty) {
+      // Nothing to share yet: go straight to making one.
+      if (canMake) {
+        await _startPoll(store);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("No polls around here yet, and you've already made your poll for today.")),
+        );
+      }
+      return;
+    }
     final picked = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -267,12 +283,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
                 child: Text('Polls', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18)),
               ),
-              ListTile(
-                onTap: () => Navigator.of(sheetContext).pop('__new__'),
-                leading: Icon(Icons.add_chart_rounded, color: tokens.brand),
-                title: Text('Start a new poll', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
-                subtitle: Text('One a day. It goes in the chat when you post it.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
-              ),
+              if (canMake)
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop('__new__'),
+                  leading: Icon(Icons.add_chart_rounded, color: tokens.brand),
+                  title: Text('Start a new poll', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+                  subtitle: Text('One a day. It goes in the chat when you post it.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                ),
               if (polls.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
@@ -310,44 +327,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _send(store, gifUrl: url);
   }
 
-  Future<void> _showAttachMenu(AppStore store) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            ListTile(
-              leading: Icon(Icons.place_outlined, color: tokens.ink),
-              title: Text('Share a spot', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.of(sheetContext).pop('spot'),
-            ),
-            ListTile(
-              leading: Icon(Icons.poll_outlined, color: tokens.ink),
-              title: Text('Share or start a poll', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.of(sheetContext).pop('poll'),
-            ),
-            if (store.giphyKey != null || store.isAdmin)
-              ListTile(
-                leading: Icon(Icons.gif_box_outlined, color: tokens.ink),
-                title: Text('GIF', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-                onTap: () => Navigator.of(sheetContext).pop('gif'),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    if (choice == 'spot') await _shareSpot(store);
-    if (choice == 'poll') await _sharePoll(store);
-    if (choice == 'gif') await _pickGif(store);
-  }
-
   void _toggleAnon(AppStore store) {
     if (!store.signedIn) {
       Navigator.of(context).push(MaterialPageRoute(fullscreenDialog: true, builder: (_) => const AccountScreen(closeOnSuccess: true)));
@@ -371,18 +350,17 @@ class _ChatScreenState extends State<ChatScreen> {
           child: GestureDetector(
             onTap: onTap,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
               decoration: BoxDecoration(
-                color: tokens.surface,
+                color: tokens.raised,
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: tokens.line, width: 1.2),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 15, color: tokens.ink),
-                  const SizedBox(width: 5),
-                  Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13)),
+                  Icon(icon, size: 14, color: tokens.ink),
+                  const SizedBox(width: 4),
+                  Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12)),
                 ],
               ),
             ),
@@ -442,8 +420,8 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             if (live)
               Container(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                decoration: BoxDecoration(color: tokens.bg, border: Border(top: BorderSide(color: tokens.line))),
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                decoration: BoxDecoration(color: tokens.bg, border: Border(top: BorderSide(color: tokens.line, width: 0.5))),
                 child: SafeArea(
                   top: false,
                   child: Column(
@@ -486,14 +464,12 @@ class _ChatScreenState extends State<ChatScreen> {
                         )
                       else
                         SizedBox(
-                          height: 36,
+                          height: 28,
                           child: ListView(
                             scrollDirection: Axis.horizontal,
                             children: [
                               chip('Share a spot', Icons.place_outlined, () => _shareSpot(store)),
-                              chip('Start a poll', Icons.add_chart_rounded, () => _startPoll(store)),
-                              if (store.visiblePolls.isNotEmpty) chip('Share a poll', Icons.poll_outlined, () => _sharePoll(store)),
-                              if (store.giphyKey != null) chip('GIF', Icons.gif_box_outlined, () => _pickGif(store)),
+                              chip('Share a poll', Icons.poll_outlined, () => _sharePoll(store)),
                             ],
                           ),
                         ),
@@ -502,7 +478,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         behavior: HitTestBehavior.opaque,
                         onTap: () => _toggleAnon(store),
                         child: Padding(
-                          padding: const EdgeInsets.only(left: 2, bottom: 6),
+                          padding: const EdgeInsets.only(left: 2, bottom: 4, top: 1),
                           child: Row(
                             children: [
                               Flexible(
@@ -512,7 +488,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                       : (anon ? 'Posting as 👻 anonymous' : 'Posting as @${store.myChatHandle}'),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w600),
+                                  style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w600),
                                 ),
                               ),
                               Icon(Icons.chevron_right_rounded, color: tokens.mute, size: 18),
@@ -522,17 +498,6 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       Row(
                         children: [
-                          GestureDetector(
-                            onTap: () => _showAttachMenu(store),
-                            child: Container(
-                              width: 40,
-                              height: 40,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.ink.withValues(alpha: 0.6), width: 1.4)),
-                              child: Icon(Icons.add_rounded, color: tokens.ink, size: 22),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
                           Expanded(
                             child: TextField(
                               controller: _draftController,
@@ -541,6 +506,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               minLines: 1,
                               maxLines: 4,
                               textCapitalization: TextCapitalization.sentences,
+                              style: TextStyle(color: tokens.ink, fontSize: 15),
                               decoration: InputDecoration(
                                 hintText: 'Message ${store.areaName ?? 'everyone nearby'}…',
                                 hintStyle: TextStyle(color: tokens.mute),
@@ -548,7 +514,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 fillColor: tokens.raised,
                                 counterText: '',
                                 isDense: true,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                                 suffixIcon: store.giphyKey != null || store.isAdmin
                                     ? IconButton(
                                         onPressed: () => _pickGif(store),
@@ -561,18 +527,17 @@ class _ChatScreenState extends State<ChatScreen> {
                                     : null,
                                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
                               ),
-                              style: TextStyle(color: tokens.ink),
                             ),
                           ),
                           const SizedBox(width: 8),
                           GestureDetector(
                             onTap: () => _send(store),
                             child: Container(
-                              width: 42,
-                              height: 42,
+                              width: 36,
+                              height: 36,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(color: tokens.orange, shape: BoxShape.circle),
-                              child: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 22),
+                              child: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
                             ),
                           ),
                         ],

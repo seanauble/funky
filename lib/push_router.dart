@@ -4,6 +4,7 @@ import 'root_shell.dart';
 import 'screens/admin_panel_screen.dart';
 import 'screens/call_screen.dart';
 import 'screens/dm_thread_screen.dart';
+import 'screens/event_chat_screen.dart';
 import 'screens/friend_requests_screen.dart';
 import 'screens/group_thread_screen.dart';
 import 'screens/place_detail_screen.dart';
@@ -66,6 +67,11 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
       if (placeId is! String) return;
       navigator.popUntil((r) => r.isFirst);
       navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
+    case 'event_chat':
+      final placeId = data['place_id'];
+      if (placeId is! String) return;
+      navigator.popUntil((r) => r.isFirst);
+      navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
     case 'post_comment':
     case 'post_like':
     case 'friend_post':

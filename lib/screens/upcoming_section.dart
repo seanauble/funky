@@ -107,8 +107,11 @@ class UpcomingPlaceCard extends StatelessWidget {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
     final p = place.place;
-    final going = store.hasRsvped(p.id);
-    final friends = store.friendsGoingToPlace(p.id);
+    final priv = p.isPrivate;
+    final locked = priv && !store.isEventInsider(p);
+    final going = priv ? store.myEventStatus(p.id) == 'going' : store.hasRsvped(p.id);
+    final friends = priv ? const <Person>[] : store.friendsGoingToPlace(p.id);
+    final guestsGoing = priv ? store.eventGuestCount(p.id, 'going') : 0;
     final badge = placeOrgBadge(p);
     String? hostName;
     if (p.hostPlaceId != null) {
@@ -153,7 +156,9 @@ class UpcomingPlaceCard extends StatelessWidget {
                   Text(p.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
                   const SizedBox(height: 3),
                   Text(
-                    '${dayLabel(p.startsAt!)} · ${clockLabel(p.startsAt!)}',
+                    p.shownTime == null
+                        ? '${dayLabel(p.startsAt!)}${priv ? ' · 🔒 Private' : ''}'
+                        : '${dayLabel(p.startsAt!)} · ${clockLabel(p.startsAt!)}${priv ? ' · 🔒' : ''}',
                     style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 12.5),
                   ),
                   const SizedBox(height: 2),
@@ -182,9 +187,13 @@ class UpcomingPlaceCard extends StatelessWidget {
                       ],
                       Expanded(
                         child: Text(
-                          place.going == 0
-                              ? 'Be the first going'
-                              : (friends.isNotEmpty ? '${place.going} going · ${friends.length} friend${friends.length == 1 ? '' : 's'}' : '${place.going} going'),
+                          locked
+                              ? 'Invite only · enter the code to RSVP'
+                              : priv
+                                  ? (guestsGoing == 0 ? 'Guest list' : '$guestsGoing going')
+                                  : place.going == 0
+                                      ? 'Be the first going'
+                                      : (friends.isNotEmpty ? '${place.going} going · ${friends.length} friend${friends.length == 1 ? '' : 's'}' : '${place.going} going'),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w600),
@@ -198,10 +207,14 @@ class UpcomingPlaceCard extends StatelessWidget {
             const SizedBox(width: 8),
             _GoingPill(
               going: going,
-              onTap: () => requireAccountThen(context, store, () async {
-                final err = await store.togglePlaceRsvp(p.id);
-                if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-              }),
+              locked: locked,
+              onTap: priv
+                  // Private: RSVP (or enter the code) on its page.
+                  ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id)))
+                  : () => requireAccountThen(context, store, () async {
+                        final err = await store.togglePlaceRsvp(p.id);
+                        if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                      }),
             ),
           ],
         ),
@@ -212,8 +225,9 @@ class UpcomingPlaceCard extends StatelessWidget {
 
 class _GoingPill extends StatelessWidget {
   final bool going;
+  final bool locked;
   final VoidCallback onTap;
-  const _GoingPill({required this.going, required this.onTap});
+  const _GoingPill({required this.going, required this.onTap, this.locked = false});
 
   @override
   Widget build(BuildContext context) {
@@ -230,9 +244,9 @@ class _GoingPill extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(going ? Icons.check_rounded : Icons.add_rounded, size: 16, color: going ? tokens.onOrange : tokens.ink),
+            Icon(locked ? Icons.lock_outline_rounded : (going ? Icons.check_rounded : Icons.add_rounded), size: 16, color: going ? tokens.onOrange : tokens.ink),
             const SizedBox(width: 3),
-            Text(going ? 'Going' : 'Going?', style: TextStyle(color: going ? tokens.onOrange : tokens.ink, fontWeight: FontWeight.w800, fontSize: 12.5)),
+            Text(locked ? 'Code' : (going ? 'Going' : 'Going?'), style: TextStyle(color: going ? tokens.onOrange : tokens.ink, fontWeight: FontWeight.w800, fontSize: 12.5)),
           ],
         ),
       ),

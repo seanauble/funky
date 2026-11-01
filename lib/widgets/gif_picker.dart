@@ -189,7 +189,7 @@ class _GifSheetState extends State<_GifSheet> {
               ),
               Expanded(
                 child: _loading && _gifs.isEmpty
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const Center(child: CircularProgressIndicator.adaptive())
                     : _error != null
                         ? Center(child: Text(_error!, style: TextStyle(color: tokens.mute)))
                         : _gifs.isEmpty

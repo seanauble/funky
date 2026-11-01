@@ -5,6 +5,7 @@ import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import 'account_screen.dart';
 import '../data/models.dart';
@@ -177,39 +178,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     final wasPlaying = video != null && video.value.isPlaying;
     if (wasPlaying) await video.pause();
     if (!mounted) return;
-    final reason = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: const Color(0xFF17171C),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 14, 8, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12),
-                child: Text('Report this story', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 17)),
-              ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
-                child: Text(
-                  "What's wrong with it? Reports are private. The FUNKY team reviews every one.",
-                  style: TextStyle(color: Colors.white60, fontSize: 12.5),
-                ),
-              ),
-              for (final r in AppStore.storyReportReasons)
-                ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.flag_outlined, color: Colors.white70, size: 20),
-                  title: Text(r, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  onTap: () => Navigator.of(sheetContext).pop(r),
-                ),
-            ],
-          ),
-        ),
-      ),
+    final reason = await showIosActionSheet<String>(
+      context,
+      title: 'Report this story',
+      message: "What's wrong with it? Reports are private. The FUNKY team reviews every one.",
+      actions: [for (final r in AppStore.storyReportReasons) IosSheetAction(r, r)],
     );
     if (!mounted) return;
     if (reason == null) {

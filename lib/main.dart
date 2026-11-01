@@ -90,6 +90,21 @@ class _FunkyAppState extends State<FunkyApp> with WidgetsBindingObserver {
               brightness: theme.isDark ? Brightness.dark : Brightness.light,
               scaffoldBackgroundColor: tokens.bg,
               useMaterial3: true,
+              // iPhone feel: no Android ink ripples, iOS page swipes, and
+              // notices as a rounded banner instead of a flat bar.
+              platform: TargetPlatform.iOS,
+              splashFactory: NoSplash.splashFactory,
+              highlightColor: Colors.transparent,
+              splashColor: Colors.transparent,
+              snackBarTheme: SnackBarThemeData(
+                behavior: SnackBarBehavior.floating,
+                backgroundColor: theme.isDark ? const Color(0xFF2C2C30) : const Color(0xFF1C1C1E),
+                contentTextStyle: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.w600),
+                actionTextColor: tokens.orange,
+                elevation: 0,
+                insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
               extensions: [FunkyTokens(tokens)],
             ),
             home: const _AppRoot(),

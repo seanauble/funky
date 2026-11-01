@@ -89,7 +89,7 @@ class _ContactsFriendsScreenState extends State<ContactsFriendsScreen> {
         onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen(closeOnSuccess: true))),
       );
     } else if (_loading) {
-      body = const Center(child: Padding(padding: EdgeInsets.only(top: 60), child: CircularProgressIndicator()));
+      body = const Center(child: Padding(padding: EdgeInsets.only(top: 60), child: CircularProgressIndicator.adaptive()));
     } else if (_denied) {
       body = _Note(
         tokens: tokens,

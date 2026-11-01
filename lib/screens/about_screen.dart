@@ -10,7 +10,7 @@ import '../widgets/ui_widgets.dart';
 // own reference now (e.g. telling two TestFlight installs apart) — it's no
 // longer shown on this screen, which just says "Version 2" plainly instead
 // of "Version 1.0.0 (25)".
-const _appVersion = '3.0';
+const _appVersion = '4.0';
 // The build number now lives in lib/build_info.dart (crash reports use it).
 
 class AboutScreen extends StatelessWidget {

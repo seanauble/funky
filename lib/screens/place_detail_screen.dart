@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../data/models.dart';
@@ -18,6 +19,8 @@ import '../widgets/avatar_preview.dart';
 import '../widgets/full_art_image.dart';
 import '../widgets/org_badge.dart';
 import 'profile_parts.dart';
+import 'event_chat_screen.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 /// The little text box explaining what the verified checkmark (or the
 /// not-yet-verified "?") next to a place's name means — its own tap
@@ -52,7 +55,11 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     super.initState();
     // Everyone's posts tagged here, not just the recent ones.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<AppStore>().fetchPostsAt(widget.placeId);
+      if (!mounted) return;
+      final store = context.read<AppStore>();
+      store.fetchPostsAt(widget.placeId);
+      final p = store.rankedPlaceById(widget.placeId)?.place;
+      if (p != null && p.isPrivate && store.isEventInsider(p)) store.fetchEventGuests(widget.placeId);
     });
   }
 
@@ -77,27 +84,14 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   /// to approve it before it shows up for everyone (an admin's own goes
   /// live right away).
   Future<void> _addPicture(AppStore store) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: tokens.surface,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
-              title: Text('Choose from library', style: TextStyle(color: tokens.ink)),
-              onTap: () => Navigator.of(sheetContext).pop(ImageSource.gallery),
-            ),
-            ListTile(
-              leading: Icon(Icons.photo_camera_outlined, color: tokens.ink),
-              title: Text('Take a photo', style: TextStyle(color: tokens.ink)),
-              onTap: () => Navigator.of(sheetContext).pop(ImageSource.camera),
-            ),
-          ],
-        ),
-      ),
+    final source = await showIosActionSheet<ImageSource>(
+      context,
+      title: 'Upload a verified picture',
+      message: 'A FUNKY admin checks it first. You get 1,000 Funky Points once it\'s verified.',
+      actions: const [
+        IosSheetAction('Choose from Library', ImageSource.gallery),
+        IosSheetAction('Take a Photo', ImageSource.camera),
+      ],
     );
     if (source == null || !mounted) return;
     try {
@@ -135,9 +129,9 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   /// this screen is showing no longer exists.
   Future<void> _confirmDeletePlace(BuildContext context, AppStore store, String placeName) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showIosDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text('Delete $placeName?', style: TextStyle(color: tokens.ink)),
         content: Text(
@@ -176,6 +170,149 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     } else {
       store.setMove(p.id);
     }
+  }
+
+  /// Enter the host's code (iOS alert with a text box).
+  Future<void> _unlock(AppStore store, Place p) async {
+    if (!store.signedIn) {
+      await requireAccountThen(context, store, () {});
+      return;
+    }
+    final field = TextEditingController();
+    final code = await showIosDialog<String>(
+      context: context,
+      builder: (ctx) => IosAlert(
+        title: const Text('Enter the code'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Ask the host for it. It shows you the address and time, and lets you RSVP and join the chat.'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: field,
+                autofocus: true,
+                autocorrect: false,
+                textCapitalization: TextCapitalization.characters,
+                textAlign: TextAlign.center,
+                maxLength: 20,
+                style: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 2),
+                decoration: const InputDecoration(counterText: '', hintText: 'CODE', isDense: true),
+                onSubmitted: (v) => Navigator.of(ctx).pop(v),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(field.text), child: const Text('Unlock')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (code == null || code.trim().isEmpty || !mounted) return;
+    final err = await store.unlockPrivateEvent(p.id, code);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? "You're in! Let the host know if you're coming.")));
+  }
+
+  Future<void> _pickRsvp(AppStore store, Place p) async {
+    final status = await showIosActionSheet<String>(
+      context,
+      title: 'Are you going?',
+      actions: const [
+        IosSheetAction('Going', 'going', icon: Icons.check_circle_outline_rounded),
+        IosSheetAction('Maybe', 'maybe', icon: Icons.help_outline_rounded),
+        IosSheetAction("Can't go", 'cant', icon: Icons.cancel_outlined),
+      ],
+    );
+    if (status == null || !mounted) return;
+    final err = await store.setEventRsvp(p.id, status);
+    if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+  }
+
+  void _showGuests(BuildContext context, AppStore store, Place p) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: tokens.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => Consumer<AppStore>(
+        builder: (context, store, _) {
+          final guests = store.eventGuests(p.id);
+          const order = ['going', 'maybe', 'unlocked', 'cant'];
+          const titles = {'going': 'Going', 'maybe': 'Maybe', 'unlocked': "Hasn't answered", 'cant': "Can't go"};
+          final isHost = p.by == 'me';
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(sheetContext).size.height * 0.75),
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(0, 14, 0, 14),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+                    child: Text('Guest list', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 17)),
+                  ),
+                  if (isHost)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 0, 18, 6),
+                      child: Text('Hold someone to take them off the list.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                    ),
+                  if (guests.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
+                      child: Text('Nobody yet. Send people the code.', style: TextStyle(color: tokens.mute)),
+                    ),
+                  for (final status in order)
+                    if (guests.any((g) => g.status == status)) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 12, 18, 2),
+                        child: Text(
+                          '${titles[status]} · ${guests.where((g) => g.status == status).length}',
+                          style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w800, fontSize: 13),
+                        ),
+                      ),
+                      for (final g in guests.where((g) => g.status == status))
+                        Builder(builder: (context) {
+                          final person = g.uid == 'me' ? store.me : store.personById(g.uid);
+                          return ListTile(
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              openProfile(this.context, g.uid);
+                            },
+                            onLongPress: isHost && g.uid != 'me'
+                                ? () async {
+                                    final ok = await showIosActionSheet<bool>(
+                                      sheetContext,
+                                      message: 'Take @${person?.handle ?? 'them'} off the guest list? They\'d need the code again.',
+                                      actions: const [IosSheetAction('Remove from guest list', true, destructive: true)],
+                                    );
+                                    if (ok == true) await store.removeEventGuest(p.id, g.uid);
+                                  }
+                                : null,
+                            leading: person != null
+                                ? PersonAvatar(person: person, size: 38, preview: false)
+                                : FunkyAvatar(seed: g.uid, label: '?', size: 38),
+                            title: Text(
+                              g.uid == 'me' ? 'You' : '@${person?.handle ?? 'someone'}',
+                              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
+                            ),
+                            trailing: g.uid == p.by
+                                ? Text('Host', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5))
+                                : null,
+                          );
+                        }),
+                    ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   void _showGoing(BuildContext context, AppStore store, Place p) {
@@ -262,7 +399,19 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     final venueConfirmations = store.venueConfirmationCount(place.id);
     final iConfirmedVenue = store.hasConfirmedPlace(place.id);
     final badge = placeOrgBadge(p);
-    final startsAt = p.startsAt;
+    // Private events: the address, time, guest list and chat are only for
+    // the host and people who entered the code.
+    final priv = p.isPrivate;
+    final insider = store.isEventInsider(p);
+    final locked = priv && !insider;
+    final isHost = p.by == 'me';
+    final myRsvp = store.myEventStatus(p.id);
+    final secret = store.privateDetailsFor(p.id);
+    final startsAt = p.shownTime;
+    final isParty = const {PlaceKind.party, PlaceKind.event, PlaceKind.tailgate, PlaceKind.frat}.contains(p.kind);
+    final guestsGoing = store.eventGuestCount(p.id, 'going');
+    final guestsMaybe = store.eventGuestCount(p.id, 'maybe');
+    final messageCount = store.eventMessages(p.id).length;
     Place? host;
     if (p.hostPlaceId != null) {
       for (final h in store.places) {
@@ -273,7 +422,12 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       }
     }
     final hosted = store.eventsHostedAt(p.id);
-    final goingPeople = store.peopleGoingToPlace(p.id);
+    final goingPeople = priv
+        ? [
+            for (final g in store.eventGuests(p.id).where((g) => g.status == 'going'))
+              if ((g.uid == 'me' ? store.me : store.personById(g.uid)) case final person?) person,
+          ]
+        : store.peopleGoingToPlace(p.id);
     final friendsGoing = store.friendsGoingToPlace(p.id).length;
     final isVenue = p.kind == PlaceKind.bar || p.kind == PlaceKind.club;
     final artUrl = isVenue ? (p.photoUrl ?? p.coverUrl) : (p.coverUrl ?? p.photoUrl);
@@ -365,14 +519,47 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
 
     final address = p.address.trim().isEmpty || p.address == 'Address not given' ? p.name : p.address;
     final details = <Widget>[
-      infoRow(
-        Icons.location_on_outlined,
-        address,
-        '${placeKindLabel(p.kind)} · ${place.distance < 0.1 ? 'right by you' : '${formatMiles(place.distance)} away'}',
-        onTap: () => openDirections(context, p.lat, p.lng, p.name),
-      ),
+      if (locked)
+        _PrivateLockCard(
+          night: p.startsAt == null ? 'Tonight' : (tonight ? 'Tonight' : dayLabel(p.startsAt!)),
+          signedIn: store.signedIn,
+          onUnlock: () => _unlock(store, p),
+        )
+      else
+        infoRow(
+          Icons.location_on_outlined,
+          address,
+          '${priv ? '🔒 Private ${placeKindLabel(p.kind).toLowerCase()}' : placeKindLabel(p.kind)} · ${place.distance < 0.1 ? 'right by you' : '${formatMiles(place.distance)} away'}',
+          onTap: () => openDirections(context, p.lat, p.lng, p.name),
+        ),
       if (startsAt != null)
         infoRow(Icons.schedule_rounded, clockLabel(startsAt), '${dayLabel(startsAt)} · ${partOfNightLabel(startsAt)}'),
+      if (priv && insider) ...[
+        _RsvpCard(
+          status: myRsvp,
+          going: guestsGoing,
+          maybe: guestsMaybe,
+          onPick: (s) async {
+            final err = await store.setEventRsvp(p.id, s);
+            if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+          },
+          onGuests: () => _showGuests(context, store, p),
+        ),
+        if (isHost && secret?.passcode != null)
+          _HostCodeCard(
+            code: secret!.passcode!,
+            onShare: () => shareFunkyPlace(context, p.name, when: p.startsAt == null ? null : dayLabel(p.startsAt!), code: secret.passcode),
+          ),
+      ],
+      if (isParty && insider)
+        infoRow(
+          Icons.forum_outlined,
+          'Event chat',
+          messageCount > 0
+              ? (messageCount == 1 ? '1 message' : '$messageCount messages')
+              : (isHost ? 'Answer questions and share the plan' : 'Ask the host anything, make plans'),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: p.id))),
+        ),
       if (p.eventType != null)
         infoRow(
           Icons.celebration_outlined,
@@ -387,12 +574,13 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           placeKindLabel(host.kind),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: host!.id))),
         ),
-      infoRow(
-        Icons.people_outline_rounded,
-        place.going == 1 ? '1 going' : '${place.going} going',
-        friendsGoing > 0 ? (friendsGoing == 1 ? '1 friend' : '$friendsGoing friends') : null,
-        onTap: () => _showGoing(context, store, p),
-      ),
+      if (!priv)
+        infoRow(
+          Icons.people_outline_rounded,
+          place.going == 1 ? '1 going' : '${place.going} going',
+          friendsGoing > 0 ? (friendsGoing == 1 ? '1 friend' : '$friendsGoing friends') : null,
+          onTap: () => _showGoing(context, store, p),
+        ),
       if (store.hasBeenTo(place.id))
         Padding(
           padding: const EdgeInsets.only(top: 4, bottom: 6),
@@ -739,6 +927,22 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
             ),
           ];
 
+    final rsvpButton = ElevatedButton.icon(
+      onPressed: over ? null : () => locked ? _unlock(store, p) : _pickRsvp(store, p),
+      icon: Icon(locked ? Icons.lock_open_rounded : (myRsvp == 'going' ? Icons.check_rounded : Icons.event_available_rounded), color: tokens.onOrange, size: 22),
+      label: Text(
+        over ? 'Over' : (locked ? 'Enter code' : (myRsvp == 'going' ? 'Going' : (myRsvp == 'maybe' ? 'Maybe' : (myRsvp == 'cant' ? "Can't go" : 'RSVP')))),
+        style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800, fontSize: 16),
+      ),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: myRsvp == 'going' ? tokens.brand : tokens.orange,
+        disabledBackgroundColor: tokens.raised,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+
     final goingButton = ElevatedButton.icon(
       onPressed: over ? null : () => _toggleGoing(store, p, upcoming: upcoming, going: going),
       icon: Icon(going ? Icons.check_rounded : Icons.add_rounded, color: going ? tokens.onOrange : tokens.onOrange, size: 22),
@@ -765,7 +969,10 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           IconButton(
             tooltip: 'Share',
             icon: const Icon(Icons.ios_share_rounded),
-            onPressed: () => shareFunkyPlace(context, p.name, when: startsAt == null ? null : whenLabel(startsAt)),
+            onPressed: () => priv
+                ? shareFunkyPlace(context, p.name,
+                    when: p.startsAt == null ? null : dayLabel(p.startsAt!), code: isHost ? secret?.passcode : null)
+                : shareFunkyPlace(context, p.name, when: startsAt == null ? null : whenLabel(startsAt)),
           ),
         ],
       ),
@@ -775,7 +982,8 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
           child: Row(
             children: [
-              Expanded(flex: 3, child: goingButton),
+              Expanded(flex: 3, child: priv ? rsvpButton : goingButton),
+              if (!locked) ...[
               const SizedBox(width: 10),
               Expanded(
                 flex: 2,
@@ -791,6 +999,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ),
                 ),
               ),
+              ],
             ],
           ),
         ),
@@ -818,15 +1027,18 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            startsAt != null
-                ? (upcoming ? '${clockLabel(startsAt)} · ${nightsAwayLabel(p.night!)}' : clockLabel(startsAt))
-                : (p.eventType != null ? placeEventTypeLabel(p.eventType) : placeKindLabel(p.kind)),
+            locked
+                ? (upcoming ? '🔒 Private · ${dayLabel(p.startsAt!)}' : '🔒 Private · tonight')
+                : startsAt != null
+                    ? (upcoming ? '${clockLabel(startsAt)} · ${nightsAwayLabel(p.night!)}' : clockLabel(startsAt))
+                    : (p.eventType != null ? placeEventTypeLabel(p.eventType) : placeKindLabel(p.kind)),
             style: TextStyle(color: tokens.mute, fontSize: 21, fontWeight: FontWeight.w500),
           ),
           const SizedBox(height: 12),
+          if (!locked)
           GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => _showGoing(context, store, p),
+            onTap: () => priv ? _showGuests(context, store, p) : _showGoing(context, store, p),
             child: Row(
               children: [
                 if (goingPeople.isNotEmpty)
@@ -856,7 +1068,9 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ),
                 const SizedBox(width: 4),
                 Text(
-                  place.going == 1 ? '1 going' : '${place.going} going',
+                  priv
+                      ? '$guestsGoing going${guestsMaybe > 0 ? ' · $guestsMaybe maybe' : ''}'
+                      : (place.going == 1 ? '1 going' : '${place.going} going'),
                   style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 16),
                 ),
                 Icon(Icons.chevron_right_rounded, color: tokens.mute),
@@ -1049,7 +1263,7 @@ class _PicturePrompt extends StatelessWidget {
             child: OutlinedButton.icon(
               onPressed: uploading ? null : onAdd,
               icon: uploading
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
                   : Icon(Icons.add_a_photo_outlined, size: 18, color: tokens.ink),
               label: Text(
                 uploading
@@ -1089,6 +1303,197 @@ class _PicturePrompt extends StatelessWidget {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What someone without the code sees on a private event.
+class _PrivateLockCard extends StatelessWidget {
+  final String night;
+  final bool signedIn;
+  final VoidCallback onUnlock;
+  const _PrivateLockCard({required this.night, required this.signedIn, required this.onUnlock});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Container(
+      margin: const EdgeInsets.only(top: 6, bottom: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.15), shape: BoxShape.circle),
+                child: Icon(Icons.lock_rounded, color: tokens.brand, size: 21),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Private event · $night', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
+                    const SizedBox(height: 2),
+                    Text('Address and time are for guests only.', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            signedIn
+                ? 'Got invited? Enter the code from the host to see where and when, RSVP, and join the event chat.'
+                : 'Make an account, then enter the code from the host to see where and when, RSVP, and join the event chat.',
+            style: TextStyle(color: tokens.ink, fontSize: 13.5, height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: onUnlock,
+              icon: Icon(Icons.lock_open_rounded, color: tokens.onOrange, size: 19),
+              label: Text(signedIn ? 'Enter code' : 'Make an account', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: tokens.orange,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Going · Maybe · Can't go, with how many said each, and the guest list.
+class _RsvpCard extends StatelessWidget {
+  final String? status;
+  final int going;
+  final int maybe;
+  final ValueChanged<String> onPick;
+  final VoidCallback onGuests;
+  const _RsvpCard({required this.status, required this.going, required this.maybe, required this.onPick, required this.onGuests});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    Widget option(String value, String label, IconData icon) {
+      final on = status == value;
+      return Expanded(
+        child: GestureDetector(
+          onTap: () => onPick(value),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: on ? tokens.brand : tokens.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: on ? tokens.brand : tokens.line),
+            ),
+            child: Column(
+              children: [
+                Icon(icon, size: 20, color: on ? tokens.onOrange : tokens.ink),
+                const SizedBox(height: 3),
+                Text(label, style: TextStyle(color: on ? tokens.onOrange : tokens.ink, fontWeight: FontWeight.w800, fontSize: 13)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6, bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(status == null || status == 'unlocked' ? 'Are you going?' : 'Your RSVP', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              option('going', 'Going', Icons.check_circle_outline_rounded),
+              const SizedBox(width: 8),
+              option('maybe', 'Maybe', Icons.help_outline_rounded),
+              const SizedBox(width: 8),
+              option('cant', "Can't go", Icons.cancel_outlined),
+            ],
+          ),
+          const SizedBox(height: 10),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onGuests,
+            child: Row(
+              children: [
+                Icon(Icons.people_outline_rounded, color: tokens.mute, size: 19),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '$going going${maybe > 0 ? ' · $maybe maybe' : ''} · see the guest list',
+                    style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, color: tokens.mute),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The host's code, to copy or send to people.
+class _HostCodeCard extends StatelessWidget {
+  final String code;
+  final VoidCallback onShare;
+  const _HostCodeCard({required this.code, required this.onShare});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        children: [
+          Icon(Icons.key_rounded, color: tokens.brand, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Your code', style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w700)),
+                Text(code, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w900, fontSize: 20, letterSpacing: 3)),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Copy',
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: code));
+              if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Code copied.')));
+            },
+            icon: Icon(Icons.copy_rounded, color: tokens.ink, size: 21),
+          ),
+          IconButton(
+            tooltip: 'Send invite',
+            onPressed: onShare,
+            icon: Icon(Icons.ios_share_rounded, color: tokens.ink, size: 21),
+          ),
         ],
       ),
     );

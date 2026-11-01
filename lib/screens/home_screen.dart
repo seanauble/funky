@@ -399,8 +399,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             )
           else ...[
-            PostsGrid(posts: store.rankPosts(store.postsNearby).take(6).toList()),
-            if (store.postsNearby.length > 6)
+            for (final p in store.rankPosts(store.postsNearby).take(5)) ...[
+              PostCard(key: ValueKey('home_${p.id}'), post: p),
+              Divider(height: 18, thickness: 0.5, color: tokens.line),
+            ],
+            if (store.postsNearby.length > 5)
               Center(
                 child: TextButton(
                   onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen())),
@@ -515,7 +518,7 @@ extension on _HomeKind {
   bool matches(PlaceKind? kind) => this == _HomeKind.all || (kind != null && kinds.contains(kind));
 }
 
-/// Tonight · Upcoming · Friends — big text tabs with a short orange line
+/// Tonight · Upcoming · Friends — big text tabs with a full orange line
 /// under the one you're on. No boxes.
 class _SideSwitch extends StatelessWidget {
   final _HomeSide side;
@@ -537,8 +540,9 @@ class _SideSwitch extends StatelessWidget {
         onTap: () => onChanged(s),
         child: Padding(
           padding: const EdgeInsets.only(right: 22, top: 4, bottom: 2),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: IntrinsicWidth(
+           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(
@@ -562,14 +566,24 @@ class _SideSwitch extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 4),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
+              // A full line under the whole label of the tab you're on.
+              TweenAnimationBuilder<double>(
+                tween: Tween(end: active ? 1 : 0),
+                duration: const Duration(milliseconds: 220),
                 curve: Curves.easeOut,
-                height: 3,
-                width: active ? 26 : 0,
-                decoration: BoxDecoration(color: tokens.orange, borderRadius: BorderRadius.circular(2)),
+                builder: (context, f, _) => Align(
+                  alignment: Alignment.centerLeft,
+                  child: FractionallySizedBox(
+                    widthFactor: f,
+                    child: Container(
+                      height: 3,
+                      decoration: BoxDecoration(color: tokens.orange, borderRadius: BorderRadius.circular(2)),
+                    ),
+                  ),
+                ),
               ),
             ],
+           ),
           ),
         ),
       );
@@ -681,7 +695,12 @@ class _TonightKind extends StatelessWidget {
               builder: (_) => PostsFeedScreen(kinds: kind.kinds, title: '${kind.label} posts'),
             )),
           ),
-          PostsGrid(posts: posts.take(6).toList()),
+          ...[
+            for (final p in posts.take(5)) ...[
+              PostCard(key: ValueKey('h_${p.id}'), post: p),
+              Divider(height: 18, thickness: 0.5, color: tokens.line),
+            ],
+          ],
           if (posts.length > 6)
             Center(
               child: TextButton(
@@ -811,7 +830,12 @@ class _FriendsTonight extends StatelessWidget {
         if (friendPosts.isEmpty)
           EmptyNote(text: kind == _HomeKind.all ? 'None of your friends have posted yet.' : 'No posts from friends at ${kind.plural} yet.')
         else ...[
-          PostsGrid(posts: friendPosts.take(6).toList()),
+          ...[
+            for (final p in friendPosts.take(5)) ...[
+              PostCard(key: ValueKey('h_${p.id}'), post: p),
+              Divider(height: 18, thickness: 0.5, color: tokens.line),
+            ],
+          ],
           if (friendPosts.length > 6)
             Center(
               child: TextButton(
@@ -969,7 +993,8 @@ class _PlacesOfKind extends StatelessWidget {
                         Text(
                           [
                             p.place.eventType != null ? placeEventTypeLabel(p.place.eventType) : placeKindLabel(p.kind),
-                            if (p.place.startsAt != null) clockLabel(p.place.startsAt!),
+                            if (p.place.shownTime != null) clockLabel(p.place.shownTime!),
+                            if (p.place.isPrivate) '🔒 Private',
                             p.distance < 0.1 ? 'right by you' : '${formatMiles(p.distance)} away',
                           ].join(' · '),
                           style: TextStyle(color: tokens.mute, fontSize: 12),
@@ -981,7 +1006,7 @@ class _PlacesOfKind extends StatelessWidget {
                           return Padding(
                             padding: const EdgeInsets.only(top: 2),
                             child: Text(
-                              '${placeEventTypeEmoji(ev.eventType)} ${ev.name} tonight${ev.startsAt != null ? ' · ${clockLabel(ev.startsAt!)}' : ''}',
+                              '${placeEventTypeEmoji(ev.eventType)} ${ev.name} tonight${ev.shownTime != null ? ' · ${clockLabel(ev.shownTime!)}' : ''}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12),

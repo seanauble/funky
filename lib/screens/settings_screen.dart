@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../theme/theme_provider.dart';
@@ -182,10 +183,10 @@ class SettingsScreen extends StatelessWidget {
 Future<void> _confirmDeleteAccount(BuildContext context, AppStore store) async {
   final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
   final controller = TextEditingController();
-  final ok = await showDialog<bool>(
+  final ok = await showIosDialog<bool>(
     context: context,
     builder: (d) => StatefulBuilder(
-      builder: (d, setState) => AlertDialog(
+      builder: (d, setState) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text('Delete your account?', style: TextStyle(color: tokens.ink)),
         content: Column(
@@ -228,7 +229,7 @@ Future<void> _confirmDeleteAccount(BuildContext context, AppStore store) async {
   if (ok != true || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
   final navigator = Navigator.of(context);
-  showDialog<void>(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+  showIosDialog<void>(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator.adaptive()));
   final err = await store.deleteAccount();
   navigator.pop(); // the spinner
   if (err != null) {
@@ -277,7 +278,7 @@ class _SwitchRow extends StatelessWidget {
       child: Row(
         children: [
           Expanded(child: Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700))),
-          Switch(value: value, activeColor: tokens.brand, onChanged: onChanged),
+          Switch.adaptive(value: value, activeColor: tokens.brand, onChanged: onChanged),
         ],
       ),
     );
@@ -319,7 +320,7 @@ class _RadiusCardState extends State<_RadiusCard> {
               Text(radiusShortLabel(miles), style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
             ],
           ),
-          Slider(
+          Slider.adaptive(
             value: value,
             min: 0,
             max: (stops.length - 1).toDouble(),

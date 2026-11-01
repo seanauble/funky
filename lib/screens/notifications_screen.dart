@@ -9,6 +9,7 @@ import '../root_shell.dart';
 import 'account_screen.dart';
 import 'admin_panel_screen.dart';
 import 'dm_thread_screen.dart';
+import 'event_chat_screen.dart';
 import 'friend_requests_screen.dart';
 import 'group_thread_screen.dart';
 import 'place_detail_screen.dart';
@@ -52,6 +53,10 @@ class NotificationsScreen extends StatelessWidget {
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
+      case 'event_chat':
+        final placeId = n.data['place_id'] as String?;
+        if (placeId == null) return;
+        navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
       case 'post_comment':
       case 'post_like':
       case 'friend_post':
@@ -172,6 +177,8 @@ class _NotificationTile extends StatelessWidget {
         return Icons.flag_outlined;
       case 'post_comment':
         return Icons.mode_comment_outlined;
+      case 'event_chat':
+        return Icons.forum_outlined;
       case 'post_like':
         return Icons.local_fire_department_outlined;
       case 'friend_post':

@@ -1,3 +1,4 @@
+import '../widgets/ios_ui.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -30,6 +31,24 @@ class _PostCardState extends State<PostCard> {
   int _page = 0;
   bool _burst = false;
   Timer? _burstTimer;
+  // Each first photo's real shape, so it shows uncropped (within limits).
+  static final Map<String, double> _aspects = {};
+
+  void _learnAspect(String url) {
+    if (_aspects.containsKey(url)) return;
+    _aspects[url] = 4 / 5;
+    final stream = NetworkImage(url).resolve(const ImageConfiguration());
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener((info, _) {
+      final h = info.image.height;
+      if (h > 0) _aspects[url] = info.image.width / h;
+      stream.removeListener(listener);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }, onError: (_, _) => stream.removeListener(listener));
+    stream.addListener(listener);
+  }
 
   @override
   void dispose() {
@@ -74,33 +93,13 @@ class _PostCardState extends State<PostCard> {
 
   Future<void> _menu(AppStore store, Post post) async {
     final mine = post.uid == 'me';
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!mine)
-              ListTile(
-                leading: const Icon(Icons.person_outline),
-                title: const Text('View profile'),
-                onTap: () => Navigator.of(sheetContext).pop('profile'),
-              ),
-            if (mine || store.isAdmin)
-              ListTile(
-                leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                title: Text(mine ? 'Delete post' : 'Delete post (Admin)', style: const TextStyle(color: Colors.redAccent)),
-                onTap: () => Navigator.of(sheetContext).pop('delete'),
-              ),
-            if (!mine)
-              ListTile(
-                leading: const Icon(Icons.flag_outlined),
-                title: const Text('Report post'),
-                onTap: () => Navigator.of(sheetContext).pop('report'),
-              ),
-          ],
-        ),
-      ),
+    final choice = await showIosActionSheet<String>(
+      context,
+      actions: [
+        if (!mine) const IosSheetAction('View profile', 'profile'),
+        if (!mine) const IosSheetAction('Report post', 'report'),
+        if (mine || store.isAdmin) IosSheetAction(mine ? 'Delete post' : 'Delete post (Admin)', 'delete', destructive: true),
+      ],
     );
     if (!mounted || choice == null) return;
     if (choice == 'profile') {
@@ -114,9 +113,9 @@ class _PostCardState extends State<PostCard> {
 
   Future<void> _confirmDelete(AppStore store, Post post) async {
     final messenger = ScaffoldMessenger.of(context);
-    final ok = await showDialog<bool>(
+    final ok = await showIosDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => IosAlert(
         title: const Text('Delete this post?'),
         content: const Text('It comes down for everyone, with its likes and comments.'),
         actions: [
@@ -133,31 +132,11 @@ class _PostCardState extends State<PostCard> {
 
   Future<void> _report(AppStore store, Post post) async {
     final messenger = ScaffoldMessenger.of(context);
-    final reason = await showModalBottomSheet<String>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 2),
-              child: Text('Report this post', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
-              child: Text('Reports are private. The FUNKY team reviews every one.', style: TextStyle(fontSize: 12.5)),
-            ),
-            for (final r in AppStore.storyReportReasons)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.flag_outlined, size: 20),
-                title: Text(r),
-                onTap: () => Navigator.of(sheetContext).pop(r),
-              ),
-          ],
-        ),
-      ),
+    final reason = await showIosActionSheet<String>(
+      context,
+      title: 'Report this post',
+      message: 'Reports are private. The FUNKY team reviews every one.',
+      actions: [for (final r in AppStore.storyReportReasons) IosSheetAction(r, r)],
     );
     if (reason == null) return;
     final msg = await store.reportPost(post, reason);
@@ -193,10 +172,10 @@ class _PostCardState extends State<PostCard> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, color: color, size: 24, semanticLabel: tip),
+                Icon(icon, color: color, size: 25, semanticLabel: tip),
                 if (count != null) ...[
                   const SizedBox(width: 5),
-                  Text('$count', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14.5)),
+                  Text('$count', style: TextStyle(color: color == tokens.brand ? tokens.brand : tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
                 ],
               ],
             ),
@@ -224,10 +203,10 @@ class _PostCardState extends State<PostCard> {
                   behavior: HitTestBehavior.opaque,
                   onTap: () => openProfile(context, post.uid),
                   child: person != null
-                      ? PersonAvatar(person: person, size: 40, preview: false)
-                      : FunkyAvatar(seed: post.uid, label: '?', size: 40),
+                      ? PersonAvatar(person: person, size: 46, preview: false)
+                      : FunkyAvatar(seed: post.uid, label: '?', size: 46),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 11),
                 Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
@@ -236,13 +215,13 @@ class _PostCardState extends State<PostCard> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         person != null
-                            ? StyledName(person: person, text: '@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5))
-                            : Text('@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
+                            ? StyledName(person: person, text: '@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5))
+                            : Text('@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5)),
                         Text(
                           post.isTextOnly && pinTitle != null ? '${timeAgoLabel(post.t)} · 📍 $pinTitle' : timeAgoLabel(post.t),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                          style: TextStyle(color: tokens.mute, fontSize: 13),
                         ),
                         if (tonightRank != null || wonRank != null)
                           Padding(
@@ -307,13 +286,15 @@ class _PostCardState extends State<PostCard> {
             ),
           ] else ...[
             // Photos, with the place pinned on top.
+            // Edge to edge and close to its real shape (tall phone photos
+            // go up to 7:10 before any cropping).
             if (urls.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: EdgeInsets.zero,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(FlatCards.of(context) ? 12 : 0),
                 child: AspectRatio(
-                  aspectRatio: 4 / 5,
+                  aspectRatio: (_aspects[urls.first] ?? 4 / 5).clamp(0.7, 1.91),
                   child: GestureDetector(
                     onDoubleTap: () => _like(store, post, onlyLike: true),
                     onTap: widget.inDetail ? null : _openDetail,
@@ -328,6 +309,10 @@ class _PostCardState extends State<PostCard> {
                             itemBuilder: (_, i) => Image.network(
                               urls[i],
                               fit: BoxFit.cover,
+                              frameBuilder: (context, child, frame, sync) {
+                                if (frame != null && i == 0) _learnAspect(urls[i]);
+                                return child;
+                              },
                               loadingBuilder: (context, child, progress) => progress == null
                                   ? child
                                   : Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: tokens.mute))),
@@ -414,9 +399,9 @@ class _PostCardState extends State<PostCard> {
             padding: const EdgeInsets.fromLTRB(6, 4, 12, 0),
             child: Row(
               children: [
-                action(liked ? Icons.favorite : Icons.favorite_border, liked ? Colors.redAccent : tokens.ink, post.likes.length, () => _like(store, post), liked ? 'Unlike' : 'Like'),
-                action(disliked ? Icons.thumb_down : Icons.thumb_down_outlined, disliked ? tokens.ink : tokens.mute, post.dislikes.length, () => _dislike(store, post), disliked ? 'Undo dislike' : 'Dislike'),
-                action(Icons.mode_comment_outlined, tokens.ink, post.commentCount, widget.inDetail ? null : _openDetail, 'Comments'),
+                action(liked ? Icons.favorite : Icons.favorite_border, liked ? tokens.brand : tokens.ink, post.likes.length, () => _like(store, post), liked ? 'Unlike' : 'Like'),
+                action(Icons.chat_bubble_outline_rounded, tokens.ink, post.commentCount, widget.inDetail ? null : _openDetail, 'Comments'),
+                action(disliked ? Icons.thumb_down : Icons.thumb_down_outlined, disliked ? tokens.ink : tokens.mute, post.dislikes.isEmpty ? null : post.dislikes.length, () => _dislike(store, post), disliked ? 'Undo dislike' : 'Dislike'),
                 const Spacer(),
                 if (urls.length > 1)
                   for (var i = 0; i < urls.length; i++)
@@ -426,6 +411,11 @@ class _PostCardState extends State<PostCard> {
                       margin: const EdgeInsets.symmetric(horizontal: 2),
                       decoration: BoxDecoration(shape: BoxShape.circle, color: i == _page ? tokens.orange : tokens.line),
                     ),
+                IconButton(
+                  tooltip: store.isPostSaved(post.id) ? 'Saved' : 'Save',
+                  onPressed: () => store.toggleSavePost(post.id),
+                  icon: Icon(store.isPostSaved(post.id) ? Icons.bookmark : Icons.bookmark_border, color: store.isPostSaved(post.id) ? tokens.brand : tokens.ink, size: 26),
+                ),
               ],
             ),
           ),
@@ -464,7 +454,7 @@ class _CommentPreview extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          person != null ? PersonAvatar(person: person, size: 28, preview: false) : FunkyAvatar(seed: comment.uid, label: '?', size: 28),
+          person != null ? PersonAvatar(person: person, size: 34, preview: false) : FunkyAvatar(seed: comment.uid, label: '?', size: 34),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -910,7 +900,9 @@ class PostsFeedScreen extends StatelessWidget {
   // One person's posts (newest first), or the posts tagged at one place.
   final String? byUid;
   final String? placeId;
-  const PostsFeedScreen({super.key, this.friends = false, this.kinds, this.title, this.byUid, this.placeId});
+  // Posts you bookmarked.
+  final bool saved;
+  const PostsFeedScreen({super.key, this.friends = false, this.kinds, this.title, this.byUid, this.placeId, this.saved = false});
 
   @override
   Widget build(BuildContext context) {
@@ -920,7 +912,9 @@ class PostsFeedScreen extends StatelessWidget {
     final uid = byUid;
     final at = placeId;
     final List<Post> posts;
-    if (uid != null) {
+    if (saved) {
+      posts = store.savedPosts;
+    } else if (uid != null) {
       posts = store.postsBy(uid);
     } else if (at != null) {
       posts = store.rankPosts(store.postsAt(at));
@@ -983,8 +977,10 @@ class PostDetailScreen extends StatefulWidget {
 
 class _PostDetailScreenState extends State<PostDetailScreen> {
   final _controller = TextEditingController();
+  final _focus = FocusNode();
   bool _loading = true;
   bool _sending = false;
+  PostComment? _replyTo;
 
   @override
   void initState() {
@@ -1000,6 +996,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   @override
   void dispose() {
     _controller.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -1008,7 +1005,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     if (text.isEmpty || _sending) return;
     requireAccountThen(context, store, () async {
       setState(() => _sending = true);
-      final err = await store.addComment(widget.postId, text);
+      final err = await store.addComment(widget.postId, text, replyTo: _replyTo?.id);
       if (!mounted) return;
       setState(() => _sending = false);
       if (err != null) {
@@ -1016,13 +1013,62 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
         return;
       }
       _controller.clear();
+      setState(() => _replyTo = null);
     });
   }
 
+  void _startReply(AppStore store, PostComment c) {
+    final handle = store.personById(c.uid)?.handle;
+    setState(() => _replyTo = c);
+    // Start the reply with their @ so it's clear who you're answering.
+    if (handle != null && c.uid != 'me' && !_controller.text.contains('@$handle')) {
+      _controller.text = '@$handle ${_controller.text}';
+      _controller.selection = TextSelection.collapsed(offset: _controller.text.length);
+    }
+    _focus.requestFocus();
+  }
+
+  Future<void> _like(AppStore store, PostComment c) async {
+    final err = await store.toggleCommentLike(c);
+    if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+  }
+
+  /// Comments in threads: each top-level comment, then the replies to it
+  /// (and replies to those), oldest first.
+  List<(PostComment, bool)> _threaded(List<PostComment> comments) {
+    final byId = {for (final c in comments) c.id: c};
+    String rootOf(PostComment c) {
+      var cur = c;
+      var hops = 0;
+      while (cur.replyTo != null && byId.containsKey(cur.replyTo) && hops < 20) {
+        cur = byId[cur.replyTo]!;
+        hops++;
+      }
+      return cur.id;
+    }
+
+    final replies = <String, List<PostComment>>{};
+    final tops = <PostComment>[];
+    for (final c in comments) {
+      final root = rootOf(c);
+      if (root == c.id) {
+        tops.add(c);
+      } else {
+        (replies[root] ??= []).add(c);
+      }
+    }
+    return [
+      for (final t in tops) ...[
+        (t, false),
+        for (final r in replies[t.id] ?? const <PostComment>[]) (r, true),
+      ],
+    ];
+  }
+
   Future<void> _deleteComment(AppStore store, PostComment c) async {
-    final ok = await showDialog<bool>(
+    final ok = await showIosDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => IosAlert(
         title: const Text('Delete this comment?'),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
@@ -1046,7 +1092,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       body: post == null
           ? Center(
               child: _loading
-                  ? const CircularProgressIndicator()
+                  ? const CircularProgressIndicator.adaptive()
                   : Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text("This post isn't around anymore.", style: TextStyle(color: tokens.mute)),
@@ -1064,11 +1110,14 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                         style: TextStyle(color: comments.isEmpty ? tokens.mute : tokens.ink, fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 8),
-                      for (final c in comments)
+                      for (final (c, isReply) in _threaded(comments))
                         _CommentRow(
                           comment: c,
+                          isReply: isReply,
                           canDelete: c.uid == 'me' || post.uid == 'me' || store.isAdmin,
                           onDelete: () => _deleteComment(store, c),
+                          onReply: () => requireAccountThen(context, store, () => _startReply(store, c)),
+                          onLike: () => requireAccountThen(context, store, () => _like(store, c)),
                         ),
                     ],
                   ),
@@ -1078,17 +1127,44 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                   decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
                   child: SafeArea(
                     top: false,
-                    child: Row(
+                    child: Column(
+                     mainAxisSize: MainAxisSize.min,
+                     children: [
+                      if (_replyTo != null)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 6),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Replying to @${_replyTo!.uid == 'me' ? store.myChatHandle : (store.personById(_replyTo!.uid)?.handle ?? 'someone')}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              GestureDetector(
+                                onTap: () => setState(() => _replyTo = null),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  child: Icon(Icons.close_rounded, size: 18, color: tokens.mute),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      Row(
                       children: [
                         Expanded(
                           child: TextField(
                             controller: _controller,
+                            focusNode: _focus,
                             maxLength: AppStore.maxCommentLength,
                             minLines: 1,
                             maxLines: 4,
                             textCapitalization: TextCapitalization.sentences,
                             decoration: InputDecoration(
-                              hintText: 'Add a comment…',
+                              hintText: _replyTo != null ? 'Write a reply…' : 'Add a comment…',
                               hintStyle: TextStyle(color: tokens.mute),
                               filled: true,
                               fillColor: tokens.raised,
@@ -1105,10 +1181,12 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                           tooltip: 'Send',
                           onPressed: _sending ? null : () => _send(store),
                           icon: _sending
-                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator.adaptive(strokeWidth: 2))
                               : Icon(Icons.send_rounded, color: tokens.orange),
                         ),
                       ],
+                      ),
+                     ],
                     ),
                   ),
                 ),
@@ -1120,29 +1198,42 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
 class _CommentRow extends StatelessWidget {
   final PostComment comment;
+  final bool isReply;
   final bool canDelete;
   final VoidCallback onDelete;
-  const _CommentRow({required this.comment, required this.canDelete, required this.onDelete});
+  final VoidCallback onReply;
+  final VoidCallback onLike;
+  const _CommentRow({
+    required this.comment,
+    required this.canDelete,
+    required this.onDelete,
+    required this.onReply,
+    required this.onLike,
+    this.isReply = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
     final person = store.personById(comment.uid);
-    final handle = person?.handle ?? 'someone';
+    final handle = comment.uid == 'me' ? store.myChatHandle : (person?.handle ?? 'someone');
+    final size = isReply ? 24.0 : 30.0;
+    final meta = TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w700);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onLongPress: canDelete ? onDelete : null,
+      onDoubleTap: comment.likedByMe ? null : onLike,
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 12),
+        padding: EdgeInsets.only(bottom: 14, left: isReply ? 40 : 0),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             GestureDetector(
               onTap: () => openProfile(context, comment.uid),
               child: person != null
-                  ? PersonAvatar(person: person, size: 28, preview: false)
-                  : FunkyAvatar(seed: comment.uid, label: '?', size: 28),
+                  ? PersonAvatar(person: person, size: size, preview: false)
+                  : FunkyAvatar(seed: comment.uid, label: '?', size: size),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -1153,12 +1244,45 @@ class _CommentRow extends StatelessWidget {
                     TextSpan(text: '@$handle ', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
                     TextSpan(text: maskBadWords(comment.text), style: TextStyle(color: tokens.ink)),
                   ])),
-                  const SizedBox(height: 2),
-                  Text(
-                    canDelete ? '${timeAgoLabel(comment.t)} · hold to delete' : timeAgoLabel(comment.t),
-                    style: TextStyle(color: tokens.mute, fontSize: 11.5),
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Text(timeAgoLabel(comment.t), style: TextStyle(color: tokens.mute, fontSize: 12)),
+                      const SizedBox(width: 12),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: onReply,
+                        child: Text('Reply', style: meta),
+                      ),
+                      if (canDelete) ...[
+                        const SizedBox(width: 12),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: onDelete,
+                          child: Text('Delete', style: meta),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
+              ),
+            ),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onLike,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 10, top: 2, right: 2),
+                child: Column(
+                  children: [
+                    Icon(
+                      comment.likedByMe ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                      size: 16,
+                      color: comment.likedByMe ? tokens.brand : tokens.mute,
+                    ),
+                    if (comment.likes > 0)
+                      Text('${comment.likes}', style: TextStyle(color: tokens.mute, fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ],
+                ),
               ),
             ),
           ],

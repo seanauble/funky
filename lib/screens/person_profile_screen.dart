@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import 'account_screen.dart';
 import '../widgets/rainbow_ring.dart';
@@ -17,30 +18,11 @@ import 'story_viewer_screen.dart';
 
 /// Pick a reason, send the report to the FUNKY team.
 Future<void> _reportProfile(BuildContext context, AppStore store, String personId, String handle) async {
-  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  final reason = await showModalBottomSheet<String>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: tokens.surface,
-    builder: (sheetContext) => SafeArea(
-      child: SingleChildScrollView(
-        child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 6),
-            child: Text('Report @$handle', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
-          ),
-          for (final r in AppStore.profileReportReasons)
-            ListTile(
-              title: Text(r, style: TextStyle(color: tokens.ink)),
-              onTap: () => Navigator.of(sheetContext).pop(r),
-            ),
-        ],
-        ),
-      ),
-    ),
+  final reason = await showIosActionSheet<String>(
+    context,
+    title: 'Report @$handle',
+    message: 'Reports are private. The FUNKY team reviews every one.',
+    actions: [for (final r in AppStore.profileReportReasons) IosSheetAction(r, r)],
   );
   if (reason == null || !context.mounted) return;
   final message = await store.reportProfile(personId, reason);
@@ -77,63 +59,29 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
   Future<void> _moreMenu(AppStore store, Person person) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final isFriend = store.isFriendsWith(personId);
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            Container(width: 36, height: 4, decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
-            const SizedBox(height: 6),
-            ListTile(
-              leading: Icon(Icons.ios_share, color: tokens.ink),
-              title: Text('Share profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-              onTap: () => Navigator.of(sheetContext).pop('share'),
-            ),
-            if (isFriend)
-              ListTile(
-                leading: Icon(Icons.person_remove_outlined, color: tokens.danger),
-                title: Text('Remove friend', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600)),
-                onTap: () => Navigator.of(sheetContext).pop('remove'),
-              ),
-            if (store.signedIn)
-              ListTile(
-                leading: Icon(Icons.flag_outlined, color: tokens.ink),
-                title: Text('Report this profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-                onTap: () => Navigator.of(sheetContext).pop('report'),
-              ),
-            if (store.signedIn)
-              ListTile(
-                leading: Icon(store.isBlocked(personId) ? Icons.lock_open_outlined : Icons.block, color: tokens.danger),
-                title: Text(
-                  store.isBlocked(personId) ? 'Unblock @${person.handle}' : 'Block @${person.handle}',
-                  style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600),
-                ),
-                onTap: () => Navigator.of(sheetContext).pop(store.isBlocked(personId) ? 'unblock' : 'block'),
-              ),
-            // Admin tools live on their own screen, never on the profile.
-            if (store.isAdmin)
-              ListTile(
-                leading: Icon(Icons.admin_panel_settings_outlined, color: tokens.gold),
-                title: Text('Manage this account (Admin)', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w700)),
-                onTap: () => Navigator.of(sheetContext).pop('admin'),
-              ),
-            const SizedBox(height: 6),
-          ],
-        ),
-      ),
+    final choice = await showIosActionSheet<String>(
+      context,
+      actions: [
+        const IosSheetAction('Share profile', 'share'),
+        if (isFriend) const IosSheetAction('Remove friend', 'remove', destructive: true),
+        if (store.signedIn) const IosSheetAction('Report this profile', 'report'),
+        if (store.signedIn)
+          IosSheetAction(
+            store.isBlocked(personId) ? 'Unblock @${person.handle}' : 'Block @${person.handle}',
+            store.isBlocked(personId) ? 'unblock' : 'block',
+            destructive: !store.isBlocked(personId),
+          ),
+        if (store.isAdmin) const IosSheetAction('Manage this account (Admin)', 'admin'),
+      ],
     );
     if (!mounted || choice == null) return;
     switch (choice) {
       case 'share':
         await shareFunkyProfile(context, person.handle);
       case 'remove':
-        final ok = await showDialog<bool>(
+        final ok = await showIosDialog<bool>(
           context: context,
-          builder: (d) => AlertDialog(
+          builder: (d) => IosAlert(
             backgroundColor: tokens.surface,
             title: Text('Remove @${person.handle}?', style: TextStyle(color: tokens.ink)),
             content: Text("You'll stop seeing each other's memories.", style: TextStyle(color: tokens.mute)),
@@ -147,9 +95,9 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
       case 'report':
         await _reportProfile(context, store, personId, person.handle);
       case 'block':
-        final ok = await showDialog<bool>(
+        final ok = await showIosDialog<bool>(
           context: context,
-          builder: (d) => AlertDialog(
+          builder: (d) => IosAlert(
             backgroundColor: tokens.surface,
             title: Text('Block @${person.handle}?', style: TextStyle(color: tokens.ink)),
             content: Text(

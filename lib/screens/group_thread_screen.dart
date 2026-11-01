@@ -1,3 +1,4 @@
+import '../widgets/ios_ui.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -594,9 +595,9 @@ class GroupInfoScreen extends StatelessWidget {
   Future<void> _rename(BuildContext context, AppStore store, GroupChat group) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final controller = TextEditingController(text: group.name);
-    final name = await showDialog<String>(
+    final name = await showIosDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text('Rename group', style: TextStyle(color: tokens.ink)),
         content: TextField(
@@ -624,36 +625,13 @@ class GroupInfoScreen extends StatelessWidget {
 
   /// Pick a new group picture — take one, choose one, or remove it.
   Future<void> _changePhoto(BuildContext context, AppStore store, GroupChat group) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            ListTile(
-              leading: Icon(Icons.photo_camera_outlined, color: tokens.ink),
-              title: Text('Take a photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.of(sheetContext).pop('camera'),
-            ),
-            ListTile(
-              leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
-              title: Text('Choose from library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
-              onTap: () => Navigator.of(sheetContext).pop('library'),
-            ),
-            if (group.photoUrl != null)
-              ListTile(
-                leading: Icon(Icons.delete_outline, color: tokens.danger),
-                title: Text('Remove photo', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
-                onTap: () => Navigator.of(sheetContext).pop('remove'),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+    final choice = await showIosActionSheet<String>(
+      context,
+      actions: [
+        const IosSheetAction('Take a Photo', 'camera'),
+        const IosSheetAction('Choose from Library', 'library'),
+        if (group.photoUrl != null) const IosSheetAction('Remove Photo', 'remove', destructive: true),
+      ],
     );
     if (choice == null || !context.mounted) return;
 
@@ -733,9 +711,9 @@ class GroupInfoScreen extends StatelessWidget {
 
   Future<void> _leave(BuildContext context, AppStore store, GroupChat group) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final ok = await showDialog<bool>(
+    final ok = await showIosDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text('Leave ${group.name}?', style: TextStyle(color: tokens.ink)),
         content: Text("You'll stop getting its messages. Someone can add you back later.", style: TextStyle(color: tokens.mute)),

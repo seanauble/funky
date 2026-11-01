@@ -39,9 +39,16 @@ Future<void> shareFunkyInvite(BuildContext context, {String? handle}) {
   return _shareText(context, "Come out with me on FUNKY 🕺 See where everyone's going tonight.$who\nGet the app: $funkyDownloadUrl");
 }
 
-/// Shares a party, event or spot.
-Future<void> shareFunkyPlace(BuildContext context, String name, {String? when}) {
+/// Shares a party, event or spot. A private event's host can include the
+/// code that unlocks the address and time.
+Future<void> shareFunkyPlace(BuildContext context, String name, {String? when, String? code}) {
   final at = when == null ? '' : ' ($when)';
+  if (code != null) {
+    return _shareText(
+      context,
+      "You're invited to $name$at 🔒 Find it on FUNKY and enter the code $code to see the address and time, RSVP, and join the event chat.\nGet the app: $funkyDownloadUrl",
+    );
+  }
   return _shareText(context, "Pull up to $name$at 🕺 See who's going on FUNKY.\nGet the app: $funkyDownloadUrl");
 }
 

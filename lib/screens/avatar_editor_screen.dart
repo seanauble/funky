@@ -268,7 +268,7 @@ class _AvatarEditorScreenState extends State<AvatarEditorScreen> {
                       children: [
                         const Icon(Icons.brightness_low_rounded, color: Colors.white60, size: 20),
                         Expanded(
-                          child: Slider(
+                          child: Slider.adaptive(
                             value: _brightness,
                             min: -1,
                             max: 1,

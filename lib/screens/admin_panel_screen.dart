@@ -1,3 +1,4 @@
+import '../widgets/ios_ui.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -29,9 +30,9 @@ class AdminPanelScreen extends StatelessWidget {
     required VoidCallback onConfirm,
     String confirmLabel = 'Delete',
   }) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showIosDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text(title, style: TextStyle(color: tokens.ink)),
         content: Text(body, style: TextStyle(color: tokens.mute)),
@@ -50,18 +51,18 @@ class AdminPanelScreen extends StatelessWidget {
   /// Tests every table/function the app depends on and lists what's missing,
   /// so "check your connection" never hides a SQL file that wasn't run.
   Future<void> _runBackendCheck(BuildContext context, ThemeTokens tokens, AppStore store) async {
-    showDialog<void>(
+    showIosDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
+      builder: (_) => const Center(child: CircularProgressIndicator.adaptive()),
     );
     final results = await store.checkBackend();
     if (!context.mounted) return;
     Navigator.of(context).pop();
     final allOk = results.every((r) => r.$2);
-    await showDialog<void>(
+    await showIosDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text(allOk ? 'Backend is set up ✓' : 'Backend needs attention', style: TextStyle(color: tokens.ink)),
         content: SingleChildScrollView(
@@ -833,9 +834,9 @@ class _CrashReportsSection extends StatelessWidget {
           onAction: store.crashReports.isEmpty
               ? () => store.fetchCrashReports()
               : () async {
-                  final ok = await showDialog<bool>(
+                  final ok = await showIosDialog<bool>(
                     context: context,
-                    builder: (d) => AlertDialog(
+                    builder: (d) => IosAlert(
                       backgroundColor: tokens.surface,
                       title: Text('Clear all crash reports?', style: TextStyle(color: tokens.ink)),
                       actions: [
@@ -859,9 +860,9 @@ class _CrashReportsSection extends StatelessWidget {
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: EdgeInsets.zero,
                 child: InkWell(
-                  onTap: () => showDialog<void>(
+                  onTap: () => showIosDialog<void>(
                     context: context,
-                    builder: (d) => AlertDialog(
+                    builder: (d) => IosAlert(
                       backgroundColor: tokens.surface,
                       title: Text(latest.fatal ? 'Crash' : 'Error', style: TextStyle(color: tokens.ink)),
                       content: SingleChildScrollView(

@@ -1,8 +1,10 @@
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoDatePickerMode;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../widgets/ui_widgets.dart';
@@ -120,18 +122,21 @@ class _PostFormPageState extends State<PostFormPage> {
 
   Future<void> _pickDay() async {
     final now = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _eventDay,
-      firstDate: DateTime(now.year, now.month, now.day),
-      lastDate: now.add(const Duration(days: 180)),
+    final picked = await showIosDateTimePicker(
+      context,
+      mode: CupertinoDatePickerMode.date,
+      title: 'What day?',
+      initial: _eventDay,
+      minimum: DateTime(now.year, now.month, now.day),
+      maximum: now.add(const Duration(days: 180)),
     );
-    if (picked != null && mounted) setState(() => _eventDay = picked);
+    if (picked != null && mounted) setState(() => _eventDay = DateTime(picked.year, picked.month, picked.day));
   }
 
   Future<void> _pickTime() async {
-    final picked = await showTimePicker(context: context, initialTime: _eventTime);
-    if (picked != null && mounted) setState(() => _eventTime = picked);
+    final base = DateTime(_eventDay.year, _eventDay.month, _eventDay.day, _eventTime.hour, _eventTime.minute);
+    final picked = await showIosDateTimePicker(context, mode: CupertinoDatePickerMode.time, title: 'What time?', initial: base);
+    if (picked != null && mounted) setState(() => _eventTime = TimeOfDay(hour: picked.hour, minute: picked.minute));
   }
 
   String _dayLabel(DateTime d) {
@@ -326,7 +331,7 @@ class _PostFormPageState extends State<PostFormPage> {
                     ],
                   ),
                 ),
-                Switch(value: _isEvent, activeColor: tokens.brand, onChanged: (v) => setState(() => _isEvent = v)),
+                Switch.adaptive(value: _isEvent, activeColor: tokens.brand, onChanged: (v) => setState(() => _isEvent = v)),
               ],
             ),
           ),

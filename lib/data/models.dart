@@ -149,6 +149,12 @@ class Place {
   final String? eventType;
   // The bar or club an event is held at (trivia night at Charlie's).
   final String? hostPlaceId;
+  // A private event (phase 36): the address, exact spot and time are only
+  // for people who entered the host's code. Until then [address] is a
+  // placeholder, the pin is rough, and [timeHidden] is true ([startsAt] only
+  // carries the night).
+  final bool isPrivate;
+  final bool timeHidden;
 
   const Place({
     required this.id,
@@ -166,10 +172,36 @@ class Place {
     this.startsAt,
     this.eventType,
     this.hostPlaceId,
+    this.isPrivate = false,
+    this.timeHidden = false,
   });
 
   /// The night (2 PM to 2 PM) it happens on, e.g. "2026-11-07", or null.
   String? get night => startsAt == null ? null : sessionKey(startsAt!);
+
+  /// The start time when it's known and not locked behind a code.
+  DateTime? get shownTime => timeHidden ? null : startsAt;
+
+  /// The same place with its private details filled in (or swapped).
+  Place withDetails({String? address, double? lat, double? lng, DateTime? startsAt, bool? timeHidden}) => Place(
+        id: id,
+        name: name,
+        kind: kind,
+        lat: lat ?? this.lat,
+        lng: lng ?? this.lng,
+        address: address ?? this.address,
+        by: by,
+        t: t,
+        session: session,
+        coverPhotoPath: coverPhotoPath,
+        coverUrl: coverUrl,
+        photoUrl: photoUrl,
+        startsAt: startsAt ?? this.startsAt,
+        eventType: eventType,
+        hostPlaceId: hostPlaceId,
+        isPrivate: isPrivate,
+        timeHidden: timeHidden ?? this.timeHidden,
+      );
 
   /// The same place somewhere else on the map (an admin moved its pin).
   Place movedTo(double newLat, double newLng) => Place(
@@ -188,6 +220,8 @@ class Place {
         startsAt: startsAt,
         eventType: eventType,
         hostPlaceId: hostPlaceId,
+        isPrivate: isPrivate,
+        timeHidden: timeHidden,
       );
 
   Map<String, dynamic> toJson() => {
@@ -206,6 +240,8 @@ class Place {
         'startsAt': startsAt?.millisecondsSinceEpoch,
         'eventType': eventType,
         'hostPlaceId': hostPlaceId,
+        'isPrivate': isPrivate,
+        'timeHidden': timeHidden,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -224,7 +260,40 @@ class Place {
         startsAt: json['startsAt'] is int ? DateTime.fromMillisecondsSinceEpoch(json['startsAt'] as int) : null,
         eventType: json['eventType'] as String?,
         hostPlaceId: json['hostPlaceId'] as String?,
+        isPrivate: json['isPrivate'] == true,
+        timeHidden: json['timeHidden'] == true,
       );
+}
+
+/// A private event's real address, spot and time (only for its guests and
+/// host). [passcode] is only known to the host.
+class PrivateEventDetails {
+  final String placeId;
+  final String? address;
+  final double? lat;
+  final double? lng;
+  final DateTime? startsAt;
+  final String? passcode;
+  const PrivateEventDetails({required this.placeId, this.address, this.lat, this.lng, this.startsAt, this.passcode});
+}
+
+/// Someone on a private event's guest list and their RSVP:
+/// 'going', 'maybe', 'cant', or 'unlocked' (entered the code, no answer yet).
+class EventGuest {
+  final String uid; // 'me' for you
+  final String status;
+  final int t;
+  const EventGuest({required this.uid, required this.status, required this.t});
+}
+
+/// One message in a party or event's chat.
+class EventMessage {
+  final String id;
+  final String placeId;
+  final String uid; // 'me' for you
+  final String text;
+  final int t;
+  const EventMessage({required this.id, required this.placeId, required this.uid, required this.text, required this.t});
 }
 
 /// What an event at a bar or club is.
@@ -341,6 +410,10 @@ class ChatMessage {
   final String? sharedPlaceId;
   final String? pollId;
   final String? gifUrl;
+  // How far a Live Chat message reaches: the sender's own radius when they
+  // sent it (an admin's can reach much further than 50 miles). Someone sees
+  // it if it's inside their radius OR they're inside its reach.
+  final int? reachMiles;
 
   bool get isStoryReply => storyId != null || storyMediaPath != null || storyText != null;
   bool get isReply => replyToId != null || replyText != null;
@@ -369,6 +442,7 @@ class ChatMessage {
     this.sharedPlaceId,
     this.pollId,
     this.gifUrl,
+    this.reachMiles,
   });
 
   bool get hasMedia => mediaType != null && (mediaPath != null || mediaUrl != null);
@@ -403,6 +477,7 @@ class ChatMessage {
         sharedPlaceId: sharedPlaceId,
         pollId: pollId,
         gifUrl: gifUrl,
+        reachMiles: reachMiles,
       );
 
   Map<String, dynamic> toJson() => {
@@ -428,6 +503,7 @@ class ChatMessage {
         'sharedPlaceId': sharedPlaceId,
         'pollId': pollId,
         'gifUrl': gifUrl,
+        'reachMiles': reachMiles,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -455,6 +531,7 @@ class ChatMessage {
         sharedPlaceId: json['sharedPlaceId'] as String?,
         pollId: json['pollId'] as String?,
         gifUrl: json['gifUrl'] as String?,
+        reachMiles: (json['reachMiles'] as num?)?.toInt(),
       );
 }
 

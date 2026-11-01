@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../widgets/ios_ui.dart';
 import '../data/app_store.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
@@ -152,9 +153,9 @@ class AdminManageUserScreen extends StatelessWidget {
 /// pending request and hides the person's Stories/chat/DMs everywhere.
 Future<void> _confirmBan(BuildContext context, AppStore store, String personId, String handle) async {
   final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  final confirmed = await showDialog<bool>(
+  final confirmed = await showIosDialog<bool>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (dialogContext) => IosAlert(
       backgroundColor: tokens.surface,
       title: Text('Ban @$handle?', style: TextStyle(color: tokens.ink)),
       content: Text(
@@ -186,9 +187,9 @@ Future<void> _givePoints(BuildContext context, AppStore store, String personId, 
 Future<void> _customPoints(BuildContext context, AppStore store, String personId, String handle) async {
   final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
   final controller = TextEditingController();
-  final choice = await showDialog<int>(
+  final choice = await showIosDialog<int>(
     context: context,
-    builder: (dialogContext) => AlertDialog(
+    builder: (dialogContext) => IosAlert(
       backgroundColor: tokens.surface,
       title: Text(personId == 'me' ? 'Your points' : 'Points for @$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
       content: TextField(

@@ -291,7 +291,7 @@ class _NameStyleRow extends StatelessWidget {
             ),
           ),
           if (unlocked)
-            Switch(value: value, onChanged: onChanged, activeColor: tokens.brand)
+            Switch.adaptive(value: value, onChanged: onChanged, activeColor: tokens.brand)
           else
             Icon(Icons.lock_outline, size: 18, color: tokens.mute),
         ],
@@ -343,7 +343,7 @@ class _NameColorPickerState extends State<_NameColorPicker> {
       children: [
         SizedBox(width: 30, child: Text(label, style: TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w700))),
         Expanded(
-          child: Slider(
+          child: Slider.adaptive(
             value: value.clamp(min, max).toDouble(),
             min: min,
             max: max,

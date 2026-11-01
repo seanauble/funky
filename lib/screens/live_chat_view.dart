@@ -90,14 +90,14 @@ class _AreaHeader extends StatelessWidget {
     final online = store.onlineNearby;
     final area = store.areaName ?? 'Your area';
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: Row(
         children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(area, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w900, fontSize: 19)),
+                Text(area, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16)),
                 const SizedBox(height: 3),
                 Row(
                   children: [
@@ -108,7 +108,7 @@ class _AreaHeader extends StatelessWidget {
                         online == null ? 'Within ${rangeLabel()}' : '$online online · Within ${rangeLabel()}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: tokens.mute, fontSize: 13, fontWeight: FontWeight.w600),
+                        style: TextStyle(color: tokens.mute, fontSize: 12, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],
@@ -264,56 +264,57 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
     final handle = store.chatHandleFor(m);
 
     final avatar = m.anon || (mine && !store.signedIn)
-        ? const GhostAvatar(size: 36)
-        : (sender != null ? PersonAvatar(person: sender, size: 36) : FunkyAvatar(seed: m.uid, label: handle.isNotEmpty ? handle : '?', size: 36));
+        ? const GhostAvatar(size: 32)
+        : (sender != null ? PersonAvatar(person: sender, size: 32) : FunkyAvatar(seed: m.uid, label: handle.isNotEmpty ? handle : '?', size: 32));
 
     final bubbleColor = mine ? tokens.brand.withValues(alpha: 0.16) : tokens.raised;
     final content = <Widget>[
       if (m.isReply) _ReplyQuote(handle: m.replyHandle ?? 'someone', text: m.replyText ?? '', mine: mine),
       if (m.text.trim().isNotEmpty)
-        filteredMessageText(m.text, TextStyle(color: tokens.ink, fontSize: 15.5, height: 1.3), myHandle: store.me.handle, mentions: true),
+        filteredMessageText(m.text, TextStyle(color: tokens.ink, fontSize: 14.5, height: 1.28), myHandle: store.me.handle, mentions: true),
     ];
     final hasBubble = content.isNotEmpty;
 
     final column = Column(
-      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (!mine)
-          Padding(
-            padding: const EdgeInsets.only(left: 2, bottom: 3),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: m.anon
-                      ? Text('anonymous', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13))
-                      : GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => openProfile(context, m.uid),
-                          child: FunkyHandle(handle: handle, person: sender),
-                        ),
-                ),
-                if (m.lat != null && m.lng != null && store.location != null) ...[
-                  const SizedBox(width: 6),
-                  Text(
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: m.anon || (mine && !store.signedIn)
+                    ? Text('anonymous', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13))
+                    : GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => openProfile(context, m.uid),
+                        child: FunkyHandle(handle: handle, person: sender),
+                      ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                [
+                  clockLabel(DateTime.fromMillisecondsSinceEpoch(m.t)),
+                  if (!mine && m.lat != null && m.lng != null && store.location != null)
                     awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!))),
-                    style: TextStyle(color: tokens.mute, fontSize: 11),
-                  ),
-                ],
-              ],
-            ),
+                ].join(' · '),
+                style: TextStyle(color: tokens.mute, fontSize: 11),
+              ),
+            ],
           ),
+        ),
         if (hasBubble)
           Container(
-            constraints: const BoxConstraints(maxWidth: 290),
-            padding: const EdgeInsets.fromLTRB(13, 9, 13, 10),
+            constraints: const BoxConstraints(maxWidth: 270),
+            padding: const EdgeInsets.fromLTRB(11, 7, 11, 8),
             decoration: BoxDecoration(
               color: bubbleColor,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(18),
-                topRight: const Radius.circular(18),
-                bottomLeft: Radius.circular(mine ? 18 : 6),
-                bottomRight: Radius.circular(mine ? 6 : 18),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4),
+                topRight: Radius.circular(16),
+                bottomLeft: Radius.circular(16),
+                bottomRight: Radius.circular(16),
               ),
             ),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: content),
@@ -323,7 +324,7 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 230, maxHeight: 220, minHeight: 80, minWidth: 80),
+              constraints: const BoxConstraints(maxWidth: 180, maxHeight: 160, minHeight: 70, minWidth: 70),
               child: Image.network(
                 m.gifUrl!,
                 fit: BoxFit.cover,
@@ -352,46 +353,35 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
                 return GestureDetector(
                   onTap: () => requireAccountThen(context, store, () => store.toggleReaction(m.id, entry.key)),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: reacted ? tokens.brand.withValues(alpha: 0.14) : tokens.surface,
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(color: reacted ? tokens.brand : tokens.line),
                     ),
-                    child: Text('${entry.key} ${entry.value.length}', style: TextStyle(color: tokens.ink, fontSize: 12.5, fontWeight: FontWeight.w700)),
+                    child: Text('${entry.key} ${entry.value.length}', style: TextStyle(color: tokens.ink, fontSize: 11.5, fontWeight: FontWeight.w700)),
                   ),
                 );
               }).toList(),
             ),
           ),
-        if (mine)
+        if (mine && (m.status == 'sending' || m.status == 'failed'))
           Padding(
-            padding: const EdgeInsets.only(top: 3, right: 2),
+            padding: const EdgeInsets.only(top: 3, left: 2),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: m.status == 'failed' ? () => store.retryChatMessage(m.id) : null,
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        m.status == 'failed'
-                            ? 'Not sent · tap to retry'
-                            : (m.status == 'sending' ? 'Sending…' : clockLabel(DateTime.fromMillisecondsSinceEpoch(m.t))),
-                        style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11.5),
-                      ),
-                      if (m.status != 'failed' && m.status != 'sending') ...[
-                        const SizedBox(width: 3),
-                        Icon(Icons.check_rounded, size: 14, color: tokens.brand),
-                      ],
-                    ],
+                  Text(
+                    m.status == 'failed' ? 'Not sent · tap to retry' : 'Sending…',
+                    style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11),
                   ),
                   if (m.status == 'failed' && store.sendErrorFor(m.id) != null)
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 260),
-                      child: Text(store.sendErrorFor(m.id)!, textAlign: TextAlign.right, style: TextStyle(color: tokens.mute, fontSize: 10.5)),
+                      child: Text(store.sendErrorFor(m.id)!, style: TextStyle(color: tokens.mute, fontSize: 10.5)),
                     ),
                 ],
               ),
@@ -402,9 +392,9 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
 
     final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
       children: [
-        if (!mine) ...[avatar, const SizedBox(width: 10)],
+        avatar,
+        const SizedBox(width: 9),
         Flexible(child: column),
       ],
     );
@@ -423,7 +413,7 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
       },
       onHorizontalDragCancel: () => setState(() => _drag = 0),
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.only(bottom: 10),
         child: Stack(
           children: [
             if (_drag > 8)
@@ -497,20 +487,21 @@ class LiveChatSpotCard extends StatelessWidget {
     final upcoming = store.isPlaceUpcoming(p);
     final going = upcoming ? store.hasRsvped(p.id) : store.me.move == p.id;
     final sub = [
-      if (p.startsAt != null) upcoming ? dayLabel(p.startsAt!) : 'Tonight ${clockLabel(p.startsAt!)}',
+      if (p.startsAt != null) upcoming ? dayLabel(p.startsAt!) : (p.shownTime != null ? 'Tonight ${clockLabel(p.shownTime!)}' : 'Tonight'),
+      if (p.isPrivate) '🔒 Private',
       store.areaName ?? placeKindLabel(p.kind),
     ].join(' · ');
     return GestureDetector(
       onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 330),
-        decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: tokens.line)),
+        constraints: const BoxConstraints(maxWidth: 280),
+        decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: tokens.line)),
         clipBehavior: Clip.antiAlias,
         child: Row(
           children: [
             SizedBox(
-              width: 104,
-              height: 78,
+              width: 66,
+              height: 58,
               child: OrgBadgeCorner(
                 badge: placeOrgBadge(p),
                 small: true,
@@ -521,18 +512,18 @@ class LiveChatSpotCard extends StatelessWidget {
                   coverUrl: p.coverUrl,
                   photoUrl: p.photoUrl,
                   fallbackLabel: p.name.isNotEmpty ? p.name.substring(0, 1) : '?',
-                  fontSize: 24,
+                  fontSize: 18,
                 ),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15)),
-                  const SizedBox(height: 2),
-                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                  Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 13.5)),
+                  const SizedBox(height: 1),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 11.5)),
                 ],
               ),
             ),
@@ -547,11 +538,11 @@ class LiveChatSpotCard extends StatelessWidget {
                   }
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-                  decoration: BoxDecoration(color: going ? tokens.raised : tokens.orange, borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(color: going ? tokens.raised : tokens.orange, borderRadius: BorderRadius.circular(10)),
                   child: Text(
                     going ? 'Going ✓' : "I'm going",
-                    style: TextStyle(color: going ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800, fontSize: 13),
+                    style: TextStyle(color: going ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800, fontSize: 12),
                   ),
                 ),
               ),
@@ -590,15 +581,15 @@ class LiveChatPollCard extends StatelessWidget {
     final counts = store.pollCounts(p);
     final total = counts.fold<int>(0, (a, b) => a + b);
     return Container(
-      constraints: const BoxConstraints(maxWidth: 330),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      constraints: const BoxConstraints(maxWidth: 280),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: tokens.line)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(maskBadWords(p.q), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
-          const SizedBox(height: 8),
+          Text(maskBadWords(p.q), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14)),
+          const SizedBox(height: 6),
           PollBars(options: p.options, counts: counts, selectedIndex: store.me.votes[p.id], onSelect: (i) => store.votePoll(p.id, i)),
           const SizedBox(height: 6),
           Text(total == 1 ? '1 vote' : '$total votes', style: TextStyle(color: tokens.mute, fontSize: 12)),

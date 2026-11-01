@@ -1993,8 +1993,7 @@ class AppStore extends ChangeNotifier {
         if (id == null || postId == null || uid == null) continue;
         final list = byPost[postId] ??= [];
         if (list.length >= 2) continue;
-        final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-        list.add(PostComment(id: id, postId: postId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        list.add(_commentFromRow(r, postId));
         if (uid != supabaseUserId) ids.add(uid);
       }
       if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
@@ -2055,18 +2054,56 @@ class AppStore extends ChangeNotifier {
     } catch (_) {}
   }
 
+  // Comment likes and replies came with phase 36; until it's run, comments
+  // load the old way.
+  bool _commentLikesOk = true;
+
+  PostComment _commentFromRow(Map<String, dynamic> r, String postId) {
+    final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+    final likeRows = r['post_comment_likes'];
+    var likes = 0;
+    var mine = false;
+    if (likeRows is List) {
+      likes = likeRows.length;
+      mine = likeRows.any((l) => l is Map && l['user_id'] == supabaseUserId);
+    }
+    return PostComment(
+      id: r['id'] as String,
+      postId: postId,
+      uid: _asMe(r['uid'] as String),
+      text: (r['text'] as String?) ?? '',
+      t: at.millisecondsSinceEpoch,
+      replyTo: r['reply_to'] as String?,
+      likes: likes,
+      likedByMe: mine,
+    );
+  }
+
   Future<void> fetchComments(String postId) async {
     if (supabaseUserId == null) return;
     try {
-      final rows = await Supabase.instance.client.from('post_comments').select().eq('post_id', postId).order('created_at');
+      List<Map<String, dynamic>> rows;
+      if (_commentLikesOk) {
+        try {
+          rows = await Supabase.instance.client
+              .from('post_comments')
+              .select('*, post_comment_likes(user_id)')
+              .eq('post_id', postId)
+              .order('created_at');
+        } on PostgrestException {
+          _commentLikesOk = false;
+          rows = await Supabase.instance.client.from('post_comments').select().eq('post_id', postId).order('created_at');
+        }
+      } else {
+        rows = await Supabase.instance.client.from('post_comments').select().eq('post_id', postId).order('created_at');
+      }
       final list = <PostComment>[];
       final ids = <String>{};
       for (final r in rows) {
         final id = r['id'] as String?;
         final uid = r['uid'] as String?;
         if (id == null || uid == null) continue;
-        final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-        list.add(PostComment(id: id, postId: postId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        list.add(_commentFromRow(r, postId));
         if (uid != supabaseUserId) ids.add(uid);
       }
       if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
@@ -2255,7 +2292,7 @@ class AppStore extends ChangeNotifier {
   }
 
   /// Returns an error to show, or null.
-  Future<String?> addComment(String postId, String text) async {
+  Future<String?> addComment(String postId, String text, {String? replyTo}) async {
     if (selfBanned) return _bannedMessage;
     final uid = supabaseUserId;
     if (!signedIn || uid == null) return 'Log in to comment.';
@@ -2265,10 +2302,15 @@ class AppStore extends ChangeNotifier {
     if (_tooSoon('comment', 1500)) return 'Slow down a sec.';
     try {
       final rows = await _withProfileRepair<List<Map<String, dynamic>>>(
-          () => Supabase.instance.client.from('post_comments').insert({'post_id': postId, 'uid': uid, 'text': clean}).select());
+          () => Supabase.instance.client.from('post_comments').insert({
+                'post_id': postId,
+                'uid': uid,
+                'text': clean,
+                if (replyTo != null) 'reply_to': replyTo,
+              }).select());
       final r = rows.first;
       final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-      final c = PostComment(id: r['id'] as String, postId: postId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch);
+      final c = PostComment(id: r['id'] as String, postId: postId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch, replyTo: replyTo);
       final i = posts.indexWhere((p) => p.id == postId);
       final loaded = _postComments[postId];
       if (loaded != null) {
@@ -2285,7 +2327,44 @@ class AppStore extends ChangeNotifier {
       return null;
     } catch (e) {
       if (e is PostgrestException && e.message.toLowerCase().contains('rate limit')) return 'Slow down a sec.';
+      if (replyTo != null && e is PostgrestException && e.message.contains('reply_to')) {
+        return "Replies aren't switched on yet — the phase 36 database update hasn't been run.";
+      }
       return _featureError(e, feature: 'Comments', phase: 'phase 29', fallback: "Couldn't send that comment");
+    }
+  }
+
+  /// Like or unlike a comment. Returns an error to show, or null.
+  Future<String?> toggleCommentLike(PostComment c) async {
+    if (selfBanned) return _bannedMessage;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Log in to like comments.';
+    if (_tooSoon('comment_like:${c.id}', 400)) return null;
+    final liking = !c.likedByMe;
+    void apply(bool liked, int likes) {
+      final list = _postComments[c.postId];
+      if (list != null) {
+        _postComments[c.postId] = [for (final x in list) x.id == c.id ? x.copyWith(likes: likes, likedByMe: liked) : x];
+      }
+      final prev = _commentPreviews[c.postId];
+      if (prev != null) {
+        _commentPreviews[c.postId] = [for (final x in prev) x.id == c.id ? x.copyWith(likes: likes, likedByMe: liked) : x];
+      }
+      notifyListeners();
+    }
+
+    apply(liking, (c.likes + (liking ? 1 : -1)).clamp(0, 1 << 30));
+    try {
+      final t = Supabase.instance.client.from('post_comment_likes');
+      if (liking) {
+        await t.upsert({'comment_id': c.id, 'user_id': uid}, onConflict: 'comment_id,user_id', ignoreDuplicates: true);
+      } else {
+        await t.delete().eq('comment_id', c.id).eq('user_id', uid);
+      }
+      return null;
+    } catch (e) {
+      apply(c.likedByMe, c.likes);
+      return _featureError(e, feature: 'Comment likes', phase: 'phase 36', fallback: "Couldn't do that");
     }
   }
 
@@ -2295,7 +2374,8 @@ class AppStore extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    final list = commentsFor(c.postId).where((x) => x.id != c.id).toList();
+    // Replies to it go with it.
+    final list = (_postComments[c.postId] ?? const <PostComment>[]).where((x) => x.id != c.id && x.replyTo != c.id).toList();
     _postComments[c.postId] = list;
     final i = posts.indexWhere((p) => p.id == c.postId);
     if (i != -1) posts = [...posts]..[i] = posts[i].copyWith(commentCount: list.length);
@@ -2863,7 +2943,13 @@ class AppStore extends ChangeNotifier {
   /// [at] is where the pin goes (an address picked in the Add Place form);
   /// without it the pin drops at your current location.
   Future<Place?> addPlace(String name, PlaceKind kind, String address,
-      {String? coverPhotoPath, LatLng? at, DateTime? startsAt, String? eventType, String? hostPlaceId}) async {
+      {String? coverPhotoPath,
+      LatLng? at,
+      DateTime? startsAt,
+      String? eventType,
+      String? hostPlaceId,
+      bool isPrivate = false,
+      String? passcode}) async {
     lastPlaceError = null;
     if (selfBanned) {
       lastPlaceError = _bannedMessage;
@@ -2895,24 +2981,37 @@ class AppStore extends ChangeNotifier {
     // can ride along on the place row for everyone else to see.
     String? coverUrl;
     if (coverPhotoPath != null) coverUrl = await _uploadPlaceCover(uid, coverPhotoPath);
+    // A private event's public row only has a rough spot (about half a mile),
+    // a placeholder address and just the night; the real ones go in
+    // private_event_details for people with the code.
+    final code = passcode?.trim() ?? '';
+    final private = isPrivate && code.length >= 3;
+    DateTime? publicStart = startsAt;
+    if (private && startsAt != null) {
+      final n = sessionKey(startsAt);
+      final day = DateTime.tryParse(n);
+      publicStart = n == sessionKey() || day == null ? null : DateTime(day.year, day.month, day.day, 21);
+    }
+    double rough(double v) => (v * 100).roundToDouble() / 100;
     // Places are shared, so this goes straight to the server and waits for
     // its real id (the same id everyone else will see) before showing up.
-    final Place place;
+    Place place;
     try {
       Future<List<Map<String, dynamic>>> insertPlace(bool withCover) {
         return _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('places').insert({
               'name': cleanName,
               'kind': kind.name,
-              'lat': here.lat,
-              'lng': here.lng,
-              'address': cleanAddress,
+              'lat': private ? rough(here.lat) : here.lat,
+              'lng': private ? rough(here.lng) : here.lng,
+              'address': private ? 'Private event' : cleanAddress,
+              if (private) 'is_private': true,
               'by_uid': uid,
               // Only the admin's insert policy accepts a pre-verified place; for
               // everyone else this is just false.
               'admin_verified': isAdmin,
               if (withCover && coverUrl != null) 'cover_url': coverUrl,
               // Phase 33: a date, what kind of event, and the bar it's at.
-              if (startsAt != null) 'starts_at': startsAt.toUtc().toIso8601String(),
+              if (publicStart != null) 'starts_at': publicStart.toUtc().toIso8601String(),
               if (eventType != null) 'event_type': eventType,
               if (hostPlaceId != null) 'host_place_id': hostPlaceId,
             }).select());
@@ -2949,9 +3048,15 @@ class AppStore extends ChangeNotifier {
         startsAt: built.startsAt,
         eventType: built.eventType,
         hostPlaceId: built.hostPlaceId,
+        isPrivate: built.isPrivate,
+        timeHidden: built.timeHidden,
       );
     } catch (e) {
       final m = e.toString();
+      if (private && m.contains('is_private')) {
+        lastPlaceError = "Private events aren't switched on yet — run RUN_ALL.sql (phase 36) in Supabase.";
+        return null;
+      }
       if ((startsAt != null || eventType != null || hostPlaceId != null) &&
           (m.contains('starts_at') || m.contains('event_type') || m.contains('host_place_id'))) {
         lastPlaceError = "Dates and events at bars aren't switched on yet — run RUN_ALL.sql (phase 33) in Supabase.";
@@ -2960,6 +3065,32 @@ class AppStore extends ChangeNotifier {
       final why = _friendlySendError(e);
       lastPlaceError = why.startsWith('No connection') ? "Couldn't add that place — check your connection and try again." : "Couldn't add that place — $why";
       return null;
+    }
+    if (private) {
+      final client = Supabase.instance.client;
+      try {
+        await client.from('private_event_details').insert({
+          'place_id': place.id,
+          'address': cleanAddress,
+          'lat': here.lat,
+          'lng': here.lng,
+          if (startsAt != null) 'starts_at': startsAt.toUtc().toIso8601String(),
+          'passcode': code,
+        });
+        await client.from('event_guests').insert({'place_id': place.id, 'user_id': uid, 'status': 'going'});
+      } catch (e) {
+        // The secret half didn't save — take the event back down rather
+        // than leave a private party nobody can get into.
+        try {
+          await client.from('places').delete().eq('id', place.id);
+        } catch (_) {}
+        lastPlaceError = _featureError(e, feature: 'Private events', phase: 'phase 36', fallback: "Couldn't make it private");
+        return null;
+      }
+      final d = PrivateEventDetails(placeId: place.id, address: cleanAddress, lat: here.lat, lng: here.lng, startsAt: startsAt, passcode: code);
+      _privateDetails[place.id] = d;
+      _myEventStatus[place.id] = 'going';
+      place = _withPrivate(place, d);
     }
     _remotePlaceIds.add(place.id);
     if (coverPhotoPath != null) _localPlaceCovers[place.id] = coverPhotoPath;
@@ -3100,6 +3231,7 @@ class AppStore extends ChangeNotifier {
       status: room == 'main' && canUseServer ? 'sending' : 'delivered',
       lat: room == 'main' ? here?.lat : null,
       lng: room == 'main' ? here?.lng : null,
+      reachMiles: room == 'main' ? rangeMiles.round() : null,
       replyToId: replyTo != null && !replyTo.id.startsWith('msg_') ? replyTo.id : null,
       replyText: replyText,
       replyHandle: replyHandle,
@@ -3125,7 +3257,7 @@ class AppStore extends ChangeNotifier {
     final uid = supabaseUserId;
     if (uid == null) return;
     try {
-      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('chat_messages').insert({
+      final payload = <String, dynamic>{
             // Anonymous messages carry NO sender at all (see the SQL) — the
             // server keeps the real author in an admin-only table.
             'sender_id': local.anon ? null : uid,
@@ -3141,7 +3273,17 @@ class AppStore extends ChangeNotifier {
             if (local.sharedPlaceId != null) 'place_id': local.sharedPlaceId,
             if (local.pollId != null) 'poll_id': local.pollId,
             if (local.gifUrl != null) 'gif_url': local.gifUrl,
-          }).select());
+            if (local.reachMiles != null) 'reach_miles': local.reachMiles,
+      };
+      List<Map<String, dynamic>> rows;
+      try {
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('chat_messages').insert(payload).select());
+      } on PostgrestException catch (e) {
+        // reach_miles comes with phase 35 — send without it until then.
+        if (!'${e.message} ${e.details}'.contains('reach_miles')) rethrow;
+        payload.remove('reach_miles');
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('chat_messages').insert(payload).select());
+      }
       final serverId = rows.first['id'] as String;
       _remoteChatIds.add(serverId);
       messages = messages
@@ -5145,6 +5287,7 @@ class AppStore extends ChangeNotifier {
       }
       final rows = await client.from('places').select();
       final confRows = await client.from('place_confirmations').select();
+      await _fetchPrivateDetails();
       _applyRemotePlaces(rows, confRows);
     } catch (_) {
       // Offline — keep whatever's showing.
@@ -5918,7 +6061,9 @@ class AppStore extends ChangeNotifier {
     final created = createdRaw != null ? DateTime.parse(createdRaw).toLocal() : DateTime.now();
     final byUid = row['by_uid'] as String?;
     final kindName = row['kind'] as String?;
-    return Place(
+    final isPrivate = row['is_private'] == true;
+    final publicStart = DateTime.tryParse((row['starts_at'] as String?) ?? '')?.toLocal();
+    final built = Place(
       id: id,
       name: (row['name'] as String?) ?? 'Unnamed place',
       kind: PlaceKind.values.firstWhere((k) => k.name == kindName, orElse: () => PlaceKind.area),
@@ -5931,10 +6076,267 @@ class AppStore extends ChangeNotifier {
       coverPhotoPath: _localPlaceCovers[id],
       coverUrl: row['cover_url'] as String?,
       photoUrl: _resolvePlacePhoto(id, row),
-      startsAt: DateTime.tryParse((row['starts_at'] as String?) ?? '')?.toLocal(),
+      startsAt: publicStart,
       eventType: row['event_type'] as String?,
       hostPlaceId: row['host_place_id'] as String?,
+      isPrivate: isPrivate,
+      timeHidden: isPrivate && publicStart != null,
     );
+    final d = isPrivate ? _privateDetails[id] : null;
+    return d == null ? built : _withPrivate(built, d);
+  }
+
+  // --- Private events (phase 36) -----------------------------------------
+
+  final Map<String, PrivateEventDetails> _privateDetails = {};
+  final Map<String, String> _myEventStatus = {};
+  final Map<String, List<EventGuest>> _eventGuests = {};
+  bool _privateEventsOk = true;
+
+  /// The real address/spot/time filled into a private event's place.
+  Place _withPrivate(Place p, PrivateEventDetails d) {
+    final addr = d.address?.trim();
+    return p.withDetails(
+      address: addr == null || addr.isEmpty ? 'Address not given' : addr,
+      lat: d.lat,
+      lng: d.lng,
+      startsAt: d.startsAt,
+      timeHidden: false,
+    );
+  }
+
+  void _applyPrivateToPlace(String placeId) {
+    final d = _privateDetails[placeId];
+    if (d == null) return;
+    final i = places.indexWhere((p) => p.id == placeId);
+    if (i == -1 || !places[i].isPrivate) return;
+    places = [...places]..[i] = _withPrivate(places[i], d);
+  }
+
+  PrivateEventDetails? privateDetailsFor(String placeId) => _privateDetails[placeId];
+
+  /// Can see a private event's address, time, guests and chat: its host,
+  /// anyone who entered the code, or an admin. Always true for a public one.
+  bool isEventInsider(Place p) =>
+      !p.isPrivate || p.by == 'me' || isAdmin || _privateDetails.containsKey(p.id) || _myEventStatus.containsKey(p.id);
+
+  /// Your RSVP to a private event: 'going', 'maybe', 'cant', 'unlocked'
+  /// (entered the code, no answer yet), or null.
+  String? myEventStatus(String placeId) => _myEventStatus[placeId];
+
+  List<EventGuest> eventGuests(String placeId) => (_eventGuests[placeId] ?? const <EventGuest>[]).where((g) => !isHidden(g.uid)).toList();
+
+  int eventGuestCount(String placeId, String status) => eventGuests(placeId).where((g) => g.status == status).length;
+
+  PrivateEventDetails _detailsFromRow(Map<String, dynamic> r, {String? code}) => PrivateEventDetails(
+        placeId: r['place_id'] as String,
+        address: r['address'] as String?,
+        lat: (r['lat'] as num?)?.toDouble(),
+        lng: (r['lng'] as num?)?.toDouble(),
+        startsAt: DateTime.tryParse((r['starts_at'] as String?) ?? '')?.toLocal(),
+        passcode: (r['passcode'] as String?) ?? code,
+      );
+
+  /// The private events you're in (host or guest): their real details and
+  /// your RSVP. Runs with every places refresh.
+  Future<void> _fetchPrivateDetails() async {
+    final uid = supabaseUserId;
+    if (!_privateEventsOk || uid == null) return;
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client.from('private_event_details').select().limit(500);
+      final mine = await client.from('event_guests').select('place_id,status').eq('user_id', uid);
+      _privateDetails
+        ..clear()
+        ..addAll({
+          for (final r in rows)
+            if (r['place_id'] is String) r['place_id'] as String: _detailsFromRow(r),
+        });
+      _myEventStatus
+        ..clear()
+        ..addAll({
+          for (final r in mine)
+            if (r['place_id'] is String) r['place_id'] as String: (r['status'] as String?) ?? 'unlocked',
+        });
+    } on PostgrestException catch (e) {
+      if (e.code == '42P01' || e.message.contains('does not exist') || e.message.contains('schema cache')) _privateEventsOk = false;
+    } catch (_) {}
+  }
+
+  /// Who's on a private event's guest list (only works for insiders).
+  Future<void> fetchEventGuests(String placeId) async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('event_guests').select().eq('place_id', placeId).order('created_at');
+      final list = <EventGuest>[];
+      final ids = <String>{};
+      for (final r in rows) {
+        final uid = r['user_id'] as String?;
+        if (uid == null) continue;
+        final at = DateTime.tryParse((r['updated_at'] as String?) ?? (r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+        list.add(EventGuest(uid: _asMe(uid), status: (r['status'] as String?) ?? 'unlocked', t: at.millisecondsSinceEpoch));
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      _eventGuests[placeId] = list;
+      final me = list.where((g) => g.uid == 'me').toList();
+      if (me.isNotEmpty) _myEventStatus[placeId] = me.first.status;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Enter the host's code. Returns an error to show, or null when you're in.
+  Future<String?> unlockPrivateEvent(String placeId, String code) async {
+    if (selfBanned) return _bannedMessage;
+    if (!signedIn || supabaseUserId == null) return 'Make an account to unlock private events.';
+    final clean = code.trim();
+    if (clean.isEmpty) return 'Type the code first.';
+    if (_tooSoon('unlock:$placeId', 1200)) return null;
+    try {
+      final res = await Supabase.instance.client.rpc('unlock_private_event', params: {'p_place': placeId, 'p_code': clean});
+      if (res is! Map) return "Couldn't unlock that — try again.";
+      final err = res['error'];
+      if (err is String && err.isNotEmpty) return err;
+      _privateDetails[placeId] = _detailsFromRow({...res.cast<String, dynamic>(), 'place_id': placeId}, code: clean);
+      _myEventStatus.putIfAbsent(placeId, () => 'unlocked');
+      _applyPrivateToPlace(placeId);
+      notifyListeners();
+      unawaited(fetchEventGuests(placeId));
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Private events', phase: 'phase 36', fallback: "Couldn't unlock that");
+    }
+  }
+
+  /// RSVP to a private event: 'going', 'maybe' or 'cant'. Returns an error or null.
+  Future<String?> setEventRsvp(String placeId, String status) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Make an account to RSVP.';
+    final prev = _myEventStatus[placeId];
+    if (prev == status) return null;
+    _myEventStatus[placeId] = status;
+    final guests = _eventGuests[placeId];
+    if (guests != null) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _eventGuests[placeId] = [
+        ...guests.where((g) => g.uid != 'me'),
+        EventGuest(uid: 'me', status: status, t: now),
+      ];
+    }
+    notifyListeners();
+    try {
+      final t = Supabase.instance.client.from('event_guests');
+      final rows = await t
+          .update({'status': status, 'updated_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('place_id', placeId)
+          .eq('user_id', uid)
+          .select('place_id');
+      // The host has no row until they answer.
+      if (rows.isEmpty) await t.insert({'place_id': placeId, 'user_id': uid, 'status': status});
+      unawaited(fetchEventGuests(placeId));
+      return null;
+    } catch (e) {
+      if (prev == null) {
+        _myEventStatus.remove(placeId);
+      } else {
+        _myEventStatus[placeId] = prev;
+      }
+      unawaited(fetchEventGuests(placeId));
+      notifyListeners();
+      return _featureError(e, feature: 'RSVPs', phase: 'phase 36', fallback: "Couldn't save your RSVP");
+    }
+  }
+
+  /// The host takes someone off the guest list (they'd need the code again).
+  Future<String?> removeEventGuest(String placeId, String guestUid) async {
+    final real = guestUid == 'me' ? supabaseUserId : guestUid;
+    if (real == null) return null;
+    try {
+      await Supabase.instance.client.from('event_guests').delete().eq('place_id', placeId).eq('user_id', real);
+      if (guestUid == 'me') _myEventStatus.remove(placeId);
+      await fetchEventGuests(placeId);
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Guest lists', phase: 'phase 36', fallback: "Couldn't remove them");
+    }
+  }
+
+  // --- Event chat (phase 36) ---------------------------------------------
+
+  final Map<String, List<EventMessage>> _eventMessages = {};
+
+  List<EventMessage> eventMessages(String placeId) =>
+      (_eventMessages[placeId] ?? const <EventMessage>[]).where((m) => !isHidden(m.uid)).toList();
+
+  bool eventMessagesLoaded(String placeId) => _eventMessages.containsKey(placeId);
+
+  /// Loads the newest 300 messages. Returns an error to show, or null.
+  Future<String?> fetchEventMessages(String placeId) async {
+    if (supabaseUserId == null) return 'Open FUNKY with a connection to see the chat.';
+    try {
+      final rows = await Supabase.instance.client
+          .from('event_messages')
+          .select()
+          .eq('place_id', placeId)
+          .order('created_at', ascending: false)
+          .limit(300);
+      final list = <EventMessage>[];
+      final ids = <String>{};
+      for (final r in rows.reversed) {
+        final id = r['id'] as String?;
+        final uid = r['sender_id'] as String?;
+        if (id == null || uid == null) continue;
+        final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+        list.add(EventMessage(id: id, placeId: placeId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      final before = _eventMessages[placeId];
+      final changed = before == null || before.length != list.length || (list.isNotEmpty && before.last.id != list.last.id);
+      _eventMessages[placeId] = list;
+      if (changed) notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Event chat', phase: 'phase 36', fallback: "Couldn't load the chat");
+    }
+  }
+
+  /// Returns an error to show, or null.
+  Future<String?> sendEventMessage(String placeId, String text) async {
+    if (selfBanned) return _bannedMessage;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Make an account to chat here.';
+    var clean = text.trim();
+    if (clean.isEmpty) return null;
+    if (clean.length > 500) clean = clean.substring(0, 500);
+    if (_tooSoon('event_msg', 700)) return 'Slow down a sec.';
+    try {
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(
+          () => Supabase.instance.client.from('event_messages').insert({'place_id': placeId, 'sender_id': uid, 'text': clean}).select());
+      final r = rows.first;
+      final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+      final m = EventMessage(id: r['id'] as String, placeId: placeId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch);
+      _eventMessages[placeId] = [...(_eventMessages[placeId] ?? const <EventMessage>[]).where((x) => x.id != m.id), m];
+      notifyListeners();
+      return null;
+    } catch (e) {
+      if (e is PostgrestException) {
+        final m = e.message.toLowerCase();
+        if (m.contains('rate limit')) return 'Slow down a sec.';
+        if (e.code == '42501' || m.contains('row-level security')) return 'Enter the code to join this chat.';
+      }
+      return _featureError(e, feature: 'Event chat', phase: 'phase 36', fallback: "Couldn't send that");
+    }
+  }
+
+  Future<void> deleteEventMessage(EventMessage m) async {
+    try {
+      await Supabase.instance.client.from('event_messages').delete().eq('id', m.id);
+    } catch (_) {
+      return;
+    }
+    _eventMessages[m.placeId] = (_eventMessages[m.placeId] ?? const <EventMessage>[]).where((x) => x.id != m.id).toList();
+    notifyListeners();
   }
 
   /// Who took each place's picture, when it needs a credit (Google photos).
@@ -6361,7 +6763,18 @@ class AppStore extends ChangeNotifier {
       sharedPlaceId: row['place_id'] as String?,
       pollId: row['poll_id'] as String?,
       gifUrl: row['gif_url'] as String?,
+      reachMiles: (row['reach_miles'] as num?)?.toInt(),
     );
+  }
+
+  /// Whether a Live Chat message from [lat],[lng] shows for you: it's inside
+  /// your radius, or you're inside the sender's reach (their radius when
+  /// they sent it). So two friends with different radiuses still see each
+  /// other whenever either one's circle covers the other.
+  bool _chatInRange(LatLng here, double lat, double lng, int? reach) {
+    final d = milesBetween(here, LatLng(lat, lng));
+    if (d <= rangeMiles) return true;
+    return reach != null && d <= reach;
   }
 
   // The last 24 hours of Live Chat (the server never gives out older) —
@@ -6385,7 +6798,7 @@ class AppStore extends ChangeNotifier {
       final lat = m.lat;
       final lng = m.lng;
       if (lat == null || lng == null) return m.uid == 'me';
-      return near(here, LatLng(lat, lng));
+      return m.uid == 'me' || _chatInRange(here, lat, lng, m.reachMiles);
     }).toList();
     list.sort((a, b) => a.t.compareTo(b.t));
     return list;
@@ -6464,7 +6877,7 @@ class AppStore extends ChangeNotifier {
       final lng = m.lng;
       // No location on it: only the sender sees it (it could be from anywhere).
       if (lat == null || lng == null) return m.uid == 'me';
-      return near(here, LatLng(lat, lng));
+      return m.uid == 'me' || _chatInRange(here, lat, lng, m.reachMiles);
     }).toList();
     list.sort((a, b) => a.t.compareTo(b.t));
     return list;
@@ -7521,6 +7934,49 @@ class AppStore extends ChangeNotifier {
         _syncedLocationAt = null;
       }
     }());
+  }
+
+  // --- Saved posts (kept on this phone) -------------------------------------
+
+  static const _savedPostsKey = 'funky.savedPosts';
+  Set<String> savedPostIds = {};
+  bool _savedPostsLoaded = false;
+
+  bool isPostSaved(String id) {
+    if (!_savedPostsLoaded) unawaited(_loadSavedPosts());
+    return savedPostIds.contains(id);
+  }
+
+  Future<void> _loadSavedPosts() async {
+    if (_savedPostsLoaded) return;
+    _savedPostsLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_savedPostsKey);
+      if (list != null && list.isNotEmpty) {
+        savedPostIds = list.toSet();
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// Bookmark a post (or take the bookmark off). Saved on this phone.
+  Future<void> toggleSavePost(String id) async {
+    await _loadSavedPosts();
+    savedPostIds = savedPostIds.contains(id) ? ({...savedPostIds}..remove(id)) : {...savedPostIds, id};
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_savedPostsKey, savedPostIds.toList());
+    } catch (_) {}
+  }
+
+  /// Posts you bookmarked that are still around, newest first.
+  List<Post> get savedPosts {
+    if (!_savedPostsLoaded) unawaited(_loadSavedPosts());
+    final list = posts.where((p) => savedPostIds.contains(p.id)).toList();
+    list.sort((a, b) => b.t.compareTo(a.t));
+    return list;
   }
 
   // --- Live Chat: who's online, replies, GIFs (phase 33) -------------------

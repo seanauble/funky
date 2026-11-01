@@ -1,3 +1,4 @@
+import '../widgets/ios_ui.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -39,9 +40,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _confirmDelete(Story story) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showIosDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
+      builder: (dialogContext) => IosAlert(
         backgroundColor: tokens.surface,
         title: Text('Delete this memory?', style: TextStyle(color: tokens.ink)),
         content: Text("This removes it for good — it can't be undone.", style: TextStyle(color: tokens.mute)),
@@ -308,6 +309,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Row(
             children: [
               Expanded(child: Text('Posts', style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800))),
+              GestureDetector(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen(saved: true, title: 'Saved posts'))),
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 14),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.bookmark_border, size: 17, color: tokens.orange),
+                      const SizedBox(width: 3),
+                      Text('Saved', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                    ],
+                  ),
+                ),
+              ),
               if (myPosts.length > 6)
                 GestureDetector(
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen(byUid: 'me', title: 'Your posts'))),
@@ -407,12 +422,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   /// Picks a new profile photo — the in-app camera or the photo library.
   Future<void> _changePhoto(AppStore store) async {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final source = await showModalBottomSheet<_PhotoSource>(
-      context: context,
-      backgroundColor: tokens.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => _PhotoSourceSheet(canEdit: store.me.photoPath != null && File(store.me.photoPath!).existsSync()),
+    final canEdit = store.me.photoPath != null && File(store.me.photoPath!).existsSync();
+    final source = await showIosActionSheet<_PhotoSource>(
+      context,
+      title: 'Profile picture',
+      actions: [
+        const IosSheetAction('Take Photo', _PhotoSource.camera),
+        const IosSheetAction('Choose from Library', _PhotoSource.library),
+        const IosSheetAction('Pick a FUNKY Avatar', _PhotoSource.avatar),
+        if (canEdit) const IosSheetAction('Crop or Edit Current Photo', _PhotoSource.edit),
+      ],
     );
     if (source == null || !mounted) return;
     switch (source) {
@@ -694,47 +713,4 @@ class _SignedOutProfile extends StatelessWidget {
   }
 }
 
-/// The bottom sheet that asks "take a new photo or pick one from your
-/// library" when you tap the pencil badge on your profile picture.
-class _PhotoSourceSheet extends StatelessWidget {
-  final bool canEdit;
-  const _PhotoSourceSheet({this.canEdit = false});
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(width: 36, height: 4, decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
-          const SizedBox(height: 8),
-          ListTile(
-            leading: Icon(Icons.camera_alt, color: tokens.ink),
-            title: Text('Take Photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.of(context).pop(_PhotoSource.camera),
-          ),
-          ListTile(
-            leading: Icon(Icons.photo_library_outlined, color: tokens.ink),
-            title: Text('Choose from Library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.of(context).pop(_PhotoSource.library),
-          ),
-          ListTile(
-            leading: Icon(Icons.face_retouching_natural_outlined, color: tokens.ink),
-            title: Text('Pick a FUNKY avatar', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-            onTap: () => Navigator.of(context).pop(_PhotoSource.avatar),
-          ),
-          if (canEdit)
-            ListTile(
-              leading: Icon(Icons.crop_rounded, color: tokens.ink),
-              title: Text('Crop or edit current photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
-              onTap: () => Navigator.of(context).pop(_PhotoSource.edit),
-            ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-}
 
