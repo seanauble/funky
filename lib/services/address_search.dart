@@ -25,6 +25,48 @@ class AddressResult {
 /// geocoder (built on OpenStreetMap data) — no API key and no extra package.
 /// Any failure just returns an empty list so the form keeps working.
 class AddressSearch {
+  /// The street address at a map spot (reverse lookup), e.g.
+  /// "101 Atlantic City International Airport, Egg Harbor Township, NJ 08234".
+  /// Null if nothing useful comes back.
+  static Future<String?> reverse(double lat, double lng) async {
+    final uri = Uri.https('photon.komoot.io', '/reverse', {
+      'lat': lat.toStringAsFixed(6),
+      'lon': lng.toStringAsFixed(6),
+      'limit': '5',
+    });
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 8));
+      req.headers.set(HttpHeaders.userAgentHeader, 'FUNKY-app/3.0 (nightlife social app)');
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) return null;
+      final body = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 8));
+      final decoded = jsonDecode(body);
+      if (decoded is! Map || decoded['features'] is! List) return null;
+      String? best;
+      for (final f in decoded['features'] as List) {
+        if (f is! Map || f['properties'] is! Map) continue;
+        final props = f['properties'] as Map;
+        final house = _clean(props['housenumber']);
+        final street = _clean(props['street']);
+        final city = _clean(props['city']) ?? _clean(props['locality']) ?? _clean(props['district']) ?? _clean(props['county']);
+        final statePart = [_clean(props['state']), _clean(props['postcode'])].whereType<String>().join(' ');
+        final streetLine = street == null ? null : (house == null ? street : '$house $street');
+        final line = [streetLine, city, if (statePart.isNotEmpty) statePart].whereType<String>().join(', ');
+        if (line.isEmpty) continue;
+        // A result with a street beats one with just a town.
+        if (streetLine != null) return line;
+        best ??= line;
+      }
+      return best;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   static String? _clean(Object? v) {
     final s = v?.toString().trim();
     return (s == null || s.isEmpty) ? null : s;

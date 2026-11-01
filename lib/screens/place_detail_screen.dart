@@ -269,6 +269,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
             uploading: _uploadingPhoto,
             hasPicture: place.photoUrl != null,
             isAdmin: store.isAdmin,
+            signedIn: store.signedIn,
             onAdd: () => requireGuestOkThen(context, store, () => _addPicture(store)),
             onClear: () => store.clearPlacePhoto(place.id),
           ),
@@ -594,6 +595,7 @@ class _PicturePrompt extends StatelessWidget {
   final bool uploading;
   final bool hasPicture;
   final bool isAdmin;
+  final bool signedIn;
   final VoidCallback onAdd;
   final VoidCallback onClear;
   const _PicturePrompt({
@@ -601,6 +603,7 @@ class _PicturePrompt extends StatelessWidget {
     required this.uploading,
     required this.hasPicture,
     required this.isAdmin,
+    required this.signedIn,
     required this.onAdd,
     required this.onClear,
   });
@@ -644,6 +647,25 @@ class _PicturePrompt extends StatelessWidget {
             TextButton(onPressed: onClear, child: Text('Remove', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700))),
         ],
           ),
+          // The reward for a good picture of the place.
+          if (!isAdmin)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                children: [
+                  Icon(Icons.stars_rounded, size: 16, color: tokens.orange),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      signedIn
+                          ? 'Get 1,000 Funky Points when your picture is approved. Use your own photo.'
+                          : 'Log in to earn 1,000 Funky Points for an approved picture.',
+                      style: TextStyle(color: tokens.mute, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

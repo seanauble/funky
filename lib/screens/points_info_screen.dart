@@ -21,6 +21,7 @@ const _rules = [
   _PointRule('Your report becomes Verified (8+)', '+15 bonus'),
   _PointRule('Your police/shutdown report becomes Verified', '+20 bonus'),
   _PointRule('Add a missing venue', '+10'),
+  _PointRule('Your picture of a place gets approved (once per place)', '+1,000'),
   _PointRule('3-night activity streak', '+10'),
   _PointRule('7-night activity streak', '+30'),
   _PointRule('30-night activity streak', '+100'),

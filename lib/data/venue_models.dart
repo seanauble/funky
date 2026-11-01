@@ -32,6 +32,23 @@ class VenueCandidate {
     required this.placeId,
   });
 
+  /// The same venue with a filled-in address.
+  VenueCandidate withAddress(String a) => VenueCandidate(
+        id: id,
+        name: name,
+        kind: kind,
+        address: a,
+        lat: lat,
+        lng: lng,
+        distanceMiles: distanceMiles,
+        photos: photos,
+        photoIndex: photoIndex,
+        customPhotoUrl: customPhotoUrl,
+        status: status,
+        note: note,
+        placeId: placeId,
+      );
+
   VenuePhoto? get photo => photos.isEmpty ? null : photos[photoIndex.clamp(0, photos.length - 1)];
 
   static VenueCandidate? fromRow(Map<String, dynamic> r) {

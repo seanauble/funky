@@ -241,6 +241,10 @@ class _VenueCard extends StatelessWidget {
     final store = context.read<AppStore>();
     final photo = venue.photo;
     final point = ll.LatLng(venue.lat, venue.lng);
+    // No street address from OpenStreetMap? Look it up from the pin.
+    if (venue.address.trim().isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => store.ensureVenueAddress(venue));
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -347,7 +351,7 @@ class _VenueCard extends StatelessWidget {
                       Text(venue.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16)),
                       const SizedBox(height: 2),
                       Text(
-                        venue.address.isEmpty ? 'No street address on file — add one in Edit' : venue.address,
+                        venue.address.isEmpty ? 'Finding the street address… (or add one in Edit)' : venue.address,
                         style: TextStyle(color: tokens.mute, fontSize: 12.5, fontStyle: venue.address.isEmpty ? FontStyle.italic : FontStyle.normal),
                       ),
                       if (store.location != null)

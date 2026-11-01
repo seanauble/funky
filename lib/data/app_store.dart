@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/address_search.dart';
 import '../services/osm_venues.dart';
 import '../services/push_service.dart';
 import 'geo.dart';
@@ -3747,7 +3748,7 @@ class AppStore extends ChangeNotifier {
   /// show: for an admin it goes live right away, for everyone else it waits
   /// for approval. The result is [photoSuggestedMessage], [photoLiveMessage],
   /// or a plain-sentence error.
-  static const photoSuggestedMessage = 'Thanks! Your picture is waiting for admin approval.';
+  static const photoSuggestedMessage = "Thanks! Your picture is waiting for approval — you'll get 1,000 points if it's approved.";
   static const photoLiveMessage = 'Picture added.';
 
   Future<String> suggestPlacePhoto(String placeId, String path) async {
@@ -4443,6 +4444,30 @@ class AppStore extends ChangeNotifier {
     } catch (e) {
       return _featureError(e, feature: 'Venue import', phase: 'phase 21', fallback: "Couldn't save the list");
     }
+  }
+
+  // Venues whose missing address we've already looked up this session.
+  final Set<String> _addressLookups = {};
+  Future<void> _addressQueue = Future<void>.value();
+
+  /// OpenStreetMap often has a venue's exact pin but no street address —
+  /// this looks the address up from the pin (one at a time, gently) and
+  /// saves it, so it only ever happens once per venue.
+  void ensureVenueAddress(VenueCandidate v) {
+    if (!isAdmin || v.address.trim().isNotEmpty || !_addressLookups.add(v.id)) return;
+    _addressQueue = _addressQueue.then((_) async {
+      final found = await AddressSearch.reverse(v.lat, v.lng);
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (found == null || found.isEmpty) return;
+      final address = found.length > 120 ? found.substring(0, 120) : found;
+      venueCandidates = [for (final c in venueCandidates) c.id == v.id ? c.withAddress(address) : c];
+      notifyListeners();
+      try {
+        await Supabase.instance.client.rpc('set_venue_address', params: {'p_id': v.id, 'p_address': address});
+      } catch (_) {
+        // Phase 22 not run yet — it still shows for now.
+      }
+    });
   }
 
   /// Admin: moves an imported venue's pin (and the live place, if approved).
