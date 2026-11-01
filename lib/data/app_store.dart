@@ -292,6 +292,7 @@ class AppStore extends ChangeNotifier {
     await table('Place reports', 'place_reports', 'id');
     await table('Live chat', 'chat_messages', 'id');
     await table('DM photo/video columns', 'messages', 'id,media_path,read_at');
+    await table('Story reply previews (phase 25)', 'messages', 'id,story_id,story_media_path');
     await table('Chat reactions (phase 3)', 'chat_reactions', 'message_id');
     await table('Place cover photos (phase 3)', 'places', 'cover_url');
     await table('Place ratings (phase 9)', 'place_ratings', 'place_id');
@@ -1128,6 +1129,28 @@ class AppStore extends ChangeNotifier {
 
   bool isLiveStory(Story s) => DateTime.now().millisecondsSinceEpoch - s.t < storyLifetimeMs;
 
+  /// Whether a Story was posted inside your area (your radius around where
+  /// you are, or your dropped pin). A place story counts where the place is;
+  /// an Area story where the poster was. Your own always count. A story
+  /// with no location at all (posted before this was tracked) doesn't.
+  bool isStoryNearby(Story s) {
+    if (s.uid == 'me') return true;
+    double? lat = s.lat;
+    double? lng = s.lng;
+    final placeId = s.place;
+    if (placeId != null && placeId != 'main') {
+      for (final p in places) {
+        if (p.id == placeId) {
+          lat = p.lat;
+          lng = p.lng;
+          break;
+        }
+      }
+    }
+    if (lat == null || lng == null) return false;
+    return near(location ?? defaultLocation, LatLng(lat, lng));
+  }
+
   /// Someone's Stories from the last 24 hours, newest first — what their
   /// ring on Home (and the viewer opened from it) shows.
   List<Story> liveStoriesByUser(String uid) => storiesByUser(uid).where(isLiveStory).toList();
@@ -1961,7 +1984,11 @@ class AppStore extends ChangeNotifier {
   /// subscription will also see — see _onRemoteMessageInsert's no-op-if-
   /// already-present check, which is what stops that from double-posting.
   /// Returns null on success, same contract as sendMessage.
-  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false}) async {
+  ///
+  /// [replyTo] is the Story you swiped up on, if any — the message carries a
+  /// small snapshot of it (caption + the picture's storage path) so the
+  /// thread can show what you were replying to.
+  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false, Story? replyTo}) async {
     if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
@@ -1998,7 +2025,12 @@ class AppStore extends ChangeNotifier {
       status: remote ? 'sending' : 'delivered',
       mediaType: hasMedia ? mt : null,
       mediaPath: hasMedia ? mp : null,
+      storyId: replyTo?.id,
+      storyText: replyTo == null ? null : _storyReplyCaption(replyTo),
+      storyMediaPath: replyTo?.mediaPath,
+      storyIsVideo: replyTo != null && (replyTo.videoUrl != null || replyTo.videoPath != null),
     );
+    if (replyTo != null) _storyReplySnapshots[local.id] = replyTo;
     messages = _capMessages([...messages, local]);
     _lastMessageAt = now;
     notifyListeners();
@@ -2037,15 +2069,35 @@ class AppStore extends ChangeNotifier {
               ),
             );
       }
-      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => client.from('messages').insert({
-            'sender_id': uid,
-            'recipient_id': toPersonId,
-            'text': local.text,
-            if (storagePath != null) 'media_path': storagePath,
-            if (storagePath != null) 'media_type': local.mediaType,
-          }).select());
+      final base = <String, dynamic>{
+        'sender_id': uid,
+        'recipient_id': toPersonId,
+        'text': local.text,
+        if (storagePath != null) 'media_path': storagePath,
+        if (storagePath != null) 'media_type': local.mediaType,
+      };
+      final storyCols = <String, dynamic>{
+        if (local.storyId != null && _looksLikeUuid(local.storyId!)) 'story_id': local.storyId,
+        if (local.storyText != null) 'story_text': local.storyText,
+        if (local.storyMediaPath != null) 'story_media_path': local.storyMediaPath,
+        if (local.isStoryReply) 'story_is_video': local.storyIsVideo,
+      };
+      List<Map<String, dynamic>> rows;
+      try {
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(
+            () => client.from('messages').insert({...base, ...storyCols}).select());
+      } on PostgrestException catch (e) {
+        // Server hasn't run phase25 yet (no story_* columns) — still send
+        // the message itself, just without the Story preview attached.
+        final msg = e.message.toLowerCase();
+        final missingCol = storyCols.isNotEmpty && (e.code == 'PGRST204' || e.code == '42703' || msg.contains('story_'));
+        if (!missingCol) rethrow;
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => client.from('messages').insert(base).select());
+      }
       final serverId = rows.first['id'] as String;
       _remoteMessageIds.add(serverId);
+      final snap = _storyReplySnapshots.remove(local.id);
+      if (snap != null) _storyReplySnapshots[serverId] = snap;
       messages = messages
           .where((m) => m.id != serverId)
           .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
@@ -2164,6 +2216,9 @@ class AppStore extends ChangeNotifier {
       }
     }
 
+    // Where you really are right now (never an admin's dropped pin) — keeps
+    // an Area story inside the area it was posted in.
+    final here = _gpsLocation;
     String? remoteId;
     final uid = supabaseUserId;
     if (signedIn && uid != null) {
@@ -2184,7 +2239,7 @@ class AppStore extends ChangeNotifier {
           final bytes = await mediaFile.readAsBytes();
           await client.storage.from('stories').uploadBinary(mediaPath, bytes, fileOptions: const FileOptions(upsert: false));
         }
-        final rows = await client.from('stories').insert({
+        final row = <String, dynamic>{
           'uid': uid,
           'text': text,
           'place_id': place == 'main' ? null : place,
@@ -2192,7 +2247,22 @@ class AppStore extends ChangeNotifier {
           'anon': anon,
           'media_path': mediaPath,
           'is_video': videoPath != null,
-        }).select();
+          if (here != null) 'lat': here.lat,
+          if (here != null) 'lng': here.lng,
+        };
+        List<Map<String, dynamic>> rows;
+        try {
+          rows = await client.from('stories').insert(row).select();
+        } on PostgrestException catch (e) {
+          // The lat/lng columns arrive with phase 24 — post without them
+          // until that SQL has been run.
+          final m = '${e.code} ${e.message}'.toLowerCase();
+          if (!(m.contains('lat') || m.contains('lng') || m.contains('pgrst204'))) rethrow;
+          row
+            ..remove('lat')
+            ..remove('lng');
+          rows = await client.from('stories').insert(row).select();
+        }
         remoteId = rows.first['id'] as String;
       } catch (_) {
         // Falls through to the local-only post below.
@@ -2210,6 +2280,8 @@ class AppStore extends ChangeNotifier {
       placeName: placeName,
       anon: anon,
       session: sessionKey(),
+      lat: here?.lat,
+      lng: here?.lng,
       // A real post starts at its real (zero) view count — the demo-seed
       // "a couple people already saw it" boost below is only for the
       // local-only fallback, so a brand-new real account's feed doesn't
@@ -4802,7 +4874,8 @@ class AppStore extends ChangeNotifier {
       if (m.uid != 'me' && isBanned(m.uid)) return false;
       final lat = m.lat;
       final lng = m.lng;
-      return lat == null || lng == null || near(here, LatLng(lat, lng));
+      if (lat == null || lng == null) return m.uid == 'me';
+      return near(here, LatLng(lat, lng));
     }).toList();
     list.sort((a, b) => a.t.compareTo(b.t));
     return list;
@@ -4868,8 +4941,8 @@ class AppStore extends ChangeNotifier {
   }
 
   /// The Live Chat feed for display: tonight's area messages from people
-  /// within 25 miles of where you are (a message with no recorded location
-  /// is always shown), minus anyone who's banned.
+  /// within your radius of where you are (a message with no recorded
+  /// location only shows to whoever sent it), minus anyone who's banned.
   List<ChatMessage> get liveChatMessages {
     final here = location ?? defaultLocation;
     final start = _sessionStartMs();
@@ -4879,8 +4952,9 @@ class AppStore extends ChangeNotifier {
       if (m.uid != 'me' && isBanned(m.uid)) return false;
       final lat = m.lat;
       final lng = m.lng;
-      if (lat != null && lng != null && !near(here, LatLng(lat, lng))) return false;
-      return true;
+      // No location on it: only the sender sees it (it could be from anywhere).
+      if (lat == null || lng == null) return m.uid == 'me';
+      return near(here, LatLng(lat, lng));
     }).toList();
     list.sort((a, b) => a.t.compareTo(b.t));
     return list;
@@ -5015,6 +5089,9 @@ class AppStore extends ChangeNotifier {
       savedToTimeline: row['saved_to_timeline'] as bool? ?? false,
       imageUrl: mediaUrl != null && !isVideo ? mediaUrl : null,
       videoUrl: mediaUrl != null && isVideo ? mediaUrl : null,
+      lat: (row['lat'] as num?)?.toDouble(),
+      lng: (row['lng'] as num?)?.toDouble(),
+      mediaPath: mediaPath,
     );
   }
 
@@ -5155,8 +5232,78 @@ class AppStore extends ChangeNotifier {
       anon: false,
       status: senderId == uid && row['read_at'] != null ? 'seen' : 'delivered',
       mediaType: row['media_path'] != null ? (row['media_type'] as String? ?? 'image') : null,
+      storyId: row['story_id'] as String?,
+      storyText: row['story_text'] as String?,
+      storyMediaPath: row['story_media_path'] as String?,
+      storyIsVideo: row['story_is_video'] as bool? ?? false,
     );
   }
+
+  // ── Story replies in DMs ────────────────────────────────────────────────
+  // The Story a just-sent reply answered, kept for this run so your own
+  // bubble can show the picture straight away (from the Story's already-
+  // signed URL or local file) before anything round-trips the server.
+  final Map<String, Story> _storyReplySnapshots = {};
+  final Map<String, Future<String?>> _storyPreviewUrls = {};
+  final Map<String, String> _storyPreviewResolved = {};
+
+  /// The Story [m] replied to, if it's still around on this phone (yours or
+  /// one you've loaded) — null once it's expired or was never fetched here.
+  Story? storyForReply(ChatMessage m) {
+    final snap = _storyReplySnapshots[m.id];
+    if (snap != null) return snap;
+    final id = m.storyId;
+    if (id == null) return null;
+    for (final s in stories) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
+  /// A signed URL for a replied-to Story's picture (stories bucket is
+  /// private). The same Future is handed back for the same path, so a
+  /// FutureBuilder in a thread doesn't restart (and flash) on every rebuild.
+  /// Resolves to null when it's gone or this account can't read it; a miss
+  /// is retried after a couple of minutes, a hit is re-signed after 5 hours.
+  Future<String?> storyPreviewUrl(String path) {
+    final cached = _storyPreviewUrls[path];
+    if (cached != null) return cached;
+    final f = () async {
+      if (!canUseServer) return null;
+      try {
+        final url = await Supabase.instance.client.storage.from('stories').createSignedUrl(path, 6 * 3600);
+        _storyPreviewResolved[path] = url;
+        return url;
+      } catch (_) {
+        return null;
+      }
+    }();
+    _storyPreviewUrls[path] = f;
+    unawaited(f.then((url) {
+      Timer(url == null ? const Duration(minutes: 2) : const Duration(hours: 5), () {
+        if (identical(_storyPreviewUrls[path], f)) {
+          _storyPreviewUrls.remove(path);
+          _storyPreviewResolved.remove(path);
+        }
+      });
+    }));
+    return f;
+  }
+
+  /// The already-signed preview URL for [path], if we have one — lets a
+  /// freshly built bubble show the picture on its very first frame.
+  String? cachedStoryPreviewUrl(String path) => _storyPreviewResolved[path];
+
+  String? _storyReplyCaption(Story s) {
+    final t = s.text?.trim();
+    if (t != null && t.isNotEmpty) return t.length > 120 ? '${t.substring(0, 120)}…' : t;
+    final p = s.placeName?.trim();
+    if (p != null && p.isNotEmpty) return '📍 $p';
+    return null;
+  }
+
+  static final RegExp _uuidRe = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
+  bool _looksLikeUuid(String s) => _uuidRe.hasMatch(s);
 
   /// A short-lived signed URL for a DM photo/video (the dm_media bucket is
   /// private). Null if the row has no media or signing fails.

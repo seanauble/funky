@@ -30,6 +30,17 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
   String? _currentStoryId;
 
   VideoPlayerController? _videoController;
+  // The story whose video already finished and moved us on.
+  String? _endedFor;
+
+  // Closing more than once (a video ending + a swipe at the same moment)
+  // used to pop the screen underneath too and leave a black screen.
+  bool _closing = false;
+  void _close() {
+    if (_closing || !mounted) return;
+    _closing = true;
+    Navigator.of(context).maybePop();
+  }
   String? _videoForStoryId;
 
   // Vertical swipe-to-dismiss — same as the per-person StoryViewerScreen.
@@ -71,7 +82,9 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
         localPath != null ? VideoPlayerController.file(File(localPath)) : VideoPlayerController.networkUrl(Uri.parse(story.videoUrl!));
     controller.addListener(() {
       final value = controller.value;
-      if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero) {
+      // Fires over and over once a video sits at its end — only move on once.
+      if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero && _endedFor != story.id) {
+        _endedFor = story.id;
         advance();
       }
     });
@@ -92,7 +105,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
 
     if (stories.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) Navigator.of(context).pop();
+        _close();
       });
       return const Scaffold(backgroundColor: Colors.black, body: SizedBox.shrink());
     }
@@ -113,7 +126,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
       if (_i < stories.length - 1) {
         setState(() => _i++);
       } else {
-        Navigator.of(context).pop();
+        _close();
       }
     }
 
@@ -136,7 +149,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
           onVerticalDragUpdate: (details) => setState(() => _dragDy = (_dragDy + details.delta.dy).clamp(0, 400)),
           onVerticalDragEnd: (details) {
             if (_dragDy > 90 || (details.primaryVelocity ?? 0) > 700) {
-              Navigator.of(context).pop();
+              _close();
             } else {
               setState(() => _dragDy = 0);
             }
@@ -276,7 +289,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: _close,
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],

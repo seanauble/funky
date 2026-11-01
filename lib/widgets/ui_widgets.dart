@@ -730,6 +730,16 @@ Future<Uint8List> mirrorImageBytes(Uint8List bytes) async {
   }
 }
 
+/// Closes the screen [context] belongs to — but only if it's still the one
+/// on top. Two "close" triggers landing at once (a call ending while you hang
+/// up, a video finishing while you swipe away) used to pop the screen
+/// underneath too, and popping the very first screen leaves a black screen.
+void popIfCurrent(BuildContext context) {
+  final route = ModalRoute.of(context);
+  if (route != null && !route.isCurrent) return;
+  Navigator.of(context).maybePop();
+}
+
 class FunkyHandle extends StatelessWidget {
   final String handle;
   // Optional — when the full Person is on hand, their point-unlocked

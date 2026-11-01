@@ -15,6 +15,8 @@ import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'call_screen.dart';
 import 'camera_capture_screen.dart';
+import 'profile_parts.dart';
+import 'story_viewer_screen.dart';
 
 /// A private 1:1 thread with one other person — reached from the Messages
 /// tab in Chat, the "Message" button on someone's profile, or swiping up
@@ -28,7 +30,10 @@ import 'camera_capture_screen.dart';
 /// must be under AppStore.maxDmVideoBytes).
 class DmThreadScreen extends StatefulWidget {
   final String personId;
-  const DmThreadScreen({super.key, required this.personId});
+  // Set when you got here by swiping up on their Story: your next message
+  // is sent as a reply to it, with a little preview of the Story above it.
+  final Story? replyToStory;
+  const DmThreadScreen({super.key, required this.personId, this.replyToStory});
 
   @override
   State<DmThreadScreen> createState() => _DmThreadScreenState();
@@ -40,6 +45,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
 
   bool _sendingMedia = false;
   int _shownCount = -1;
+  late Story? _replyStory = widget.replyToStory;
 
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -53,12 +59,14 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
   }
 
   Future<void> _sendMedia(AppStore store, String path, bool isVideo) async {
-    final error = await store.sendDirectMessage(widget.personId, '', mediaPath: path, mediaType: isVideo ? 'video' : 'image');
+    final reply = _replyStory;
+    final error = await store.sendDirectMessage(widget.personId, '', mediaPath: path, mediaType: isVideo ? 'video' : 'image', replyTo: reply);
     if (!mounted) return;
     if (error != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
       return;
     }
+    if (reply != null && identical(_replyStory, reply)) setState(() => _replyStory = null);
     _scrollToEnd();
   }
 
@@ -132,7 +140,8 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
       // now that a real account's send is a genuine await instead of a
       // synchronous local-only write.
       _draftController.clear();
-      final error = await store.sendDirectMessage(widget.personId, text);
+      final reply = _replyStory;
+      final error = await store.sendDirectMessage(widget.personId, text, replyTo: reply);
       if (!mounted) return;
       if (error != null) {
         // Put the text back so a "slow down" doesn't eat what you typed.
@@ -140,6 +149,8 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
         return;
       }
+      // Only the first message answers the Story; after that it's a normal chat.
+      if (reply != null && identical(_replyStory, reply)) setState(() => _replyStory = null);
       _scrollToEnd();
     }
     requireAccountThen(context, store, doSend);
@@ -293,6 +304,13 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                       },
                     ),
             ),
+            if (_replyStory != null)
+              _ReplyingToStoryBar(
+                story: _replyStory!,
+                handle: person.handle,
+                tokens: tokens,
+                onCancel: () => setState(() => _replyStory = null),
+              ),
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
@@ -316,8 +334,9 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                       child: TextField(
                         controller: _draftController,
                         maxLength: 240,
+                        autofocus: widget.replyToStory != null,
                         decoration: InputDecoration(
-                          hintText: 'Message @${person.handle}',
+                          hintText: _replyStory != null ? 'Reply to @${person.handle}…' : 'Message @${person.handle}',
                           hintStyle: TextStyle(color: tokens.mute),
                           filled: true,
                           fillColor: tokens.raised,
@@ -393,12 +412,19 @@ class DmBubble extends StatelessWidget {
             )
           : filteredMessageText(message.text, TextStyle(color: textColor)),
     );
+    final storyPreview = message.isStoryReply
+        ? Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: StoryReplyPreview(message: message, tokens: tokens, mine: mine, otherHandle: other.handle),
+          )
+        : null;
     if (mine) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            if (storyPreview != null) storyPreview,
             bubble,
             if (statusLabel != null)
               GestureDetector(
@@ -445,12 +471,180 @@ class DmBubble extends StatelessWidget {
                     padding: const EdgeInsets.only(left: 4, bottom: 2),
                     child: Text(senderLabel!, style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w700)),
                   ),
+                if (storyPreview != null) storyPreview,
                 bubble,
               ],
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The strip above the message box after you swipe up on someone's Story:
+/// a tiny thumbnail of it and "Replying to @x's story", with ✕ to send a
+/// normal message instead.
+class _ReplyingToStoryBar extends StatelessWidget {
+  final Story story;
+  final String handle;
+  final ThemeTokens tokens;
+  final VoidCallback onCancel;
+  const _ReplyingToStoryBar({required this.story, required this.handle, required this.tokens, required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    final caption = story.text?.trim();
+    final sub = caption != null && caption.isNotEmpty
+        ? caption
+        : (story.placeName?.isNotEmpty == true ? story.placeName! : (storyHasVideo(story) ? 'Video' : 'Photo'));
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
+      child: Row(
+        children: [
+          Container(width: 3, height: 44, decoration: BoxDecoration(color: tokens.brand, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(width: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(width: 33, height: 44, child: storyMedia(story, tokens)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Replying to @$handle's story", maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 2),
+                Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12)),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Send a normal message instead',
+            visualDensity: VisualDensity.compact,
+            onPressed: onCancel,
+            icon: Icon(Icons.close, color: tokens.mute, size: 20),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The little Story card above a message that was sent by swiping up on a
+/// Story — "Replied to their story" / "Replied to your story" plus a small
+/// picture of it. Uses the Story itself while it's still loaded on this
+/// phone, otherwise signs the saved picture path; falls back to the caption
+/// or "Story no longer available". Tap it to watch the Story if it's still up.
+class StoryReplyPreview extends StatelessWidget {
+  final ChatMessage message;
+  final ThemeTokens tokens;
+  final bool mine;
+  final String otherHandle;
+  const StoryReplyPreview({super.key, required this.message, required this.tokens, required this.mine, required this.otherHandle});
+
+  static const double _w = 96;
+  static const double _h = 140;
+
+  Widget _gone(String? caption) => Container(
+        color: tokens.raised,
+        padding: const EdgeInsets.all(8),
+        alignment: Alignment.center,
+        child: Text(
+          caption?.isNotEmpty == true ? caption! : 'Story no longer available',
+          maxLines: 5,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: caption?.isNotEmpty == true ? tokens.ink : tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w600),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.read<AppStore>();
+    final story = store.storyForReply(message);
+    final path = message.storyMediaPath;
+    Widget thumb;
+    final hasPicture = story != null &&
+        (story.imageUrl != null || storyHasVideo(story) || (story.imagePath != null && File(story.imagePath!).existsSync()));
+    if (story != null && (hasPicture || path == null)) {
+      thumb = storyMedia(story, tokens);
+    } else if (path != null) {
+      thumb = FutureBuilder<String?>(
+        future: store.storyPreviewUrl(path),
+        initialData: store.cachedStoryPreviewUrl(path),
+        builder: (context, snap) {
+          if (!snap.hasData && snap.connectionState != ConnectionState.done) {
+            return Container(
+              color: tokens.raised,
+              alignment: Alignment.center,
+              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: tokens.mute)),
+            );
+          }
+          final url = snap.data;
+          if (url == null) return _gone(message.storyText);
+          if (message.storyIsVideo) return VideoFrameThumbnail(url: url);
+          return Image.network(
+            url,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: double.infinity,
+            errorBuilder: (_, __, ___) => _gone(message.storyText),
+          );
+        },
+      );
+    } else {
+      thumb = _gone(message.storyText);
+    }
+    final isVideo = story != null ? storyHasVideo(story) : message.storyIsVideo;
+    final label = mine ? (otherHandle.isNotEmpty ? "You replied to @$otherHandle's story" : 'You replied to their story') : 'Replied to your story';
+    final card = ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
+        width: _w,
+        height: _h,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            thumb,
+            if (isVideo) const Center(child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 30)),
+          ],
+        ),
+      ),
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, right: 4, bottom: 4),
+          child: Text(label, style: TextStyle(color: tokens.mute, fontSize: 11.5, fontWeight: FontWeight.w600)),
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (!mine) Container(width: 3, height: _h, margin: const EdgeInsets.only(right: 8), decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
+            GestureDetector(
+              onTap: () {
+                if (story != null && store.isLiveStory(story)) {
+                  final queue = store.liveStoriesByUser(story.uid).reversed.toList();
+                  final idx = queue.indexWhere((s) => s.id == story.id);
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => StoryViewerScreen(personIds: [story.uid], initialStoryIndex: idx < 0 ? 0 : idx),
+                  ));
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('That story has ended.')));
+                }
+              },
+              child: card,
+            ),
+            if (mine) Container(width: 3, height: _h, margin: const EdgeInsets.only(left: 8), decoration: BoxDecoration(color: tokens.line, borderRadius: BorderRadius.circular(2))),
+          ],
+        ),
+      ],
     );
   }
 }

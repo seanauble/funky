@@ -62,13 +62,17 @@ class _HomeScreenState extends State<HomeScreen> {
     // that happens to have stories" (that mismatch was why rings used to
     // show up for the wrong people and did nothing when tapped), and not
     // someone whose only Story tonight is at an unconfirmed venue.
-    // Only Stories from the last 24 hours make a ring.
-    bool hasUnseenFrom(String uid) => store.liveStoriesByUser(uid).any((s) => !s.views.contains('me'));
+    // Only Stories from the last 24 hours make a ring. On the Friends tab
+    // the rings are your friends' stories from anywhere; everywhere else
+    // they're stories posted inside your area (your radius).
+    final friendsOnly = _tab == _HomeTab.friends;
+    bool isFriend(String uid) => store.me.friends.contains(uid);
+    bool counts(Story s) => friendsOnly ? isFriend(s.uid) : store.isStoryNearby(s);
+    bool hasUnseenFrom(String uid) => store.liveStoriesByUser(uid).any((s) => counts(s) && !s.views.contains('me'));
     final storytellerIds = <String>{
       for (final s in store.stories)
-        if (store.isLiveStory(s) && (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!))) s.uid,
+        if (store.isLiveStory(s) && counts(s) && (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!))) s.uid,
     }..remove('me')..removeWhere(store.isBanned);
-    bool isFriend(String uid) => store.me.friends.contains(uid);
     // Friends always lead the queue (green ring), full stop — ahead of
     // unwatched strangers, not just tie-broken by them. Within each of
     // those two groups, unwatched rings still come before already-watched
@@ -125,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   preview: hasMyStories ? storyMedia(myStories.first, tokens) : null,
                   onTap: hasMyStories
                       ? () => Navigator.of(context)
-                          .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0)))
+                          .push(MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: 0, nearOnly: !friendsOnly)))
                       : () => showCreateSheet(context),
                   // The little camera badge in the corner is always a
                   // shortcut straight to the camera, even once you have
@@ -144,7 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     isFriend: isFriend(uid),
                     onLongPress: () => openProfile(context, uid),
                     onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: storyQueue.indexOf(uid))),
+                      MaterialPageRoute(builder: (_) => StoryViewerScreen(personIds: storyQueue, initialIndex: storyQueue.indexOf(uid), nearOnly: !friendsOnly)),
                     ),
                   );
                 }),

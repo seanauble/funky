@@ -31,7 +31,16 @@ class StoryViewerScreen extends StatefulWidget {
   // false (rings): only Stories from the last 24 hours. true (tapping a
   // Memory on a profile): everything that person lets you see.
   final bool memories;
-  const StoryViewerScreen({super.key, required this.personIds, this.initialIndex = 0, this.initialStoryIndex = 0, this.memories = false});
+  // Opened from Home's area rings: only stories posted inside your area.
+  final bool nearOnly;
+  const StoryViewerScreen({
+    super.key,
+    required this.personIds,
+    this.initialIndex = 0,
+    this.initialStoryIndex = 0,
+    this.memories = false,
+    this.nearOnly = false,
+  });
 
   @override
   State<StoryViewerScreen> createState() => _StoryViewerScreenState();
@@ -44,6 +53,17 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   String? _currentStoryId;
 
   VideoPlayerController? _videoController;
+  // The story whose video already finished and moved us on.
+  String? _endedFor;
+
+  // Closing more than once (a video ending + a swipe at the same moment)
+  // used to pop the screen underneath too and leave a black screen.
+  bool _closing = false;
+  void _close() {
+    if (_closing || !mounted) return;
+    _closing = true;
+    Navigator.of(context).maybePop();
+  }
   String? _videoForStoryId;
 
   // Vertical swipe-to-dismiss (rule: "u can swipe out") — drag down far
@@ -164,7 +184,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
         localPath != null ? VideoPlayerController.file(File(localPath)) : VideoPlayerController.networkUrl(Uri.parse(story.videoUrl!));
     controller.addListener(() {
       final value = controller.value;
-      if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero) {
+      // Fires over and over once a video sits at its end — only move on once.
+      if (value.isInitialized && !value.isPlaying && value.position >= value.duration && value.duration > Duration.zero && _endedFor != story.id) {
+        _endedFor = story.id;
         advance();
       }
     });
@@ -186,7 +208,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     // only ever get tonight's — memories are friends-only (visibleStoriesByUser).
     final stories = (widget.memories
             ? store.visibleStoriesByUser(personId).where((s) => personId == 'me' || !s.anon).toList()
-            : store.liveStoriesByUser(personId))
+            : store.liveStoriesByUser(personId).where((s) => !widget.nearOnly || store.isStoryNearby(s)).toList())
         .reversed
         .toList(growable: false);
 
@@ -204,7 +226,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             _i = 0;
           });
         } else {
-          Navigator.of(context).pop();
+          _close();
         }
       });
       return const Scaffold(backgroundColor: Colors.black, body: SizedBox.shrink());
@@ -234,7 +256,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
           _i = 0;
         });
       } else {
-        Navigator.of(context).pop();
+        _close();
       }
     }
 
@@ -371,7 +393,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     // Swipe up on someone ELSE's story opens a DM with them — "anyone can
     // message anyone" straight from what they just posted, Snapchat-style.
     void messageFromStory() {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id)));
+      // The DM opens "replying to" this Story, so the message lands in the
+      // chat with a little preview of what you swiped up on.
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id, replyToStory: story)));
     }
 
     void handleSwipeUp() {
@@ -410,7 +434,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
           onVerticalDragEnd: (details) {
             final velocity = details.primaryVelocity ?? 0;
             if (_dragDy > 90 || velocity > 700) {
-              Navigator.of(context).pop();
+              _close();
             } else if (_dragDy == 0 && velocity < -500) {
               // Only counts as the swipe-up gesture if you weren't already
               // mid-way through a downward drag-to-dismiss (_dragDy == 0) —
@@ -662,7 +686,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                           : const Icon(Icons.download_outlined, color: Colors.white),
                     ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: _close,
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],

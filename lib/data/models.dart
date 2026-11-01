@@ -275,6 +275,15 @@ class ChatMessage {
   // "everyone within 25 miles" actually mean that. Null for DMs.
   final double? lat;
   final double? lng;
+  // A DM sent by swiping up on someone's Story: which Story it answers, and
+  // enough of it (caption, the picture's storage path) to show a small
+  // preview above the message even after the Story itself is gone.
+  final String? storyId;
+  final String? storyText;
+  final String? storyMediaPath;
+  final bool storyIsVideo;
+
+  bool get isStoryReply => storyId != null || storyMediaPath != null || storyText != null;
 
   const ChatMessage({
     required this.id,
@@ -290,6 +299,10 @@ class ChatMessage {
     this.mediaUrl,
     this.lat,
     this.lng,
+    this.storyId,
+    this.storyText,
+    this.storyMediaPath,
+    this.storyIsVideo = false,
   });
 
   bool get hasMedia => mediaType != null && (mediaPath != null || mediaUrl != null);
@@ -314,6 +327,10 @@ class ChatMessage {
         mediaUrl: mediaUrl ?? this.mediaUrl,
         lat: lat,
         lng: lng,
+        storyId: storyId,
+        storyText: storyText,
+        storyMediaPath: storyMediaPath,
+        storyIsVideo: storyIsVideo,
       );
 
   Map<String, dynamic> toJson() => {
@@ -329,6 +346,10 @@ class ChatMessage {
         'mediaPath': mediaPath,
         'lat': lat,
         'lng': lng,
+        'storyId': storyId,
+        'storyText': storyText,
+        'storyMediaPath': storyMediaPath,
+        'storyIsVideo': storyIsVideo,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -346,6 +367,10 @@ class ChatMessage {
         mediaPath: json['mediaPath'] as String?,
         lat: (json['lat'] as num?)?.toDouble(),
         lng: (json['lng'] as num?)?.toDouble(),
+        storyId: json['storyId'] as String?,
+        storyText: json['storyText'] as String?,
+        storyMediaPath: json['storyMediaPath'] as String?,
+        storyIsVideo: json['storyIsVideo'] as bool? ?? false,
       );
 }
 
@@ -397,6 +422,13 @@ class Story {
   // expires, so it's always worth re-resolving fresh rather than caching.
   final String? imageUrl;
   final String? videoUrl;
+  // Where the poster was when they posted — what keeps an Area story inside
+  // the area it was posted in. Null for older stories.
+  final double? lat;
+  final double? lng;
+  // Where the photo/video lives in the server's stories bucket (someone
+  // else's Story) — lets a DM reply show a preview of it later.
+  final String? mediaPath;
 
   const Story({
     required this.id,
@@ -415,6 +447,9 @@ class Story {
     this.savedToTimeline = false,
     this.imageUrl,
     this.videoUrl,
+    this.lat,
+    this.lng,
+    this.mediaPath,
   });
 
   Story copyWith({List<String>? likes, List<String>? views, List<String>? screenshotBy, bool? savedToTimeline}) => Story(
@@ -434,6 +469,9 @@ class Story {
         savedToTimeline: savedToTimeline ?? this.savedToTimeline,
         imageUrl: imageUrl,
         videoUrl: videoUrl,
+        lat: lat,
+        lng: lng,
+        mediaPath: mediaPath,
       );
 
   Map<String, dynamic> toJson() => {
@@ -451,6 +489,9 @@ class Story {
         'videoPath': videoPath,
         'placeName': placeName,
         'savedToTimeline': savedToTimeline,
+        'lat': lat,
+        'lng': lng,
+        'mediaPath': mediaPath,
       };
 
   factory Story.fromJson(Map<String, dynamic> json) => Story(
@@ -468,6 +509,9 @@ class Story {
         videoPath: json['videoPath'] as String?,
         placeName: json['placeName'] as String?,
         savedToTimeline: json['savedToTimeline'] as bool? ?? false,
+        lat: (json['lat'] as num?)?.toDouble(),
+        lng: (json['lng'] as num?)?.toDouble(),
+        mediaPath: json['mediaPath'] as String?,
       );
 }
 

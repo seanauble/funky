@@ -600,6 +600,22 @@ class _ConvoRow extends StatelessWidget {
             ),
           ],
         );
+      } else if (msg.isStoryReply) {
+        final who = msg.uid == 'me' ? 'You replied to their story' : 'Replied to your story';
+        subtitle = Row(
+          children: [
+            Icon(Icons.reply_rounded, size: 15, color: previewColor),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                msg.text.isEmpty ? who : '$who: ${msg.text}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: previewStyle,
+              ),
+            ),
+          ],
+        );
       } else {
         subtitle = Text('$prefix${msg.text}', maxLines: 1, overflow: TextOverflow.ellipsis, style: previewStyle);
       }

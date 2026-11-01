@@ -1,4 +1,4 @@
--- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23). Paste ALL of this into the
+-- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25). Paste ALL of this into the
 -- Supabase SQL Editor and press Run. Safe to re-run.
 
 
@@ -3118,5 +3118,52 @@ end;
 $$;
 
 grant execute on function public.review_place_photo(uuid, boolean) to authenticated;
+
+
+-- ======================== phase24.sql ========================
+-- ============================================================
+-- Phase 24: stories remember where they were posted, so an Area story
+-- only shows to people within range of it (the app filters by your radius).
+-- Safe to run more than once.
+-- ============================================================
+
+alter table public.stories add column if not exists lat double precision;
+alter table public.stories add column if not exists lng double precision;
+
+
+-- ======================== phase25.sql ========================
+-- ============================================================
+-- Phase 25: replying to a Story from the Story viewer ("swipe up")
+-- sends a DM that remembers which Story it answered, so both people
+-- see a small preview of it above the message in the chat.
+-- Safe to run more than once.
+-- ============================================================
+
+alter table public.messages add column if not exists story_id uuid;
+alter table public.messages add column if not exists story_text text;
+alter table public.messages add column if not exists story_media_path text;
+alter table public.messages add column if not exists story_is_video boolean not null default false;
+
+-- Keep the snapshot small.
+alter table public.messages drop constraint if exists messages_story_text_len;
+alter table public.messages add constraint messages_story_text_len
+  check (story_text is null or char_length(story_text) <= 200);
+
+-- The two people in a story-reply DM can keep loading that Story's
+-- picture for the preview, even after the 24 hours are up.
+drop policy if exists "Read story media replied to in your DMs" on storage.objects;
+create policy "Read story media replied to in your DMs"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'stories'
+    and exists (
+      select 1 from public.messages m
+      where m.story_media_path = name
+        and (m.sender_id = auth.uid() or m.recipient_id = auth.uid())
+    )
+  );
+
+create index if not exists messages_story_media_path_idx
+  on public.messages (story_media_path) where story_media_path is not null;
 
 select 'FUNKY backend ready' as status;

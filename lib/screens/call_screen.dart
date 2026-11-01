@@ -65,7 +65,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     if (_closed || !mounted) return;
     _closed = true;
     context.read<AppStore>().clearIncomingCall();
-    Navigator.of(context).pop();
+    popIfCurrent(context);
   }
 
   Future<void> _answer() async {
@@ -78,7 +78,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
       _closed = true;
       store.clearIncomingCall();
-      Navigator.of(context).pop();
+      popIfCurrent(context);
       return;
     }
     _closed = true;
@@ -95,7 +95,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     unawaited(store.respondToCall(widget.callId, 'decline'));
     _closed = true;
     store.clearIncomingCall();
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) popIfCurrent(context);
   }
 
   @override
@@ -330,7 +330,7 @@ class _CallScreenState extends State<CallScreen> {
       await _room?.disconnect();
     } catch (_) {}
     await Future<void>.delayed(const Duration(milliseconds: 1400));
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) popIfCurrent(context);
   }
 
   Future<void> _hangUp() async {
@@ -346,7 +346,7 @@ class _CallScreenState extends State<CallScreen> {
     try {
       await _room?.disconnect();
     } catch (_) {}
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) popIfCurrent(context);
   }
 
   Future<void> _toggleMic() async {
@@ -707,7 +707,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
       await _room?.disconnect();
     } catch (_) {}
     await Future<void>.delayed(const Duration(milliseconds: 1400));
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) popIfCurrent(context);
   }
 
   Future<void> _leave() async {
@@ -724,7 +724,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
       await _room?.disconnect();
     } catch (_) {}
     unawaited(store.refreshGroupCalls());
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) popIfCurrent(context);
   }
 
   Future<void> _toggleMic() async {
