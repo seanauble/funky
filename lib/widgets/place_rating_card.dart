@@ -224,7 +224,7 @@ class _PlaceRatingCardState extends State<PlaceRatingCard> {
               ),
             ],
             Text(
-              'You can rate this place again on ${stats!.nextLabel}.',
+              'You can rate this place again on ${stats.nextLabel}.',
               style: TextStyle(color: tokens.mute, fontSize: 12.5),
             ),
           ],

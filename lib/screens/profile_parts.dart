@@ -361,7 +361,7 @@ class PlaceMemoriesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final all = personId == 'me' ? store.myStories : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
+    final all = personId == 'me' ? store.myMemories : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
     final here = all.where((s) => s.place == placeId).toList();
     final stillListed = store.places.any((p) => p.id == placeId);
     return Scaffold(
@@ -421,7 +421,7 @@ class PlacesBeenScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final stories = personId == 'me' ? store.myStories : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
+    final stories = personId == 'me' ? store.myMemories : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
     final places = memoryPlacesFrom(stories, store);
     return Scaffold(
       backgroundColor: tokens.bg,

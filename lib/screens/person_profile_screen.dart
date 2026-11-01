@@ -4,10 +4,12 @@ import '../data/app_store.dart';
 import 'account_screen.dart';
 import '../widgets/rainbow_ring.dart';
 import '../data/models.dart';
+import '../data/post_models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
 import 'admin_manage_user_screen.dart';
 import 'dm_thread_screen.dart';
+import 'posts_screen.dart';
 import 'profile_parts.dart';
 import '../services/share_links.dart';
 import '../root_shell.dart' show rootShellTabRequest;
@@ -57,7 +59,7 @@ class PersonProfileScreen extends StatefulWidget {
 }
 
 class _PersonProfileScreenState extends State<PersonProfileScreen> {
-  int _tab = 0; // 0 = Memories, 1 = Places
+  int _tab = 0; // 0 = Posts, 1 = Memories, 2 = Places
 
   String get personId => widget.personId;
 
@@ -65,7 +67,10 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<AppStore>().loadFriendCount(personId);
+      if (!mounted) return;
+      final store = context.read<AppStore>();
+      store.loadFriendCount(personId);
+      store.fetchPostsBy(personId);
     });
   }
 
@@ -100,6 +105,15 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
                 title: Text('Report this profile', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
                 onTap: () => Navigator.of(sheetContext).pop('report'),
               ),
+            if (store.signedIn)
+              ListTile(
+                leading: Icon(store.isBlocked(personId) ? Icons.lock_open_outlined : Icons.block, color: tokens.danger),
+                title: Text(
+                  store.isBlocked(personId) ? 'Unblock @${person.handle}' : 'Block @${person.handle}',
+                  style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w600),
+                ),
+                onTap: () => Navigator.of(sheetContext).pop(store.isBlocked(personId) ? 'unblock' : 'block'),
+              ),
             // Admin tools live on their own screen, never on the profile.
             if (store.isAdmin)
               ListTile(
@@ -132,6 +146,30 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
         if (ok == true) store.removeFriend(personId);
       case 'report':
         await _reportProfile(context, store, personId, person.handle);
+      case 'block':
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (d) => AlertDialog(
+            backgroundColor: tokens.surface,
+            title: Text('Block @${person.handle}?', style: TextStyle(color: tokens.ink)),
+            content: Text(
+              "They won't be able to message you, friend you or comment on your posts, and you won't see each other's posts, stories or chat. They aren't told.",
+              style: TextStyle(color: tokens.mute),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(d).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
+              TextButton(onPressed: () => Navigator.of(d).pop(true), child: Text('Block', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800))),
+            ],
+          ),
+        );
+        if (ok != true || !mounted) return;
+        final messenger = ScaffoldMessenger.of(context);
+        final err = await store.blockUser(personId);
+        messenger.showSnackBar(SnackBar(content: Text(err ?? 'Blocked @${person.handle}.')));
+      case 'unblock':
+        final messenger = ScaffoldMessenger.of(context);
+        final err = await store.unblockUser(personId);
+        messenger.showSnackBar(SnackBar(content: Text(err ?? 'Unblocked @${person.handle}.')));
       case 'admin':
         await Navigator.of(context).push(MaterialPageRoute(builder: (_) => AdminManageUserScreen(personId: personId)));
     }
@@ -159,16 +197,21 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
     final requestSent = store.hasSentRequestTo(personId);
     final requestReceived = store.hasRequestFrom(personId);
     final banned = store.isBanned(personId);
+    final blockedByMe = store.isBlocked(personId);
+    final blockedMe = store.hasBlockedMe(personId);
+    // Banned or blocked either way: show nothing of theirs.
+    final hidden = banned || blockedByMe || blockedMe;
     // Memories: everything for a friend, only tonight's for anyone else.
     // Anonymous posts never show here — that would give away who posted them.
-    final memories = banned ? const <Story>[] : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
+    final memories = hidden ? const <Story>[] : store.visibleStoriesByUser(personId).where((s) => !s.anon).toList();
     final places = memoryPlacesFrom(memories, store);
+    final posts = hidden ? const <Post>[] : store.postsBy(personId);
     final title = levelTitleFor(person.points);
     final friendCount = isSelf ? store.me.friends.length : store.friendCounts[personId];
 
     // The story ring around their picture: their last 24 hours.
     final ringStories = store.liveStoriesByUser(personId).where((s) => !s.anon).toList();
-    final hasRing = ringStories.isNotEmpty && !banned;
+    final hasRing = ringStories.isNotEmpty && !hidden;
     final ringUnseen = ringStories.any((s) => !s.views.contains('me'));
 
     const avatarSize = 100.0;
@@ -237,14 +280,35 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
             const SizedBox(height: 8),
             Text('This account is banned.', textAlign: TextAlign.center, style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
           ],
+          if (blockedByMe) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: Column(
+                children: [
+                  Text('You blocked @${person.handle}.', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
+                  TextButton(
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final err = await store.unblockUser(personId);
+                      messenger.showSnackBar(SnackBar(content: Text(err ?? 'Unblocked @${person.handle}.')));
+                    },
+                    child: Text('Unblock', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+                  ),
+                ],
+              ),
+            ),
+          ] else if (blockedMe) ...[
+            const SizedBox(height: 8),
+            Text("You can't see this profile.", textAlign: TextAlign.center, style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700)),
+          ],
           const SizedBox(height: 14),
           ProfileStatsRow(stats: [
-            (formatCount(memories.length), 'Memories', () => setState(() => _tab = 0)),
+            (formatCount(posts.length), 'Posts', () => setState(() => _tab = 0)),
             (friendCount == null ? '–' : formatCount(friendCount), 'Friends', null),
-            (formatCount(places.length), 'Places', () => setState(() => _tab = 1)),
+            (formatCount(memories.length), 'Memories', () => setState(() => _tab = 1)),
           ]),
           const SizedBox(height: 16),
-          if (!isSelf)
+          if (!isSelf && !hidden)
             _FriendButtons(
               isFriend: isFriend,
               requestSent: requestSent,
@@ -265,9 +329,24 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
             style: TextStyle(color: tokens.mute, fontSize: 12.5),
           ),
           const SizedBox(height: 10),
-          UnderlineTabs(labels: const ['Memories', 'Places'], index: _tab, onTap: (i) => setState(() => _tab = i)),
+          UnderlineTabs(labels: const ['Posts', 'Memories', 'Places'], index: _tab, onTap: (i) => setState(() => _tab = i)),
           const SizedBox(height: 12),
           if (_tab == 0) ...[
+            if (posts.isEmpty)
+              EmptyNote(text: hidden ? 'Nothing to show.' : 'No posts yet.')
+            else ...[
+              PostsGrid(posts: posts.take(12).toList()),
+              if (posts.length > 12)
+                Center(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => PostsFeedScreen(byUid: personId, title: "@${person.handle}'s posts"),
+                    )),
+                    child: Text('See all ${posts.length} posts', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+                  ),
+                ),
+            ],
+          ] else if (_tab == 1) ...[
             if (memories.isEmpty)
               EmptyNote(text: isFriend || isSelf ? 'No memories yet.' : 'Nothing posted tonight.')
             else
@@ -291,7 +370,7 @@ class _PersonProfileScreenState extends State<PersonProfileScreen> {
                   );
                 },
               ),
-            if (!isFriend && !isSelf && !banned)
+            if (!isFriend && !isSelf && !hidden)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
                 child: FunkyCard(

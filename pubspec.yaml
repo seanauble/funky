@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.0.0+124
+version: 3.0.0+135
 
 environment:
   sdk: ^3.13.3
@@ -89,6 +89,13 @@ dependencies:
   # lib/data/supabase_config.dart for the project connection info and
   # supabase/schema.sql for the database schema this depends on.
   supabase_flutter: ^2.18.0
+  # "Find friends from contacts" (onboarding + Add friends). Only hashes of
+  # email addresses leave the phone. Needs NSContactsUsageDescription in
+  # ios/Runner/Info.plist.
+  flutter_contacts: ^1.1.9+2
+  # sha256 for hashing those contact emails (official dart.dev package).
+  crypto: ^3.0.3
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
@@ -119,6 +126,7 @@ flutter:
     - assets/branding/funky_wordmark_fill.png
     - assets/audio/funky_ring.wav
     - assets/branding/funky_mark.png
+    - assets/avatars/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

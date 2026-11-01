@@ -12,6 +12,7 @@ import '../data/mock_data.dart';
 import '../data/models.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/ui_widgets.dart';
+import '../widgets/org_badge.dart';
 import 'move_pin_screen.dart';
 import 'place_detail_screen.dart';
 
@@ -149,8 +150,21 @@ class PlacesScreen extends StatelessWidget {
     var markerVideoBudget = 6;
     final maxScore = ranked.isEmpty ? 1 : ranked.map((p) => p.score).reduce((a, b) => a > b ? a : b).clamp(1, 999999);
 
+    // Normally this is the Map tab inside the main shell (which already has
+    // the top bar and tab bar). If it's ever opened on its own, give it a
+    // back button so you can't get stuck in it.
+    final pushed = ModalRoute.of(context)?.canPop ?? false;
+
     return Scaffold(
       backgroundColor: tokens.bg,
+      appBar: pushed
+          ? AppBar(
+              backgroundColor: tokens.bg,
+              foregroundColor: tokens.ink,
+              elevation: 0,
+              title: Text('Map', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+            )
+          : null,
       body: Column(
         children: [
           Container(
@@ -260,20 +274,44 @@ class PlacesScreen extends StatelessWidget {
                             height: size,
                             child: GestureDetector(
                               onTap: () => _openPlace(context, p.id),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: tokens.orange,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2),
-                                ),
-                                alignment: Alignment.center,
-                                child: ClipOval(
-                                  child: SizedBox(
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Container(
                                     width: size,
                                     height: size,
-                                    child: _MarkerPicture(place: p, story: story, allowVideo: allowVideo),
+                                    decoration: BoxDecoration(
+                                      color: tokens.orange,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white, width: 2),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: ClipOval(
+                                      child: SizedBox(
+                                        width: size,
+                                        height: size,
+                                        child: _MarkerPicture(place: p, story: story, allowVideo: allowVideo),
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  // Been here before: a small green check on the pin.
+                                  if (store.hasBeenTo(p.id))
+                                    Positioned(
+                                      right: -1,
+                                      bottom: -1,
+                                      child: Container(
+                                        width: 15,
+                                        height: 15,
+                                        decoration: BoxDecoration(
+                                          color: tokens.friend,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: Colors.white, width: 1.5),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: const Icon(Icons.check_rounded, size: 10, color: Colors.white),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                           );
@@ -380,11 +418,16 @@ class PlacesScreen extends StatelessWidget {
                         child: Row(
                           children: [
                             ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
+                              borderRadius: BorderRadius.circular(14),
                               child: SizedBox(
-                                width: 44,
-                                height: 44,
-                                child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, coverUrl: p.coverUrl, photoUrl: p.photoUrl, fallbackLabel: p.name.substring(0, 1), fontSize: 16),
+                                width: 76,
+                                height: 76,
+                                child: OrgBadgeCorner(
+                                  badge: placeOrgBadge(p.place),
+                                  small: true,
+                                  inset: 4,
+                                  child: PlaceMediaThumbnail(story: latestStory, coverPhotoPath: p.coverPhotoPath, coverUrl: p.coverUrl, photoUrl: p.photoUrl, fallbackLabel: p.name.substring(0, 1), fontSize: 22),
+                                ),
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -419,6 +462,11 @@ class PlacesScreen extends StatelessWidget {
                                           ),
                                         ),
                                       ],
+                                      // You've been here before.
+                                      if (store.hasBeenTo(p.id)) ...[
+                                        const SizedBox(width: 4),
+                                        BeenHereBadge(size: 15, nights: store.nightsAt(p.id)),
+                                      ],
                                     ],
                                   ),
                                   const SizedBox(height: 2),
@@ -435,7 +483,7 @@ class PlacesScreen extends StatelessWidget {
                       ),
                     );
                   }),
-                const FootNote(text: 'Places are tonight-only, like everything else — wiped at 2 PM.'),
+                const FootNote(text: 'FUNKY-verified places stay up. Everything else resets at 2 PM.'),
               ],
             ),
           ),

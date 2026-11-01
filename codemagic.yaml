@@ -29,6 +29,11 @@ workflows:
     scripts:
       - name: Get Flutter packages
         script: flutter packages pub get
+      # Fails the build in about a minute (instead of after a 10+ minute
+      # iOS build) if the Dart code has any real errors. Warnings and style
+      # hints don't fail it.
+      - name: Check the code
+        script: flutter analyze lib --no-fatal-infos --no-fatal-warnings
       - name: Install CocoaPods dependencies
         script: find . -name "Podfile" -execdir pod install \;
       - name: Set up code signing settings on Xcode project

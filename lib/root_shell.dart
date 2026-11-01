@@ -95,21 +95,35 @@ class _RootShellState extends State<RootShell> {
       appBar: AppBar(
         backgroundColor: tokens.bg,
         elevation: 0,
-        // iOS centers AppBar titles by default, which is why the wordmark
-        // looked centered on mobile even with its own centerLeft alignment
-        // — force it to the left on every platform, and bump it up a bit
-        // so it reads clearly.
-        centerTitle: false,
-        titleSpacing: 16,
-        title: _index == 0
-            ? Builder(
-                builder: (logoContext) => GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => _popConfetti(logoContext),
-                  child: const RainbowWordmark(height: 38),
-                ),
-              )
-            : Text(_titles[_index], style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+        // Left: the wordmark on Home, the tab's name elsewhere. Middle: the
+        // town you're in (closest town to you — or to an admin's dropped pin).
+        automaticallyImplyLeading: false,
+        leadingWidth: 112,
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 16),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: _index == 0
+                ? Builder(
+                    builder: (logoContext) => GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _popConfetti(logoContext),
+                      child: const RainbowWordmark(height: 38),
+                    ),
+                  )
+                : Text(
+                    _titles[_index],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    // Same look as the old title (the app bar's own title style).
+                    style: (Theme.of(context).textTheme.titleLarge ?? const TextStyle(fontSize: 20))
+                        .copyWith(color: tokens.ink, fontWeight: FontWeight.w800),
+                  ),
+          ),
+        ),
+        centerTitle: true,
+        titleSpacing: 0,
+        title: const _AreaTitle(),
         actions: const [NotificationBell(), SettingsGearButton()],
       ),
       body: SafeArea(
@@ -131,6 +145,38 @@ class _RootShellState extends State<RootShell> {
           }
           setState(() => _index = i);
         },
+      ),
+    );
+  }
+}
+
+/// The middle of the top bar: a pin and the town closest to you, e.g.
+/// "📍 Somers Point". Just a label — there's nothing to pick from.
+class _AreaTitle extends StatelessWidget {
+  const _AreaTitle();
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.watch<AppStore>();
+    final name = store.areaName;
+    if (name == null) return const SizedBox.shrink();
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Semantics(
+      label: 'Near $name',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.location_on, color: tokens.orange, size: 20),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 17),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -160,7 +206,9 @@ class _ViewingElsewhereBanner extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  away == null ? 'Viewing another area' : 'Viewing an area ${away.round()} mi away',
+                  store.areaName != null
+                      ? 'Viewing ${store.areaName}${away == null ? '' : ' · ${away.round()} mi away'}'
+                      : (away == null ? 'Viewing another area' : 'Viewing an area ${away.round()} mi away'),
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
                 ),
               ),

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'ui_widgets.dart';
 
-enum CreateKind { story, poll, place }
+enum CreateKind { story, post, poll, place }
 
 /// The prototype reuses one sheet for Story, Poll, and Place (rule 6 /
 /// HANDOFF "Sheets"). Here that's one screen (CreateSheet) with this

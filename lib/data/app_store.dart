@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:path_provider/path_provider.dart';
@@ -18,6 +19,7 @@ import 'models.dart';
 import 'notification_models.dart';
 import 'place_photo.dart';
 import 'place_rating.dart';
+import 'post_models.dart';
 import 'supabase_config.dart';
 import 'venue_models.dart';
 import 'session.dart';
@@ -148,6 +150,20 @@ class AppStore extends ChangeNotifier {
   Set<String> bannedUserIds = {};
 
   bool isBanned(String personId) => bannedUserIds.contains(personId) || _remoteBannedIds.contains(personId);
+
+  // --- Blocking (phase 31) ------------------------------------------------
+  // People you blocked, and people who blocked you. Either way the two of
+  // you stop seeing each other's posts, stories, comments, chat and DMs.
+  Set<String> _blockedByMe = {};
+  Set<String> _blockedMe = {};
+
+  bool isBlocked(String personId) => _blockedByMe.contains(personId);
+  bool hasBlockedMe(String personId) => _blockedMe.contains(personId);
+
+  /// Banned, blocked by you, or blocking you — keep them out of everything.
+  bool isHidden(String personId) => isBanned(personId) || _blockedByMe.contains(personId) || _blockedMe.contains(personId);
+
+  List<Person> get blockedPeople => _blockedByMe.map(personById).whereType<Person>().toList();
 
   // Banned on the real backend (profiles.banned) — everyone's app learns
   // about it from the profile rows, so a ban actually takes effect for
@@ -293,6 +309,14 @@ class AppStore extends ChangeNotifier {
     await table('Live chat', 'chat_messages', 'id');
     await table('DM photo/video columns', 'messages', 'id,media_path,read_at');
     await table('Story reply previews (phase 25)', 'messages', 'id,story_id,story_media_path');
+    await table('Story reports (phase 26)', 'story_reports', 'id');
+    await table('Places you\'ve been (phase 27)', 'place_visits', 'place_id,night');
+    await table('Posts + comments (phase 29)', 'post_comments', 'id,post_id');
+    await table('Blocking, events, delete account (phase 31)', 'event_going', 'post_id');
+    await table('Crash reports + top-post points (phase 32)', 'post_awards', 'post_id');
+    await table('Upcoming, chat replies, GIFs, online count (phase 33)', 'place_rsvps', 'place_id');
+    await table('Dated parties + events at bars (phase 33)', 'places', 'starts_at,event_type,host_place_id');
+    await table('Chat replies, spots, polls, GIFs (phase 33)', 'chat_messages', 'reply_to,place_id,poll_id,gif_url');
     await table('Chat reactions (phase 3)', 'chat_reactions', 'message_id');
     await table('Place cover photos (phase 3)', 'places', 'cover_url');
     await table('Place ratings (phase 9)', 'place_ratings', 'place_id');
@@ -627,6 +651,50 @@ class AppStore extends ChangeNotifier {
   }
   LocationStatus locationStatus = LocationStatus.unknown;
 
+  // --- The town shown at the top of the app -------------------------------
+  String? _areaName;
+  LatLng? _areaNameAt;
+  bool _areaLookupBusy = false;
+  int _areaLookupFailedAt = 0;
+  static const _areaKey = 'funky.areaName';
+
+  /// The town closest to where the app treats you as being (an admin's
+  /// dropped pin counts), e.g. "Somers Point" — the name at the top of the
+  /// app. Looked up again whenever you've moved more than a mile; null
+  /// until the first lookup comes back.
+  String? get areaName {
+    final here = location;
+    if (here == null) return null;
+    final at = _areaNameAt;
+    final away = at == null ? double.infinity : milesBetween(at, here);
+    if (away > 1) _lookupAreaName(here);
+    // Keep showing the last name while a fresh one loads, unless you've
+    // jumped somewhere else entirely.
+    return away <= 5 ? _areaName : null;
+  }
+
+  void _lookupAreaName(LatLng here) {
+    if (_areaLookupBusy) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _areaLookupFailedAt < 60000) return;
+    _areaLookupBusy = true;
+    unawaited(() async {
+      final name = await AddressSearch.reverseTown(here.lat, here.lng);
+      _areaLookupBusy = false;
+      if (name == null) {
+        _areaLookupFailedAt = DateTime.now().millisecondsSinceEpoch;
+        return;
+      }
+      _areaName = name;
+      _areaNameAt = here;
+      notifyListeners();
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_areaKey, '${here.lat},${here.lng},$name');
+      } catch (_) {}
+    }());
+  }
+
   // Account — browsing FUNKY is always anonymous and free; you only need
   // one of these to post a Story/poll/place or send a message (see
   // requireAccountThen in lib/screens/account_screen.dart, which is what
@@ -764,6 +832,20 @@ class AppStore extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       _avatarPending = prefs.getBool(_avatarPendingKey) ?? false;
       await _loadUnreadState(prefs);
+      onboardingDone = prefs.getBool(_onboardedKey) ?? false;
+      _ageConfirmedAt = prefs.getString(_ageKey);
+      ageConfirmed = _ageConfirmedAt != null;
+      // Last known town name, so the top of the app isn't blank at launch.
+      final area = prefs.getString(_areaKey)?.split(',');
+      if (area != null && area.length >= 3) {
+        final lat = double.tryParse(area[0]);
+        final lng = double.tryParse(area[1]);
+        final name = area.sublist(2).join(',').trim();
+        if (lat != null && lng != null && name.isNotEmpty) {
+          _areaNameAt = LatLng(lat, lng);
+          _areaName = name;
+        }
+      }
       final viewAs = prefs.getString(_viewAsKey)?.split(',');
       if (viewAs != null && viewAs.length == 2) {
         final lat = double.tryParse(viewAs[0]);
@@ -1029,6 +1111,20 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// The phone's last known position, without prompting — a quick fallback
+  /// for when the live fix hasn't arrived yet. Null if there isn't one.
+  Future<LatLng?> _lastKnownGps() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) return null;
+      final pos = await Geolocator.getLastKnownPosition();
+      if (pos == null) return null;
+      return LatLng(pos.latitude, pos.longitude);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> requestLocation() async {
     locationStatus = LocationStatus.requesting;
     notifyListeners();
@@ -1089,21 +1185,9 @@ class AppStore extends ChangeNotifier {
   /// "near you" means anywhere else in the app.
   List<RankedPlace> rankedPlacesFrom(LatLng center) {
     final allPeople = {...people, 'me': me};
-    final result = places.where((p) => near(center, LatLng(p.lat, p.lng))).map((p) {
-      final going = allPeople.values.where((person) => person.move == p.id).length;
-      final roomMsgCount = messages.where((m) => m.room == p.id).length;
-      final storyCount = stories.where((s) => s.place == p.id).length;
-      final score = going * 3 + roomMsgCount + storyCount * 2;
-      final heat = score >= 12 ? 3 : (score >= 5 ? 2 : (score >= 1 ? 1 : 0));
-      return RankedPlace(
-        place: p,
-        distance: milesBetween(center, LatLng(p.lat, p.lng)),
-        going: going,
-        heat: heat,
-        score: score,
-        reports: reportsFor(p.id),
-      );
-    }).toList();
+    // Only tonight's: a party dated for another night lives under Upcoming
+    // until its own night (phase 33).
+    final result = places.where((p) => isPlaceOnTonight(p) && near(center, LatLng(p.lat, p.lng))).map((p) => _rank(p, center, allPeople)).toList();
     result.sort((a, b) {
       if (a.heat != b.heat) return b.heat.compareTo(a.heat);
       if (a.going != b.going) return b.going.compareTo(a.going);
@@ -1112,10 +1196,202 @@ class AppStore extends ChangeNotifier {
     return result;
   }
 
+  RankedPlace _rank(Place p, LatLng center, [Map<String, Person>? everyone]) {
+    final allPeople = everyone ?? {...people, 'me': me};
+    // Going = everyone headed there tonight, plus anyone who said ahead of
+    // time that they'd go (counted once).
+    final goingIds = <String>{
+      for (final e in allPeople.entries)
+        if (e.value.move == p.id) e.key,
+      ...?placeRsvps[p.id],
+    };
+    final going = goingIds.length;
+    final roomMsgCount = messages.where((m) => m.room == p.id).length;
+    final storyCount = stories.where((s) => s.place == p.id).length;
+    final score = going * 3 + roomMsgCount + storyCount * 2;
+    final heat = score >= 12 ? 3 : (score >= 5 ? 2 : (score >= 1 ? 1 : 0));
+    return RankedPlace(
+      place: p,
+      distance: milesBetween(center, LatLng(p.lat, p.lng)),
+      going: going,
+      heat: heat,
+      score: score,
+      reports: reportsFor(p.id),
+    );
+  }
+
+  /// Any place by id — tonight's, upcoming, or outside your radius — ranked
+  /// from where you are. What a place's own page shows.
+  RankedPlace? rankedPlaceById(String id) {
+    for (final p in places) {
+      if (p.id == id) return _rank(p, location ?? defaultLocation);
+    }
+    return null;
+  }
+
+  /// Whether a place belongs on tonight's lists: an undated spot always
+  /// does; a dated party or event only on its own night.
+  bool isPlaceOnTonight(Place p) {
+    final n = p.night;
+    return n == null || n == sessionKey();
+  }
+
+  /// Dated for a night after tonight.
+  bool isPlaceUpcoming(Place p) {
+    final n = p.night;
+    return n != null && n.compareTo(sessionKey()) > 0;
+  }
+
+  /// Upcoming parties, events, tailgates and frat parties in your area —
+  /// anything dated after tonight — soonest first.
+  List<RankedPlace> get upcomingPlaces {
+    final here = location ?? defaultLocation;
+    final everyone = {...people, 'me': me};
+    final list = places
+        .where((p) => isPlaceUpcoming(p) && near(here, LatLng(p.lat, p.lng)) && !isBanned(p.by))
+        .map((p) => _rank(p, here, everyone))
+        .toList();
+    list.sort((a, b) => a.place.startsAt!.compareTo(b.place.startsAt!));
+    return list;
+  }
+
+  /// Event posts on a night after tonight, soonest first.
+  List<Post> get upcomingEventPosts {
+    final today = sessionKey();
+    final list = postsNearby.where((p) => p.isEvent && sessionKey(p.eventAt!).compareTo(today) > 0).toList();
+    list.sort((a, b) => a.eventAt!.compareTo(b.eventAt!));
+    return list;
+  }
+
+  /// Event posts happening tonight.
+  List<Post> get tonightEventPosts {
+    final today = sessionKey();
+    final list = postsNearby.where((p) => p.isEvent && sessionKey(p.eventAt!) == today).toList();
+    list.sort((a, b) => a.eventAt!.compareTo(b.eventAt!));
+    return list;
+  }
+
+  /// Events held at a bar or club (trivia, karaoke...), tonight's first,
+  /// then upcoming ones.
+  List<Place> eventsHostedAt(String placeId) {
+    final list = places.where((p) => p.hostPlaceId == placeId && (isPlaceOnTonight(p) || isPlaceUpcoming(p)) && !isBanned(p.by)).toList();
+    list.sort((a, b) {
+      final at = a.startsAt ?? DateTime.fromMillisecondsSinceEpoch(a.t);
+      final bt = b.startsAt ?? DateTime.fromMillisecondsSinceEpoch(b.t);
+      return at.compareTo(bt);
+    });
+    return list;
+  }
+
+  /// Tonight's event at a bar or club, if it has one ("Trivia tonight").
+  Place? tonightEventAt(String placeId) {
+    for (final p in eventsHostedAt(placeId)) {
+      if (isPlaceOnTonight(p)) return p;
+    }
+    return null;
+  }
+
+  // --- Going ahead of time (phase 33) ---
+
+  /// Who said they're going to an upcoming place, by place ('me' for you).
+  Map<String, Set<String>> placeRsvps = {};
+
+  bool hasRsvped(String placeId) => placeRsvps[placeId]?.contains('me') ?? false;
+
+  /// Your friends who said they're going to [placeId], ahead of time or tonight.
+  List<Person> friendsGoingToPlace(String placeId) {
+    final friends = me.friends.toSet();
+    final ids = <String>{
+      ...?placeRsvps[placeId]?.where(friends.contains),
+      for (final id in friends)
+        if (people[id]?.move == placeId) id,
+    };
+    return ids.map(personById).whereType<Person>().toList();
+  }
+
+  /// Everyone going to [placeId] whose profile is loaded, friends first.
+  List<Person> peopleGoingToPlace(String placeId) {
+    final ids = <String>{
+      ...?placeRsvps[placeId],
+      for (final e in people.entries)
+        if (e.value.move == placeId) e.key,
+      if (me.move == placeId) 'me',
+    };
+    final friends = me.friends.toSet();
+    final list = ids.map((id) => id == 'me' ? me : personById(id)).whereType<Person>().toList();
+    list.sort((a, b) => (friends.contains(b.id) ? 1 : 0).compareTo(friends.contains(a.id) ? 1 : 0));
+    return list;
+  }
+
+  Future<void> _fetchPlaceRsvps() async {
+    try {
+      final since = DateTime.now().subtract(const Duration(days: 62)).toUtc().toIso8601String();
+      final rows = await Supabase.instance.client.from('place_rsvps').select('place_id,user_id').gte('created_at', since);
+      final uid = supabaseUserId;
+      final next = <String, Set<String>>{};
+      for (final r in rows) {
+        final pid = r['place_id'] as String?;
+        final u = r['user_id'] as String?;
+        if (pid == null || u == null) continue;
+        (next[pid] ??= <String>{}).add(u == uid ? 'me' : u);
+      }
+      placeRsvps = next;
+      final others = next.values.expand((v) => v).where((u) => u != 'me').toSet();
+      if (others.isNotEmpty) await _ensurePeopleFor(others);
+      notifyListeners();
+    } catch (_) {
+      // Phase 33 not run yet, or offline.
+    }
+  }
+
+  /// "I'm going" on an upcoming party/event (or take it back).
+  Future<String?> togglePlaceRsvp(String placeId) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return "Make an account to say you're going.";
+    final had = hasRsvped(placeId);
+    Map<String, Set<String>> withMine(bool on) {
+      final set = {...?placeRsvps[placeId]};
+      on ? set.add('me') : set.remove('me');
+      return {...placeRsvps, placeId: set};
+    }
+
+    placeRsvps = withMine(!had);
+    notifyListeners();
+    try {
+      final client = Supabase.instance.client;
+      if (had) {
+        await client.from('place_rsvps').delete().eq('place_id', placeId).eq('user_id', uid);
+      } else {
+        await client.from('place_rsvps').insert({'place_id': placeId, 'user_id': uid});
+      }
+      return null;
+    } catch (e) {
+      placeRsvps = withMine(had);
+      notifyListeners();
+      return _featureError(e, feature: 'Going ahead of time', phase: 'phase 33', fallback: "Couldn't save that");
+    }
+  }
+
   List<Poll> get visiblePolls {
     final here = location ?? defaultLocation;
     return polls.where((p) => near(here, LatLng(p.lat, p.lng))).toList();
   }
+
+  /// [visiblePolls], most votes first (newest first on a tie) — Home shows
+  /// the top 3 of these, "View all polls" the whole list.
+  List<Poll> get rankedVisiblePolls {
+    final list = visiblePolls;
+    final totals = {for (final p in list) p.id: pollCounts(p).fold<int>(0, (a, b) => a + b)};
+    list.sort((a, b) {
+      final c = totals[b.id]!.compareTo(totals[a.id]!);
+      return c != 0 ? c : b.t.compareTo(a.t);
+    });
+    return list;
+  }
+
+  // Set when the server says you've already posted tonight's poll (e.g.
+  // from another phone, or one you since deleted).
+  String? _pollUsedSession;
 
   List<ChatMessage> messagesFor(String room) {
     final list = messages.where((m) => m.room == room).toList();
@@ -1179,6 +1455,936 @@ class AppStore extends ChangeNotifier {
     return latest;
   }
 
+  Future<void> _fetchBlocks() async {
+    final uid = supabaseUserId;
+    if (uid == null || isGuest) return;
+    try {
+      final rows = await Supabase.instance.client.from('blocks').select('blocker_id,blocked_id');
+      final mine = <String>{};
+      final theirs = <String>{};
+      for (final r in rows) {
+        final a = r['blocker_id'] as String?;
+        final b = r['blocked_id'] as String?;
+        if (a == null || b == null) continue;
+        if (a == uid) mine.add(b);
+        if (b == uid) theirs.add(a);
+      }
+      _blockedByMe = mine;
+      _blockedMe = theirs;
+      if (mine.isNotEmpty) await _ensurePeopleFor(mine.toList());
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 31 not run yet.
+    }
+  }
+
+  void _dropFriendshipLocally(String personId) {
+    me = me.copyWith(
+      friends: me.friends.where((id) => id != personId).toList(),
+      friendRequestsSent: me.friendRequestsSent.where((id) => id != personId).toList(),
+      friendRequestsReceived: me.friendRequestsReceived.where((id) => id != personId).toList(),
+    );
+    final them = people[personId];
+    if (them != null) {
+      people = {
+        ...people,
+        personId: them.copyWith(
+          friends: them.friends.where((id) => id != 'me').toList(),
+          friendRequestsSent: them.friendRequestsSent.where((id) => id != 'me').toList(),
+          friendRequestsReceived: them.friendRequestsReceived.where((id) => id != 'me').toList(),
+        ),
+      };
+    }
+  }
+
+  /// Blocks [personId]. Returns an error to show, or null.
+  Future<String?> blockUser(String personId) async {
+    if (!signedIn || supabaseUserId == null) return 'Log in first.';
+    try {
+      final res = await Supabase.instance.client.rpc('block_user', params: {'p_user': personId}) as String?;
+      if (res != null) return res;
+    } catch (e) {
+      return _featureError(e, feature: 'Blocking', phase: 'phase 31', fallback: "Couldn't block them");
+    }
+    _blockedByMe = {..._blockedByMe, personId};
+    _dropFriendshipLocally(personId);
+    notifyListeners();
+    _persist();
+    return null;
+  }
+
+  Future<String?> unblockUser(String personId) async {
+    if (!signedIn || supabaseUserId == null) return 'Log in first.';
+    try {
+      final res = await Supabase.instance.client.rpc('unblock_user', params: {'p_user': personId}) as String?;
+      if (res != null) return res;
+    } catch (e) {
+      return _featureError(e, feature: 'Blocking', phase: 'phase 31', fallback: "Couldn't unblock them");
+    }
+    _blockedByMe = {..._blockedByMe}..remove(personId);
+    notifyListeners();
+    return null;
+  }
+
+  // --- Delete account (phase 31) -----------------------------------------
+
+  /// Permanently deletes your account and everything in it. Returns an
+  /// error to show, or null once it's gone (you're signed out after).
+  Future<String?> deleteAccount() async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Not signed in.';
+    final client = Supabase.instance.client;
+    // Your uploaded photos and videos first (best effort).
+    for (final bucket in const ['stories', 'posts', 'dm_media', 'group_media', 'place_covers', 'avatars']) {
+      try {
+        final files = await client.storage.from(bucket).list(path: uid);
+        final paths = [for (final f in files) '$uid/${f.name}'];
+        if (paths.isNotEmpty) await client.storage.from(bucket).remove(paths);
+      } catch (_) {}
+    }
+    try {
+      final res = await client.rpc('delete_my_account') as String?;
+      if (res != null) return res;
+    } catch (e) {
+      return _featureError(e, feature: 'Deleting your account', phase: 'phase 31', fallback: "Couldn't delete your account");
+    }
+    // Wipe what this phone kept for that account.
+    me = freshMe();
+    stories = stories.where((s) => s.uid != 'me').toList();
+    messages = messages.where((m) => m.uid != 'me').toList();
+    placeReports = placeReports.where((r) => r.reporterId != 'me').toList();
+    polls = polls.where((p) => p.by != 'me').toList();
+    _appliedBonus = 0;
+    _lastUserId = null;
+    await signOut();
+    return null;
+  }
+
+  // --- First run: 21+, terms, onboarding --------------------------------
+
+  static const _onboardedKey = 'funky.onboarded.v1';
+  static const _ageKey = 'funky.age21.v1';
+
+  /// The welcome screens have been done on this phone.
+  bool onboardingDone = false;
+
+  /// Confirmed 21+ and agreed to the Terms on this phone (or at sign-up).
+  bool ageConfirmed = false;
+  String? _ageConfirmedAt;
+
+  Future<void> confirmAgeAndTerms() async {
+    ageConfirmed = true;
+    _ageConfirmedAt ??= DateTime.now().toUtc().toIso8601String();
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_ageKey, _ageConfirmedAt!);
+    } catch (_) {}
+    unawaited(_pushAgreement());
+  }
+
+  Future<void> completeOnboarding() async {
+    onboardingDone = true;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_onboardedKey, true);
+    } catch (_) {}
+  }
+
+  /// Saves the 21+ / Terms confirmation on your profile (phase 31).
+  Future<void> _pushAgreement() async {
+    final uid = supabaseUserId;
+    final at = _ageConfirmedAt;
+    if (!signedIn || uid == null || at == null) return;
+    try {
+      await Supabase.instance.client.from('profiles').update({'age_confirmed_at': at, 'terms_accepted_at': at}).eq('id', uid);
+    } catch (_) {}
+  }
+
+  /// Asks for notification permission (iOS). True if allowed.
+  Future<bool> requestNotifications() async {
+    if (!Platform.isIOS) return false;
+    return PushService.start((token) {
+      _pushToken = token;
+      if (signedIn) unawaited(_uploadPushToken(token));
+    });
+  }
+
+  // --- Find friends from contacts (phase 31) -----------------------------
+
+  /// People on FUNKY whose account email is one of [emails] (from your
+  /// contacts). Only hashes of the addresses leave the phone.
+  Future<List<Person>> matchContacts(Iterable<String> emails) async {
+    if (!signedIn || supabaseUserId == null) return const [];
+    final hashes = <String>{
+      for (final e in emails)
+        if (e.trim().contains('@')) crypto.sha256.convert(utf8.encode(e.trim().toLowerCase())).toString(),
+    }.take(2000).toList();
+    if (hashes.isEmpty) return const [];
+    try {
+      final rows = await Supabase.instance.client.rpc('match_contacts', params: {'p_hashes': hashes}) as List<dynamic>;
+      final ids = <String>[];
+      for (final r in rows) {
+        if (r is Map && r['id'] is String) ids.add(r['id'] as String);
+      }
+      if (ids.isEmpty) return const [];
+      await _ensurePeopleFor(ids);
+      return ids.where((id) => !isHidden(id)).map(personById).whereType<Person>().toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // --- Posts (a few photos + a caption, with likes and comments) ----------
+
+  /// Everyone's posts we've loaded (the newest few hundred), newest first.
+  List<Post> posts = [];
+  bool postsLoaded = false;
+  final Map<String, List<PostComment>> _postComments = {};
+  Timer? _postsRefreshTimer;
+
+  static const int maxPostPhotos = 5;
+  static const int maxPostCaption = 500;
+  static const int maxCommentLength = 300;
+  static const int maxPostPhotoBytes = 15 * 1024 * 1024;
+
+  /// Posts inside your radius — everyone's, not just friends' — newest first.
+  List<Post> get postsNearby {
+    final here = location ?? defaultLocation;
+    return posts.where((p) => !isHidden(p.uid) && near(here, LatLng(p.lat, p.lng))).toList();
+  }
+
+  /// Someone's posts (newest first) — their profile's Posts tab.
+  List<Post> postsBy(String uid) => posts.where((p) => p.uid == uid && !isHidden(p.uid)).toList()..sort((a, b) => b.t.compareTo(a.t));
+
+  /// Posts tagged at [placeId] — that place's page.
+  List<Post> postsAt(String placeId) => posts.where((p) => p.placeId == placeId && !isHidden(p.uid)).toList();
+
+  // --- Top posts win points (phase 32) -------------------------------------
+
+  /// The area a post counts toward for the nightly top 3 — the same ~30-mile
+  /// grid the server uses (post_region in supabase/phase32.sql).
+  static String postRegionOf(double lat, double lng) => '${(lat / 0.45).floor()}:${(lng / 0.55).floor()}';
+
+  static const topPostPoints = [500, 300, 150];
+
+  // Post id → the best place it finished on a past night (1, 2 or 3).
+  Map<String, int> _awardRanks = {};
+  int? awardRankFor(String postId) => _awardRanks[postId];
+
+  /// Tonight's top 3 posts in your area so far (post id → 1, 2 or 3) — the
+  /// ones on track for 500 / 300 / 150 points when the night ends.
+  Map<String, int> get tonightTopPosts {
+    final here = location ?? defaultLocation;
+    final region = postRegionOf(here.lat, here.lng);
+    final tonight = sessionKey();
+    final list = posts
+        .where((p) =>
+            !isHidden(p.uid) &&
+            p.score >= 1 &&
+            postRegionOf(p.lat, p.lng) == region &&
+            sessionKey(DateTime.fromMillisecondsSinceEpoch(p.t)) == tonight)
+        .toList()
+      ..sort((a, b) {
+        final c = b.score.compareTo(a.score);
+        return c != 0 ? c : a.t.compareTo(b.t);
+      });
+    return {for (var i = 0; i < list.length && i < 3; i++) list[i].id: i + 1};
+  }
+
+  /// Hands out any finished nights' top-post points (the server makes sure
+  /// it only happens once), then loads which posts have won.
+  Future<void> _awardAndLoadTopPosts() async {
+    if (supabaseUserId == null) return;
+    final client = Supabase.instance.client;
+    try {
+      final given = await client.rpc('award_top_posts');
+      if (given is int && given > 0) unawaited(_fetchRemoteProfiles());
+    } catch (_) {}
+    try {
+      final since = DateTime.now().subtract(const Duration(days: 60));
+      final day = '${since.year}-${since.month.toString().padLeft(2, '0')}-${since.day.toString().padLeft(2, '0')}';
+      final rows = await client.from('post_awards').select('post_id,rank').gte('night', day);
+      final out = <String, int>{};
+      for (final r in rows) {
+        final id = r['post_id'] as String?;
+        final rank = (r['rank'] as num?)?.toInt();
+        if (id == null || rank == null) continue;
+        final prev = out[id];
+        if (prev == null || rank < prev) out[id] = rank;
+      }
+      _awardRanks = out;
+      notifyListeners();
+    } catch (_) {
+      // Phase 32 not run yet.
+    }
+  }
+
+  // --- Crash reports (admin, phase 32) --------------------------------------
+
+  List<CrashReport> crashReports = [];
+  bool crashReportsLoaded = false;
+
+  Future<void> fetchCrashReports() async {
+    if (!isAdmin) {
+      crashReportsLoaded = true;
+      return;
+    }
+    try {
+      final rows = await Supabase.instance.client.from('crash_reports').select().order('created_at', ascending: false).limit(300);
+      crashReports = [
+        for (final r in rows)
+          CrashReport(
+            id: r['id'] as String,
+            message: (r['message'] as String?) ?? '',
+            stack: r['stack'] as String?,
+            context: r['context'] as String?,
+            fatal: r['fatal'] as bool? ?? false,
+            build: r['build'] as String?,
+            platform: r['platform'] as String?,
+            userId: r['user_id'] as String?,
+            at: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+          ),
+      ];
+      crashReportsLoaded = true;
+      notifyListeners();
+    } catch (_) {
+      crashReportsLoaded = true;
+      notifyListeners();
+    }
+  }
+
+  Future<void> clearCrashReports() async {
+    if (!isAdmin) return;
+    try {
+      await Supabase.instance.client.from('crash_reports').delete().lte('created_at', DateTime.now().toUtc().toIso8601String());
+    } catch (_) {}
+    await fetchCrashReports();
+  }
+
+  Post? postById(String id) {
+    for (final p in posts) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  List<PostComment> commentsFor(String postId) => (_postComments[postId] ?? const <PostComment>[]).where((c) => !isHidden(c.uid)).toList();
+  bool commentsLoaded(String postId) => _postComments.containsKey(postId);
+
+  String postPhotoUrl(String path) => Supabase.instance.client.storage.from('posts').getPublicUrl(path);
+
+  // What a post row is fetched with. Falls back to the phase-29 shape if
+  // phase 30 (dislikes) hasn't been run yet.
+  static const _postSelectV31 = '*, post_likes(user_id), post_dislikes(user_id), event_going(user_id), post_comments(count)';
+  static const _postSelect = '*, post_likes(user_id), post_dislikes(user_id), post_comments(count)';
+  static const _postSelectV29 = '*, post_likes(user_id), post_comments(count)';
+  int _postsLevel = 31;
+  String get _postColumns => _postsLevel >= 31 ? _postSelectV31 : (_postsLevel == 30 ? _postSelect : _postSelectV29);
+
+  // The newest two comments under each post, oldest first — shown right
+  // under it in the feed.
+  final Map<String, List<PostComment>> _commentPreviews = {};
+
+  List<PostComment> commentPreviewFor(String postId) {
+    final raw = _postComments[postId];
+    if (raw != null) {
+      final full = raw.where((c) => !isHidden(c.uid)).toList();
+      return full.length <= 2 ? full : full.sublist(full.length - 2);
+    }
+    return (_commentPreviews[postId] ?? const <PostComment>[]).where((c) => !isHidden(c.uid)).toList();
+  }
+
+  /// Likes minus dislikes, best first (newest first on a tie) — how every
+  /// posts list is ordered.
+  List<Post> rankPosts(Iterable<Post> list) {
+    final out = list.toList();
+    out.sort((a, b) {
+      final c = b.score.compareTo(a.score);
+      if (c != 0) return c;
+      final l = b.likes.length.compareTo(a.likes.length);
+      return l != 0 ? l : b.t.compareTo(a.t);
+    });
+    return out;
+  }
+
+  /// Posts by people you're friends with, from anywhere.
+  List<Post> get friendsPosts {
+    final friends = me.friends.toSet();
+    return posts.where((p) => friends.contains(p.uid) && !isHidden(p.uid)).toList();
+  }
+
+  /// The kind of place a post is tagged at, if it's tagged at one we know.
+  PlaceKind? postPlaceKind(Post p) {
+    final id = p.placeId;
+    if (id == null) return null;
+    for (final pl in places) {
+      if (pl.id == id) return pl.kind;
+    }
+    return null;
+  }
+
+  Post? _postFromRow(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final uid = row['uid'] as String?;
+    final lat = (row['lat'] as num?)?.toDouble();
+    final lng = (row['lng'] as num?)?.toDouble();
+    if (id == null || uid == null || lat == null || lng == null) return null;
+    final paths = ((row['photo_paths'] as List?) ?? const []).map((e) => e.toString()).toList();
+    final captionText = (row['caption'] as String?) ?? '';
+    final eventTitle = row['event_title'] as String?;
+    if (paths.isEmpty && captionText.trim().isEmpty && eventTitle == null) return null;
+    List<String> voters(Object? raw) {
+      final out = <String>[];
+      if (raw is List) {
+        for (final l in raw) {
+          if (l is Map && l['user_id'] is String) out.add(_asMe(l['user_id'] as String));
+        }
+      }
+      return out;
+    }
+    final likes = voters(row['post_likes']);
+    final dislikes = voters(row['post_dislikes']);
+    final going = voters(row['event_going']);
+    var comments = 0;
+    final countRows = row['post_comments'];
+    if (countRows is List && countRows.isNotEmpty && countRows.first is Map) {
+      comments = ((countRows.first as Map)['count'] as num?)?.toInt() ?? 0;
+    }
+    final createdAt = DateTime.tryParse((row['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+    return Post(
+      id: id,
+      uid: _asMe(uid),
+      caption: captionText,
+      placeId: row['place_id'] as String?,
+      placeName: row['place_name'] as String?,
+      areaName: row['area_name'] as String?,
+      lat: lat,
+      lng: lng,
+      photoPaths: paths,
+      photoUrls: [for (final p in paths) postPhotoUrl(p)],
+      t: createdAt.millisecondsSinceEpoch,
+      likes: likes,
+      dislikes: dislikes,
+      commentCount: comments,
+      eventTitle: eventTitle,
+      eventAt: DateTime.tryParse((row['event_at'] as String?) ?? '')?.toLocal(),
+      eventCover: row['event_cover'] as String?,
+      going: going,
+    );
+  }
+
+  /// Events in your area that haven't ended (started less than 6 hours
+  /// ago or later), soonest first.
+  List<Post> get upcomingEvents {
+    final cutoff = DateTime.now().subtract(const Duration(hours: 6));
+    final list = postsNearby.where((p) => p.isEvent && p.eventAt!.isAfter(cutoff)).toList();
+    list.sort((a, b) => a.eventAt!.compareTo(b.eventAt!));
+    return list;
+  }
+
+  /// Your friends who said they're going to [post]'s event.
+  List<Person> friendsGoingTo(Post post) {
+    final friends = me.friends.toSet();
+    return post.going.where(friends.contains).map(personById).whereType<Person>().toList();
+  }
+
+  /// "I'm going" / not going on an event post.
+  Future<String?> toggleEventGoing(String postId) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null || selfBanned) return null;
+    final i = posts.indexWhere((p) => p.id == postId);
+    if (i == -1) return null;
+    final before = posts[i];
+    final going = before.going.contains('me');
+    posts = [...posts]..[i] = before.copyWith(going: going ? before.going.where((x) => x != 'me').toList() : [...before.going, 'me']);
+    notifyListeners();
+    try {
+      final table = Supabase.instance.client.from('event_going');
+      if (going) {
+        await table.delete().eq('post_id', postId).eq('user_id', uid);
+      } else {
+        await table.insert({'post_id': postId, 'user_id': uid});
+      }
+      return null;
+    } catch (e) {
+      final j = posts.indexWhere((p) => p.id == postId);
+      if (j != -1) {
+        posts = [...posts]..[j] = posts[j].copyWith(going: before.going);
+        notifyListeners();
+      }
+      return _featureError(e, feature: 'Events', phase: 'phase 31', fallback: "Couldn't do that");
+    }
+  }
+
+  void _schedulePostsRefresh() {
+    _postsRefreshTimer?.cancel();
+    _postsRefreshTimer = Timer(const Duration(milliseconds: 700), () => unawaited(_fetchPosts()));
+  }
+
+  void _onRemoteCommentChange(Map<String, dynamic> newRow, Map<String, dynamic> oldRow) {
+    _schedulePostsRefresh();
+    final postId = (newRow['post_id'] ?? oldRow['post_id']) as String?;
+    if (postId != null) {
+      if (_postComments.containsKey(postId)) unawaited(fetchComments(postId));
+    } else {
+      // A delete only carries the comment's id — refresh whatever's open.
+      for (final id in _postComments.keys.toList()) {
+        unawaited(fetchComments(id));
+      }
+    }
+  }
+
+  /// Pull to refresh on the feed.
+  Future<void> refreshPosts() => _fetchPosts();
+
+  Future<void> _fetchPosts() async {
+    if (supabaseUserId == null) return;
+    final client = Supabase.instance.client;
+    final since = DateTime.now().toUtc().subtract(const Duration(days: 60)).toIso8601String();
+    // Newest database shape first; falls back if a later phase's SQL
+    // hasn't been run yet.
+    List<Map<String, dynamic>> rows = const [];
+    var ok = false;
+    for (final level in const [31, 30, 29]) {
+      _postsLevel = level;
+      try {
+        rows = await client.from('posts').select(_postColumns).gte('created_at', since).order('created_at', ascending: false).limit(300);
+        ok = true;
+        break;
+      } catch (_) {}
+    }
+    if (!ok) return; // Offline, or phase 29 not run yet.
+    final out = <Post>[];
+    final ids = <String>{};
+    for (final row in rows) {
+      final p = _postFromRow(row);
+      if (p == null) continue;
+      out.add(p);
+      if (p.uid != 'me') ids.add(p.uid);
+    }
+    if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+    // Keep anything older that a profile page pulled in separately.
+    final fetched = {for (final p in out) p.id};
+    final cutoff = DateTime.now().subtract(const Duration(days: 60)).millisecondsSinceEpoch;
+    posts = [...out, ...posts.where((p) => !fetched.contains(p.id) && p.t < cutoff)]..sort((a, b) => b.t.compareTo(a.t));
+    postsLoaded = true;
+    notifyListeners();
+    unawaited(_fetchCommentPreviews(out.where((p) => p.commentCount > 0).map((p) => p.id).toList()));
+  }
+
+  Future<void> _fetchCommentPreviews(List<String> postIds) async {
+    if (postIds.isEmpty || supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('post_comments')
+          .select()
+          .inFilter('post_id', postIds.take(150).toList())
+          .order('created_at', ascending: false)
+          .limit(600);
+      final byPost = <String, List<PostComment>>{};
+      final ids = <String>{};
+      for (final r in rows) {
+        final id = r['id'] as String?;
+        final postId = r['post_id'] as String?;
+        final uid = r['uid'] as String?;
+        if (id == null || postId == null || uid == null) continue;
+        final list = byPost[postId] ??= [];
+        if (list.length >= 2) continue;
+        final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+        list.add(PostComment(id: id, postId: postId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      for (final e in byPost.entries) {
+        _commentPreviews[e.key] = e.value.reversed.toList();
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Loads one post (e.g. opened from a notification) if it isn't here yet.
+  Future<Post?> ensurePost(String id) async {
+    final have = postById(id);
+    if (have != null || supabaseUserId == null) return have;
+    try {
+      final rows = await Supabase.instance.client.from('posts').select(_postColumns).eq('id', id).limit(1);
+      if (rows.isEmpty) return null;
+      final p = _postFromRow(rows.first);
+      if (p == null) return null;
+      if (p.uid != 'me') await _ensurePeopleFor([p.uid]);
+      posts = [...posts.where((x) => x.id != p.id), p]..sort((a, b) => b.t.compareTo(a.t));
+      notifyListeners();
+      return p;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Every post by [uid] (for their profile), not just the recent ones.
+  Future<void> fetchPostsBy(String uid) async {
+    final realId = uid == 'me' ? supabaseUserId : uid;
+    if (realId == null) return;
+    await _fetchPostsWhere('uid', realId);
+  }
+
+  /// Every post tagged at [placeId] (for its page).
+  Future<void> fetchPostsAt(String placeId) => _fetchPostsWhere('place_id', placeId);
+
+  Future<void> _fetchPostsWhere(String column, String value) async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('posts')
+          .select(_postColumns)
+          .eq(column, value)
+          .order('created_at', ascending: false)
+          .limit(200);
+      final got = <Post>[];
+      for (final row in rows) {
+        final p = _postFromRow(row);
+        if (p != null) got.add(p);
+      }
+      final ids = {for (final p in got) p.id};
+      final owners = {for (final p in got) if (p.uid != 'me') p.uid};
+      if (owners.isNotEmpty) await _ensurePeopleFor(owners.toList());
+      posts = [...posts.where((p) => !ids.contains(p.id)), ...got]..sort((a, b) => b.t.compareTo(a.t));
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> fetchComments(String postId) async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('post_comments').select().eq('post_id', postId).order('created_at');
+      final list = <PostComment>[];
+      final ids = <String>{};
+      for (final r in rows) {
+        final id = r['id'] as String?;
+        final uid = r['uid'] as String?;
+        if (id == null || uid == null) continue;
+        final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+        list.add(PostComment(id: id, postId: postId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      _postComments[postId] = list;
+      final i = posts.indexWhere((p) => p.id == postId);
+      if (i != -1 && posts[i].commentCount != list.length) {
+        posts = [...posts]..[i] = posts[i].copyWith(commentCount: list.length);
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Uploads the photos and posts them. Returns an error to show, or null.
+  Future<String?> createPost({
+    required List<String> photoPaths,
+    required String caption,
+    String? placeId,
+    String? eventTitle,
+    DateTime? eventAt,
+    String? eventCover,
+  }) async {
+    if (selfBanned) return _bannedMessage;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Log in to post.';
+    final paths = photoPaths.take(maxPostPhotos).toList();
+    var text = caption.trim();
+    if (text.length > maxPostCaption) text = text.substring(0, maxPostCaption);
+    var title = eventTitle?.trim();
+    if (title != null && title.isEmpty) title = null;
+    if (title != null && title.length > 60) title = title.substring(0, 60);
+    if (title != null && eventAt == null) return 'Pick when the event starts.';
+    var cover = eventCover?.trim();
+    if (cover != null && cover.isEmpty) cover = null;
+    if (cover != null && cover.length > 20) cover = cover.substring(0, 20);
+    if (paths.isEmpty && text.isEmpty && title == null) return 'Add a photo or write something.';
+    if (_tooSoon('post', 4000)) return 'Hold on, your post is already going up.';
+
+    String? placeName;
+    double? lat;
+    double? lng;
+    if (placeId != null) {
+      for (final p in places) {
+        if (p.id == placeId) {
+          placeName = p.name;
+          lat = p.lat;
+          lng = p.lng;
+          break;
+        }
+      }
+    }
+    // Untagged posts sit where you really are (never an admin's dropped pin).
+    if (lat == null || lng == null) {
+      final here = _gpsLocation ?? await _lastKnownGps();
+      lat = here?.lat;
+      lng = here?.lng;
+    }
+    if (lat == null || lng == null) return 'Turn on location so your post shows up in your area.';
+
+    final client = Supabase.instance.client;
+    final uploaded = <String>[];
+    try {
+      for (var i = 0; i < paths.length; i++) {
+        final file = File(paths[i]);
+        if (await file.length() > maxPostPhotoBytes) return 'One of those photos is too big (15 MB max).';
+        final bytes = await file.readAsBytes();
+        final lower = paths[i].toLowerCase();
+        final png = lower.endsWith('.png');
+        final storagePath = '$uid/${DateTime.now().millisecondsSinceEpoch}_$i.${png ? 'png' : 'jpg'}';
+        await client.storage.from('posts').uploadBinary(
+              storagePath,
+              bytes,
+              fileOptions: FileOptions(upsert: false, contentType: png ? 'image/png' : 'image/jpeg'),
+            );
+        uploaded.add(storagePath);
+      }
+      // The town, unless an admin is looking at another area right now.
+      final town = isViewingElsewhere ? null : _areaName;
+      final row = <String, dynamic>{
+        'uid': uid,
+        'caption': text,
+        'place_id': placeId,
+        'place_name': placeName,
+        'lat': lat,
+        'lng': lng,
+        'photo_paths': uploaded,
+        if (town != null) 'area_name': town.length > 60 ? town.substring(0, 60) : town,
+        if (title != null) 'event_title': title,
+        if (title != null && eventAt != null) 'event_at': eventAt.toUtc().toIso8601String(),
+        if (title != null && cover != null) 'event_cover': cover,
+      };
+      List<Map<String, dynamic>> rows;
+      try {
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => client.from('posts').insert(row).select());
+      } on PostgrestException catch (e) {
+        // Phase 30 not run yet: no area_name column (and photos required).
+        final m = '${e.code} ${e.message}'.toLowerCase();
+        if (m.contains('event_')) rethrow;
+        if (!m.contains('area_name') && e.code != 'PGRST204') rethrow;
+        row.remove('area_name');
+        rows = await _withProfileRepair<List<Map<String, dynamic>>>(() => client.from('posts').insert(row).select());
+      }
+      final post = _postFromRow(rows.first);
+      if (post != null) {
+        posts = [post, ...posts.where((p) => p.id != post.id)];
+        notifyListeners();
+      }
+      return null;
+    } catch (e) {
+      if (uploaded.isNotEmpty) {
+        unawaited(() async {
+          try {
+            await client.storage.from('posts').remove(uploaded);
+          } catch (_) {}
+        }());
+      }
+      if (e is PostgrestException && e.message.toLowerCase().contains('rate limit')) {
+        return "That's 10 posts today. You can post again tomorrow.";
+      }
+      if (e is PostgrestException && e.message.toLowerCase().contains('event_')) {
+        return "Events need the latest database update (phase 31). Run the new RUN_ALL.sql.";
+      }
+      return _featureError(e, feature: 'Posts', phase: 'phase 29', fallback: "Couldn't post that");
+    }
+  }
+
+  /// Like / unlike. Shows right away; undone if the server says no.
+  Future<void> togglePostLike(String postId) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null || selfBanned) return;
+    final i = posts.indexWhere((p) => p.id == postId);
+    if (i == -1) return;
+    final before = posts[i];
+    final liked = before.likes.contains('me');
+    posts = [...posts]
+      ..[i] = before.copyWith(
+        likes: liked ? before.likes.where((x) => x != 'me').toList() : [...before.likes, 'me'],
+        dislikes: before.dislikes.where((x) => x != 'me').toList(),
+      );
+    notifyListeners();
+    try {
+      final client = Supabase.instance.client;
+      if (liked) {
+        await client.from('post_likes').delete().eq('post_id', postId).eq('user_id', uid);
+      } else {
+        await client.from('post_likes').insert({'post_id': postId, 'user_id': uid});
+      }
+    } catch (_) {
+      final j = posts.indexWhere((p) => p.id == postId);
+      if (j != -1) {
+        posts = [...posts]..[j] = posts[j].copyWith(likes: before.likes, dislikes: before.dislikes);
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Dislike / undo dislike — cancels your like (phase 30).
+  Future<String?> togglePostDislike(String postId) async {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null || selfBanned) return null;
+    final i = posts.indexWhere((p) => p.id == postId);
+    if (i == -1) return null;
+    final before = posts[i];
+    final disliked = before.dislikes.contains('me');
+    posts = [...posts]
+      ..[i] = before.copyWith(
+        dislikes: disliked ? before.dislikes.where((x) => x != 'me').toList() : [...before.dislikes, 'me'],
+        likes: before.likes.where((x) => x != 'me').toList(),
+      );
+    notifyListeners();
+    try {
+      final client = Supabase.instance.client;
+      if (disliked) {
+        await client.from('post_dislikes').delete().eq('post_id', postId).eq('user_id', uid);
+      } else {
+        await client.from('post_dislikes').insert({'post_id': postId, 'user_id': uid});
+      }
+      return null;
+    } catch (e) {
+      final j = posts.indexWhere((p) => p.id == postId);
+      if (j != -1) {
+        posts = [...posts]..[j] = posts[j].copyWith(likes: before.likes, dislikes: before.dislikes);
+        notifyListeners();
+      }
+      return _featureError(e, feature: 'Dislikes', phase: 'phase 30', fallback: "Couldn't do that");
+    }
+  }
+
+  /// Returns an error to show, or null.
+  Future<String?> addComment(String postId, String text) async {
+    if (selfBanned) return _bannedMessage;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Log in to comment.';
+    var clean = text.trim();
+    if (clean.isEmpty) return null;
+    if (clean.length > maxCommentLength) clean = clean.substring(0, maxCommentLength);
+    if (_tooSoon('comment', 1500)) return 'Slow down a sec.';
+    try {
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(
+          () => Supabase.instance.client.from('post_comments').insert({'post_id': postId, 'uid': uid, 'text': clean}).select());
+      final r = rows.first;
+      final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+      final c = PostComment(id: r['id'] as String, postId: postId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch);
+      final i = posts.indexWhere((p) => p.id == postId);
+      final loaded = _postComments[postId];
+      if (loaded != null) {
+        final list = [...loaded.where((x) => x.id != c.id), c];
+        _postComments[postId] = list;
+        if (i != -1) posts = [...posts]..[i] = posts[i].copyWith(commentCount: list.length);
+      } else {
+        // Replied from the feed: just add it to the little preview.
+        final prev = [...(_commentPreviews[postId] ?? const <PostComment>[]), c];
+        _commentPreviews[postId] = prev.length <= 2 ? prev : prev.sublist(prev.length - 2);
+        if (i != -1) posts = [...posts]..[i] = posts[i].copyWith(commentCount: posts[i].commentCount + 1);
+      }
+      notifyListeners();
+      return null;
+    } catch (e) {
+      if (e is PostgrestException && e.message.toLowerCase().contains('rate limit')) return 'Slow down a sec.';
+      return _featureError(e, feature: 'Comments', phase: 'phase 29', fallback: "Couldn't send that comment");
+    }
+  }
+
+  Future<void> deleteComment(PostComment c) async {
+    try {
+      await Supabase.instance.client.from('post_comments').delete().eq('id', c.id);
+    } catch (_) {
+      return;
+    }
+    final list = commentsFor(c.postId).where((x) => x.id != c.id).toList();
+    _postComments[c.postId] = list;
+    final i = posts.indexWhere((p) => p.id == c.postId);
+    if (i != -1) posts = [...posts]..[i] = posts[i].copyWith(commentCount: list.length);
+    notifyListeners();
+  }
+
+  /// Deletes your own post (or any post, for an admin). Returns an error or null.
+  Future<String?> deletePost(String postId) async {
+    final p = postById(postId);
+    try {
+      final rows = await Supabase.instance.client.from('posts').delete().eq('id', postId).select('id');
+      if (rows.isEmpty) return "Couldn't delete that post.";
+    } catch (e) {
+      return _featureError(e, feature: 'Posts', phase: 'phase 29', fallback: "Couldn't delete that post");
+    }
+    posts = posts.where((x) => x.id != postId).toList();
+    _postComments.remove(postId);
+    notifyListeners();
+    if (p != null) {
+      unawaited(() async {
+        try {
+          await Supabase.instance.client.storage.from('posts').remove(p.photoPaths);
+        } catch (_) {}
+      }());
+    }
+    return null;
+  }
+
+  /// Flags a post for the admins. Returns a message to show.
+  Future<String> reportPost(Post post, String reason) async {
+    if (!canUseServer) return 'Sign in to report a post.';
+    if (post.uid == 'me') return "That's your own post.";
+    if (_tooSoon('postReport', 2000)) return 'One sec…';
+    try {
+      final res = await Supabase.instance.client.rpc('report_post', params: {'p_post': post.id, 'p_reason': reason}) as String?;
+      return res ?? 'Thanks for reporting. The FUNKY team will review it.';
+    } catch (e) {
+      return _featureError(e, feature: 'Reporting posts', phase: 'phase 29', fallback: "Couldn't send that report");
+    }
+  }
+
+  // --- Places you've been ("been here" badge) -----------------------------
+
+  // Nights you've been at each place, from the server's place_visits
+  // (phase 27) — counts every night you tapped "I'm going" there or posted
+  // a Story there, from any device.
+  Map<String, int> _visitNights = {};
+
+  /// Whether you've ever been at [placeId]: tapped "I'm going" there, or
+  /// posted a Story there (tonight or any night before).
+  bool hasBeenTo(String placeId) {
+    if (!signedIn) return false;
+    final id = placeId.toLowerCase();
+    if ((_visitNights[id] ?? 0) > 0) return true;
+    if (me.move == placeId || me.placesVisited.contains(placeId)) return true;
+    return stories.any((s) => s.uid == 'me' && s.place == placeId);
+  }
+
+  /// How many different nights you've been at [placeId] (0 if never).
+  int nightsAt(String placeId) {
+    if (!signedIn) return 0;
+    final server = _visitNights[placeId.toLowerCase()] ?? 0;
+    final local = <String>{
+      for (final s in stories)
+        if (s.uid == 'me' && s.place == placeId) s.session,
+    };
+    if (me.move == placeId) local.add(sessionKey());
+    var n = local.length;
+    if (n == 0 && me.placesVisited.contains(placeId)) n = 1;
+    return server > n ? server : n;
+  }
+
+  Future<void> _fetchPlaceVisits() async {
+    final uid = supabaseUserId;
+    if (uid == null || isGuest) return;
+    try {
+      final rows = await Supabase.instance.client.from('place_visits').select('place_id,night').eq('user_id', uid);
+      final out = <String, int>{};
+      for (final r in rows) {
+        final id = (r['place_id'] as String?)?.toLowerCase();
+        if (id == null) continue;
+        out[id] = (out[id] ?? 0) + 1;
+      }
+      _visitNights = out;
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 27 not run yet — the local guess still works.
+    }
+  }
+
   List<Story> get myStories {
     final mine = stories.where((s) => s.uid == 'me').toList();
     mine.sort((a, b) => b.t.compareTo(a.t));
@@ -1213,12 +2419,23 @@ class AppStore extends ChangeNotifier {
   /// friends-only, same gate as the profile page (canSeeStoriesOf). A
   /// non-friend who keeps tapping through your ring stops at the edge of
   /// tonight instead of being able to page back through your whole archive.
+  ///
+  /// Text-only Stories are never memories — they live for their 24 hours
+  /// as a Story and that's it. Only photos and videos are kept.
   List<Story> visibleStoriesByUser(String uid) {
-    final theirs = storiesByUser(uid);
+    final theirs = storiesByUser(uid).where(isMemoryStory).toList();
     if (canSeeStoriesOf(uid)) return theirs;
     final today = sessionKey();
     return theirs.where((s) => s.session == today).toList();
   }
+
+  /// Whether a Story counts as a Memory: it has a photo or video. A
+  /// text-only Story is just a 24-hour Story.
+  bool isMemoryStory(Story s) =>
+      s.imagePath != null || s.imageUrl != null || s.videoPath != null || s.videoUrl != null || s.mediaPath != null;
+
+  /// Your Memories (photos and videos you've posted), newest first.
+  List<Story> get myMemories => myStories.where(isMemoryStory).toList();
 
   /// Everyone 'me' is actually (mutually) friends with right now, resolved
   /// to full Person records so the UI can show their real @handle — what
@@ -1253,7 +2470,7 @@ class AppStore extends ChangeNotifier {
     // Escape LIKE wildcards so a typed % or _ can't turn this into a
     // match-everything query against the real profiles table.
     final remoteQ = q.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-    final localMatches = people.values.where((p) => p.handle.toLowerCase().contains(q) && !isBanned(p.id)).toList();
+    final localMatches = people.values.where((p) => p.handle.toLowerCase().contains(q) && !isHidden(p.id)).toList();
     if (!signedIn || supabaseUserId == null) return localMatches;
     try {
       final rows = await Supabase.instance.client
@@ -1268,7 +2485,7 @@ class AppStore extends ChangeNotifier {
         final id = row['id'] as String;
         matchedIds.add(id);
         if (row['banned'] == true) _remoteBannedIds.add(id);
-        if (isBanned(id)) continue;
+        if (isHidden(id)) continue;
         // Same rule as _ensurePeopleFor — never clobber a Person record
         // already in [people] (e.g. an existing friend's local state), only
         // fill in ones this device hasn't seen before.
@@ -1281,7 +2498,7 @@ class AppStore extends ChangeNotifier {
       // that's already a friend/pending request still shows its real local
       // state, and de-dupe against anyone already caught by localMatches.
       final ids = <String>{...localMatches.map((p) => p.id), ...matchedIds};
-      return ids.where((id) => !isBanned(id)).map(personById).whereType<Person>().toList();
+      return ids.where((id) => !isHidden(id)).map(personById).whereType<Person>().toList();
     } catch (_) {
       // Offline or a transient error — still show whatever matched locally.
       return localMatches;
@@ -1602,7 +2819,8 @@ class AppStore extends ChangeNotifier {
 
   /// Same one-per-day rule as places, for polls (and the same Admin
   /// exemption).
-  bool get canAddPollToday => isAdmin || !polls.any((p) => p.by == 'me' && p.session == sessionKey());
+  bool get canAddPollToday =>
+      isAdmin || (_pollUsedSession != sessionKey() && !polls.any((p) => p.by == 'me' && p.session == sessionKey()));
 
   // Lowercased, letters/digits-only — so "Sigma Chi", "sigma-chi!", and
   // "Sigma  Chi" all collapse to the same key before comparing names.
@@ -1613,12 +2831,20 @@ class AppStore extends ChangeNotifier {
   /// name looks like a duplicate of [name], or null if there isn't one.
   /// Lets the Add Place form warn before you even try to submit, and
   /// backstops [addPlace] itself in case something slips past that check.
-  Place? similarNearbyPlace(String name, {LatLng? at}) {
+  Place? similarNearbyPlace(String name, {LatLng? at, String? night, String? ignoreId}) {
     final target = _normalizedPlaceName(name);
     if (target.isEmpty) return null;
     final here = at ?? location ?? defaultLocation;
     for (final p in places) {
-      if (!near(here, LatLng(p.lat, p.lng))) continue;
+      if (p.id == ignoreId || !near(here, LatLng(p.lat, p.lng))) continue;
+      // A dated party/event only clashes with one on the same night (the
+      // same trivia night can be added every week).
+      final pn = p.night;
+      if (night != null) {
+        if (pn != night) continue;
+      } else if (pn != null && pn != sessionKey()) {
+        continue;
+      }
       final existing = _normalizedPlaceName(p.name);
       if (existing.isEmpty) continue;
       if (existing == target || existing.contains(target) || target.contains(existing)) return p;
@@ -1635,7 +2861,8 @@ class AppStore extends ChangeNotifier {
 
   /// [at] is where the pin goes (an address picked in the Add Place form);
   /// without it the pin drops at your current location.
-  Future<Place?> addPlace(String name, PlaceKind kind, String address, {String? coverPhotoPath, LatLng? at}) async {
+  Future<Place?> addPlace(String name, PlaceKind kind, String address,
+      {String? coverPhotoPath, LatLng? at, DateTime? startsAt, String? eventType, String? hostPlaceId}) async {
     lastPlaceError = null;
     if (selfBanned) {
       lastPlaceError = _bannedMessage;
@@ -1648,7 +2875,7 @@ class AppStore extends ChangeNotifier {
     final cleanName = name.trim().length > maxPlaceNameLength ? name.trim().substring(0, maxPlaceNameLength) : name.trim();
     final cleanAddress = address.trim().length > maxPlaceAddressLength ? address.trim().substring(0, maxPlaceAddressLength) : address.trim();
     if (cleanName.isEmpty) return null;
-    if (similarNearbyPlace(cleanName, at: at) != null) return null;
+    if (similarNearbyPlace(cleanName, at: at, night: startsAt == null ? null : sessionKey(startsAt), ignoreId: hostPlaceId) != null) return null;
     final uid = supabaseUserId;
     if (!canUseServer || uid == null) {
       lastPlaceError = 'Log in to add a place.';
@@ -1683,6 +2910,10 @@ class AppStore extends ChangeNotifier {
               // everyone else this is just false.
               'admin_verified': isAdmin,
               if (withCover && coverUrl != null) 'cover_url': coverUrl,
+              // Phase 33: a date, what kind of event, and the bar it's at.
+              if (startsAt != null) 'starts_at': startsAt.toUtc().toIso8601String(),
+              if (eventType != null) 'event_type': eventType,
+              if (hostPlaceId != null) 'host_place_id': hostPlaceId,
             }).select());
       }
 
@@ -1714,8 +2945,17 @@ class AppStore extends ChangeNotifier {
         session: built.session,
         coverPhotoPath: coverPhotoPath,
         coverUrl: coverUrl,
+        startsAt: built.startsAt,
+        eventType: built.eventType,
+        hostPlaceId: built.hostPlaceId,
       );
     } catch (e) {
+      final m = e.toString();
+      if ((startsAt != null || eventType != null || hostPlaceId != null) &&
+          (m.contains('starts_at') || m.contains('event_type') || m.contains('host_place_id'))) {
+        lastPlaceError = "Dates and events at bars aren't switched on yet — run RUN_ALL.sql (phase 33) in Supabase.";
+        return null;
+      }
       final why = _friendlySendError(e);
       lastPlaceError = why.startsWith('No connection') ? "Couldn't add that place — check your connection and try again." : "Couldn't add that place — $why";
       return null;
@@ -1771,7 +3011,7 @@ class AppStore extends ChangeNotifier {
       return null;
     }
     if (!canAddPollToday) {
-      lastPollError = "You can only add one poll per day — check back after the 2 PM reset.";
+      lastPollError = "You can only post one poll a day — check back after the 2 PM reset.";
       return null;
     }
     if (_tooSoon('addPoll', 3000)) {
@@ -1807,6 +3047,13 @@ class AppStore extends ChangeNotifier {
       if (built == null) throw const FormatException('bad poll row');
       poll = built;
     } catch (e) {
+      // The server's one-poll-a-day rule (phase 28).
+      if (e is PostgrestException && e.message.toLowerCase().contains('one poll a day')) {
+        _pollUsedSession = sessionKey();
+        lastPollError = "You can only post one poll a day — check back after the 2 PM reset.";
+        notifyListeners();
+        return null;
+      }
       final why = _friendlySendError(e);
       lastPollError = why.startsWith('No connection') ? "Couldn't post that poll — check your connection and try again." : "Couldn't post that poll — $why";
       return null;
@@ -1820,7 +3067,7 @@ class AppStore extends ChangeNotifier {
 
   /// Returns null on success, or a user-facing error if you're still inside
   /// the cooldown (basic anti-spam — nothing fancier than "wait a moment").
-  String? sendMessage(String room, String text, bool anon) {
+  String? sendMessage(String room, String text, bool anon, {ChatMessage? replyTo, String? placeId, String? pollId, String? gifUrl}) {
     if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
@@ -1828,18 +3075,36 @@ class AppStore extends ChangeNotifier {
       return 'Slow down a sec before sending another message.';
     }
     final capped = text.length > _maxMessageLength ? text.substring(0, _maxMessageLength) : text;
-    if (capped.trim().isEmpty) return null;
+    final hasExtra = placeId != null || pollId != null || gifUrl != null;
+    if (capped.trim().isEmpty && !hasExtra) return null;
+    // Guests can only chat anonymously (the server insists too).
+    final asAnon = anon || (isGuest && !signedIn);
     final here = location;
+    String? replyHandle;
+    String? replyText;
+    if (replyTo != null) {
+      replyHandle = replyTo.anon ? 'anonymous' : chatHandleFor(replyTo);
+      final words = replyTo.text.trim().isNotEmpty
+          ? replyTo.text.trim()
+          : (replyTo.gifUrl != null ? 'GIF' : (replyTo.sharedPlaceId != null ? 'Shared a spot' : (replyTo.pollId != null ? 'Shared a poll' : '')));
+      replyText = words.length > 120 ? '${words.substring(0, 117)}...' : words;
+    }
     final message = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       t: DateTime.now().millisecondsSinceEpoch,
       room: room,
       uid: 'me',
-      text: capped,
-      anon: anon,
+      text: capped.trim().isEmpty ? '' : capped,
+      anon: asAnon,
       status: room == 'main' && canUseServer ? 'sending' : 'delivered',
       lat: room == 'main' ? here?.lat : null,
       lng: room == 'main' ? here?.lng : null,
+      replyToId: replyTo != null && !replyTo.id.startsWith('msg_') ? replyTo.id : null,
+      replyText: replyText,
+      replyHandle: replyHandle,
+      sharedPlaceId: placeId,
+      pollId: pollId,
+      gifUrl: gifUrl,
     );
     messages = _capMessages([...messages, message]);
     _lastMessageAt = now;
@@ -1867,6 +3132,14 @@ class AppStore extends ChangeNotifier {
             'anon': local.anon,
             'lat': local.lat,
             'lng': local.lng,
+            // Phase 33 extras — only sent when used, so plain messages still
+            // work before that SQL is run.
+            if (local.replyToId != null) 'reply_to': local.replyToId,
+            if (local.replyText != null) 'reply_text': local.replyText,
+            if (local.replyHandle != null) 'reply_handle': local.replyHandle,
+            if (local.sharedPlaceId != null) 'place_id': local.sharedPlaceId,
+            if (local.pollId != null) 'poll_id': local.pollId,
+            if (local.gifUrl != null) 'gif_url': local.gifUrl,
           }).select());
       final serverId = rows.first['id'] as String;
       _remoteChatIds.add(serverId);
@@ -1875,7 +3148,11 @@ class AppStore extends ChangeNotifier {
           .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'sent') : m)
           .toList();
     } catch (e) {
-      _sendErrors[local.id] = _friendlySendError(e);
+      final em = e.toString();
+      final extrasMissing = em.contains('reply_') || em.contains('place_id') || em.contains('poll_id') || em.contains('gif_url') || em.contains('chat_messages_text_check');
+      _sendErrors[local.id] = extrasMissing
+          ? 'Replies, spots, polls and GIFs need the latest database update (RUN_ALL.sql, phase 33).'
+          : _friendlySendError(e);
       messages = messages.map((m) => m.id == local.id ? m.copyWith(status: 'failed') : m).toList();
     }
     notifyListeners();
@@ -2003,7 +3280,7 @@ class AppStore extends ChangeNotifier {
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
-        final bytes = await File(mp!).length();
+        final bytes = await File(mp).length();
         if (mt == 'video' && bytes > maxDmVideoBytes) {
           return 'That video is too big — keep it under ${maxDmVideoBytes ~/ (1024 * 1024)} MB.';
         }
@@ -2182,7 +3459,7 @@ class AppStore extends ChangeNotifier {
       final existing = lastByPartner[other];
       if (existing == null || m.t > existing) lastByPartner[other] = m.t;
     }
-    final partners = lastByPartner.keys.map(personById).whereType<Person>().where((p) => !isBanned(p.id)).toList();
+    final partners = lastByPartner.keys.map(personById).whereType<Person>().where((p) => !isHidden(p.id)).toList();
     partners.sort((a, b) => lastByPartner[b.id]!.compareTo(lastByPartner[a.id]!));
     return partners;
   }
@@ -2217,8 +3494,10 @@ class AppStore extends ChangeNotifier {
     }
 
     // Where you really are right now (never an admin's dropped pin) — keeps
-    // an Area story inside the area it was posted in.
-    final here = _gpsLocation;
+    // an Area story inside the area it was posted in. If GPS hasn't come in
+    // yet, the phone's last known fix is used; failing that the server
+    // fills it in from the venue or your last synced spot (phase 26).
+    final here = _gpsLocation ?? await _lastKnownGps();
     String? remoteId;
     final uid = supabaseUserId;
     if (signedIn && uid != null) {
@@ -2425,7 +3704,7 @@ class AppStore extends ChangeNotifier {
   /// Memory card, or "Save to Timeline" in the own-story swipe-up sheet.
   void saveToTimeline(String storyId) {
     final i = stories.indexWhere((s) => s.id == storyId && s.uid == 'me');
-    if (i == -1) return;
+    if (i == -1 || !isMemoryStory(stories[i])) return;
     final updated = [...stories];
     updated[i] = updated[i].copyWith(savedToTimeline: true);
     stories = updated;
@@ -2451,7 +3730,12 @@ class AppStore extends ChangeNotifier {
   /// 2 PM session reset elsewhere, so this only ever looks at 'me'.
   void _purgeExpiredMemories() {
     final cutoff = DateTime.now().subtract(const Duration(days: memoryRetentionDays)).millisecondsSinceEpoch;
-    stories = stories.where((s) => s.uid != 'me' || s.savedToTimeline || s.t >= cutoff).toList();
+    stories = stories.where((s) {
+      if (s.uid != 'me') return true;
+      // Text-only Stories never become Memories: gone after their 24 hours.
+      if (!isMemoryStory(s)) return isLiveStory(s);
+      return s.savedToTimeline || s.t >= cutoff;
+    }).toList();
   }
 
   void likeStory(String id) {
@@ -2675,7 +3959,7 @@ class AppStore extends ChangeNotifier {
     });
   }
 
-  Future<String?> signUp(String email, String password) async {
+  Future<String?> signUp(String email, String password, {bool agreedAge21AndTerms = false}) async {
     final emailError = validateEmail(email);
     if (emailError != null) return emailError;
     final pwError = validatePassword(password);
@@ -2687,7 +3971,9 @@ class AppStore extends ChangeNotifier {
         // The confirmation link opens THIS app (see CFBundleURLTypes in
         // Info.plist) instead of Supabase's default "localhost" page.
         emailRedirectTo: authRedirectUrl,
+        data: agreedAge21AndTerms ? {'age_21_confirmed': true, 'terms_accepted_at': DateTime.now().toUtc().toIso8601String()} : null,
       );
+      if (agreedAge21AndTerms) unawaited(confirmAgeAndTerms());
       if (response.session == null) {
         return 'Check your email to confirm your account, then log in.';
       }
@@ -2881,6 +4167,9 @@ class AppStore extends ChangeNotifier {
   RealtimeChannel? _placeRatingsChannel;
   RealtimeChannel? _photoSuggestionsChannel;
   RealtimeChannel? _profileReportsChannel;
+  RealtimeChannel? _storyReportsChannel;
+  RealtimeChannel? _postsChannel;
+  RealtimeChannel? _blocksChannel;
   RealtimeChannel? _groupMessagesChannel;
   RealtimeChannel? _groupsChannel;
   RealtimeChannel? _chatChannel;
@@ -2921,10 +4210,19 @@ class AppStore extends ChangeNotifier {
     unawaited(_fetchRemotePolls());
     unawaited(_fetchRemoteReports());
     unawaited(_fetchRemoteStories());
+    unawaited(_fetchPosts());
+    unawaited(_awardAndLoadTopPosts());
+    unawaited(_fetchPlaceRsvps());
+    unawaited(_fetchAppConfig());
+    unawaited(_pingPresence());
     if (!guest) {
       unawaited(_fetchRemoteFriendships());
       unawaited(_fetchPhotoSuggestions());
       unawaited(_fetchProfileReports());
+      unawaited(_fetchStoryReports());
+      unawaited(_fetchPlaceVisits());
+      unawaited(_fetchBlocks());
+      unawaited(_pushAgreement());
       unawaited(_fetchGroups());
       unawaited(refreshGroupCalls());
       unawaited(fetchCallLog());
@@ -3074,6 +4372,57 @@ class AppStore extends ChangeNotifier {
         schema: 'public',
         table: 'profile_reports',
         callback: (_) => unawaited(_fetchProfileReports()),
+      )
+      ..subscribe();
+
+    _postsChannel = client.channel('public:posts:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'posts',
+        callback: (_) => _schedulePostsRefresh(),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'post_likes',
+        callback: (_) => _schedulePostsRefresh(),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'post_dislikes',
+        callback: (_) => _schedulePostsRefresh(),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'event_going',
+        callback: (_) => _schedulePostsRefresh(),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'post_comments',
+        callback: (payload) => _onRemoteCommentChange(payload.newRecord, payload.oldRecord),
+      )
+      ..subscribe();
+
+    _blocksChannel = client.channel('public:blocks:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'blocks',
+        callback: (_) => unawaited(_fetchBlocks()),
+      )
+      ..subscribe();
+
+    _storyReportsChannel = client.channel('public:story_reports:sync')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'story_reports',
+        callback: (_) => unawaited(_fetchStoryReports()),
       )
       ..subscribe();
 
@@ -3334,6 +4683,9 @@ class AppStore extends ChangeNotifier {
       _placeRatingsChannel,
       _photoSuggestionsChannel,
       _profileReportsChannel,
+      _storyReportsChannel,
+      _postsChannel,
+      _blocksChannel,
       _groupMessagesChannel,
       _groupsChannel,
       _chatChannel,
@@ -3359,6 +4711,11 @@ class AppStore extends ChangeNotifier {
     _placeRatingsChannel = null;
     _photoSuggestionsChannel = null;
     _profileReportsChannel = null;
+    _storyReportsChannel = null;
+    _postsChannel = null;
+    _blocksChannel = null;
+    _postsRefreshTimer?.cancel();
+    _postsRefreshTimer = null;
     _groupMessagesChannel = null;
     _groupsChannel = null;
     _chatChannel = null;
@@ -3396,6 +4753,16 @@ class AppStore extends ChangeNotifier {
     pendingPhotoSuggestions = [];
     myPendingPhotoPlaces = {};
     openProfileReports = [];
+    openStoryReports = [];
+    _visitNights = {};
+    posts = [];
+    postsLoaded = false;
+    _postComments.clear();
+    _commentPreviews.clear();
+    _blockedByMe = {};
+    _blockedMe = {};
+    _awardRanks = {};
+    crashReports = [];
     groups = [];
     notifPrefs = const NotificationPrefs();
     _syncedLocation = null;
@@ -3605,6 +4972,7 @@ class AppStore extends ChangeNotifier {
     if (_remoteAdmin && !wasRemoteAdmin) {
       // Just learned this account is an admin — pull in what's waiting.
       unawaited(_fetchProfileReports());
+      unawaited(_fetchStoryReports());
       unawaited(_fetchPhotoSuggestions());
     }
     final remoteEarned = (row['points'] as num?)?.toInt() ?? 0;
@@ -3799,7 +5167,7 @@ class AppStore extends ChangeNotifier {
       final all = <PlacePhotoSuggestion>[];
       final mine = <String>{};
       for (final raw in rows) {
-        final r = raw as Map<String, dynamic>;
+        final r = raw;
         final id = r['id'] as String?;
         final placeId = r['place_id'] as String?;
         final url = r['url'] as String?;
@@ -3893,7 +5261,7 @@ class AppStore extends ChangeNotifier {
   List<Person> get groupablePeople {
     final out = <Person>[];
     for (final id in me.friends) {
-      if (!_remotePersonIds.contains(id) || isBanned(id)) continue;
+      if (!_remotePersonIds.contains(id) || isHidden(id)) continue;
       final p = personById(id);
       if (p != null) out.add(p);
     }
@@ -3942,7 +5310,7 @@ class AppStore extends ChangeNotifier {
       final joinsByGroup = <String, List<GroupJoin>>{};
       final others = <String>{};
       for (final raw in memberRows) {
-        final r = raw as Map<String, dynamic>;
+        final r = raw;
         final gid = r['group_id'] as String?;
         final u = r['user_id'] as String?;
         if (gid == null || u == null) continue;
@@ -3961,7 +5329,7 @@ class AppStore extends ChangeNotifier {
       }
       final next = <GroupChat>[];
       for (final raw in chatRows) {
-        final r = raw as Map<String, dynamic>;
+        final r = raw;
         final id = r['id'] as String?;
         if (id == null) continue;
         final by = r['created_by'] as String?;
@@ -4027,7 +5395,7 @@ class AppStore extends ChangeNotifier {
       var signed = 0;
       // Newest first, so the 40 media signings go to the newest ones.
       for (final raw in rows) {
-        final row = raw as Map<String, dynamic>;
+        final row = raw;
         var msg = _groupMessageFromRow(row);
         if (msg == null) continue;
         final mid = msg.id;
@@ -4097,7 +5465,7 @@ class AppStore extends ChangeNotifier {
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
-        final bytes = await File(mp!).length();
+        final bytes = await File(mp).length();
         if (mt == 'video' && bytes > maxDmVideoBytes) {
           return 'That video is too big — keep it under ${maxDmVideoBytes ~/ (1024 * 1024)} MB.';
         }
@@ -4308,7 +5676,7 @@ class AppStore extends ChangeNotifier {
       final out = <ProfileReport>[];
       final ids = <String>{};
       for (final raw in rows) {
-        final r = raw as Map<String, dynamic>;
+        final r = raw;
         final id = r['id'] as String?;
         final reporter = r['reporter_id'] as String?;
         final reported = r['reported_id'] as String?;
@@ -4348,6 +5716,129 @@ class AppStore extends ChangeNotifier {
       await Supabase.instance.client.rpc('resolve_profile_report', params: {'p_id': id});
     } catch (_) {}
     await _fetchProfileReports();
+  }
+
+  // --- Story reports (the flag on a Story) -------------------------------
+
+  /// Reported Stories waiting on an admin, one entry per Story (all its
+  /// reports grouped), oldest first. Only ever filled for admins.
+  List<StoryReport> openStoryReports = [];
+
+  static const storyReportReasons = [
+    'Nudity or sexual content',
+    'Harassment or bullying',
+    'Violence or threats',
+    'Hate speech',
+    'Drugs or dangerous stuff',
+    'Spam or scam',
+    'Something else',
+  ];
+
+  Future<void> _fetchStoryReports() async {
+    final uid = supabaseUserId;
+    if (uid == null || !isAdmin) {
+      if (openStoryReports.isNotEmpty) {
+        openStoryReports = [];
+        notifyListeners();
+      }
+      return;
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .from('story_reports')
+          .select()
+          .eq('status', 'open')
+          .order('created_at');
+      final byKey = <String, List<Map<String, dynamic>>>{};
+      final order = <String>[];
+      final ids = <String>{};
+      for (final raw in rows) {
+        final r = raw;
+        final id = r['id'] as String?;
+        if (id == null) continue;
+        final key = (r['story_id'] as String?) ?? (r['post_id'] as String?) ?? id;
+        if (!byKey.containsKey(key)) order.add(key);
+        (byKey[key] ??= []).add(r);
+        final poster = r['poster_id'] as String?;
+        final reporter = r['reporter_id'] as String?;
+        if (poster != null) ids.add(poster);
+        if (reporter != null) ids.add(reporter);
+      }
+      String? asMe(String? id) => id == null ? null : (id == uid ? 'me' : id);
+      final out = <StoryReport>[];
+      for (final key in order) {
+        final group = byKey[key]!;
+        final first = group.first;
+        final reasons = <String>[];
+        for (final r in group) {
+          final reason = (r['reason'] as String?) ?? '';
+          if (reason.isNotEmpty && !reasons.contains(reason)) reasons.add(reason);
+        }
+        out.add(StoryReport(
+          id: first['id'] as String,
+          reportIds: [for (final r in group) r['id'] as String],
+          storyId: first['story_id'] as String?,
+          kind: (first['kind'] as String?) ?? 'story',
+          postId: first['post_id'] as String?,
+          posterId: asMe(first['poster_id'] as String?),
+          reasons: reasons,
+          reporterIds: [
+            for (final r in group)
+              if (r['reporter_id'] != null) asMe(r['reporter_id'] as String)!,
+          ],
+          storyText: first['story_text'] as String?,
+          storyMediaPath: first['story_media_path'] as String?,
+          storyIsVideo: first['story_is_video'] as bool? ?? false,
+          storyAnon: first['story_anon'] as bool? ?? false,
+          storyPlaceName: first['story_place_name'] as String?,
+          storyCreatedAt: DateTime.tryParse((first['story_created_at'] as String?) ?? '')?.toLocal(),
+          createdAt: DateTime.tryParse((first['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+      }
+      ids.remove(uid);
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      openStoryReports = out;
+      notifyListeners();
+    } catch (_) {
+      // Offline, or phase 26 not run yet.
+    }
+  }
+
+  /// Flags a Story for the admins. Returns a message to show.
+  Future<String> reportStory(Story story, String reason) async {
+    if (!canUseServer) return 'Sign in to report a story.';
+    if (story.uid == 'me') return "That's your own story.";
+    if (!_looksLikeUuid(story.id)) return "Thanks — we'll take a look.";
+    if (_tooSoon('storyReport', 2000)) return 'One sec…';
+    try {
+      final res = await Supabase.instance.client.rpc('report_story', params: {'p_story': story.id, 'p_reason': reason}) as String?;
+      return res ?? 'Thanks for reporting. The FUNKY team will review it.';
+    } catch (e) {
+      return _featureError(e, feature: 'Reporting stories', phase: 'phase 26', fallback: "Couldn't send that report");
+    }
+  }
+
+  /// Admin: close a reported Story's reports. [remove] also deletes the
+  /// Story for everyone and tells the poster. Returns an error or null.
+  Future<String?> resolveStoryReport(StoryReport report, {required bool remove}) async {
+    if (!isAdmin) return 'Admins only.';
+    try {
+      final res = await Supabase.instance.client.rpc('resolve_story_report', params: {'p_id': report.id, 'p_remove': remove}) as String?;
+      if (res != null) return res;
+      if (remove && report.storyId != null) {
+        stories = stories.where((s) => s.id != report.storyId).toList();
+      }
+      if (remove && report.postId != null) {
+        posts = posts.where((p) => p.id != report.postId).toList();
+      }
+      openStoryReports = openStoryReports.where((r) => r.id != report.id).toList();
+      notifyListeners();
+      _persist();
+    } catch (e) {
+      return _featureError(e, feature: 'Story reports', phase: 'phase 26', fallback: "Couldn't update that report");
+    }
+    await _fetchStoryReports();
+    return null;
   }
 
   // --- Place star ratings -------------------------------------------------
@@ -4433,6 +5924,9 @@ class AppStore extends ChangeNotifier {
       coverPhotoPath: _localPlaceCovers[id],
       coverUrl: row['cover_url'] as String?,
       photoUrl: _resolvePlacePhoto(id, row),
+      startsAt: DateTime.tryParse((row['starts_at'] as String?) ?? '')?.toLocal(),
+      eventType: row['event_type'] as String?,
+      hostPlaceId: row['host_place_id'] as String?,
     );
   }
 
@@ -4669,7 +6163,10 @@ class AppStore extends ChangeNotifier {
       if (place == null) continue;
       final adminVerified = row['admin_verified'] as bool? ?? false;
       final created = DateTime.tryParse((row['created_at'] as String?) ?? '');
-      final expired = created != null && DateTime.now().difference(created.toLocal()) > const Duration(hours: 24);
+      var expired = created != null && DateTime.now().difference(created.toLocal()) > const Duration(hours: 24);
+      // A dated party/event (phase 33) stays until its night is over.
+      final night = place.night;
+      if (night != null) expired = night.compareTo(sessionKey()) < 0;
       if (!adminVerified && expired) continue;
       fetched.add(place);
       if (adminVerified) verifiedByAdmin.add(place.id);
@@ -4851,6 +6348,12 @@ class AppStore extends ChangeNotifier {
       status: 'delivered',
       lat: (row['lat'] as num?)?.toDouble(),
       lng: (row['lng'] as num?)?.toDouble(),
+      replyToId: row['reply_to'] as String?,
+      replyText: row['reply_text'] as String?,
+      replyHandle: row['reply_handle'] as String?,
+      sharedPlaceId: row['place_id'] as String?,
+      pollId: row['poll_id'] as String?,
+      gifUrl: row['gif_url'] as String?,
     );
   }
 
@@ -4871,7 +6374,7 @@ class AppStore extends ChangeNotifier {
       byId[m.id] = m;
     }
     final list = byId.values.where((m) {
-      if (m.uid != 'me' && isBanned(m.uid)) return false;
+      if (m.uid != 'me' && isHidden(m.uid)) return false;
       final lat = m.lat;
       final lng = m.lng;
       if (lat == null || lng == null) return m.uid == 'me';
@@ -4949,7 +6452,7 @@ class AppStore extends ChangeNotifier {
     final list = messages.where((m) {
       if (m.room != 'main') return false;
       if (m.t < start) return false;
-      if (m.uid != 'me' && isBanned(m.uid)) return false;
+      if (m.uid != 'me' && isHidden(m.uid)) return false;
       final lat = m.lat;
       final lng = m.lng;
       // No location on it: only the sender sees it (it could be from anywhere).
@@ -5127,7 +6630,9 @@ class AppStore extends ChangeNotifier {
     if (supabaseUserId == null) return;
     try {
       final client = Supabase.instance.client;
-      final rows = await client.from('stories').select().order('created_at');
+      // Newest first so the server's 1,000-row cap can never cut off
+      // tonight's Stories, then back to oldest-first.
+      final rows = (await client.from('stories').select().order('created_at', ascending: false).limit(1000)).reversed.toList();
       final viewRows = await client.from('story_views').select();
       final likeRows = await client.from('story_likes').select();
       final viewsByStory = <String, List<String>>{};
@@ -5410,7 +6915,7 @@ class AppStore extends ChangeNotifier {
     final q = query.toLowerCase();
     final friendIds = me.friends.toSet();
     final found = people.values.where((p) {
-      if (!_isRealPersonId(p.id) || p.handle.isEmpty || isBanned(p.id)) return false;
+      if (!_isRealPersonId(p.id) || p.handle.isEmpty || isHidden(p.id)) return false;
       return q.isEmpty || p.handle.toLowerCase().contains(q);
     }).toList();
     int rank(Person p) {
@@ -5502,9 +7007,16 @@ class AppStore extends ChangeNotifier {
       _fetchRemoteProfiles(othersOnly: true),
       _fetchRemoteFriendships(),
       _fetchRemotePlaces(),
+      _fetchPlaceRsvps(),
+      _pingPresence(),
       _fetchPlaceRatings(),
       _fetchPhotoSuggestions(),
       _fetchProfileReports(),
+      _fetchStoryReports(),
+      _fetchPlaceVisits(),
+      _fetchBlocks(),
+      _fetchPosts(),
+      _awardAndLoadTopPosts(),
       _fetchGroups(),
       refreshGroupCalls(),
       fetchCallLog(),
@@ -6001,6 +7513,104 @@ class AppStore extends ChangeNotifier {
         _syncedLocationAt = null;
       }
     }());
+  }
+
+  // --- Live Chat: who's online, replies, GIFs (phase 33) -------------------
+
+  /// How many people have the app open within your radius (you included),
+  /// or null until the server has answered.
+  int? onlineNearby;
+
+  Future<void> _pingPresence() async {
+    final loc = location;
+    if (loc == null || supabaseUserId == null) return;
+    try {
+      final n = await Supabase.instance.client.rpc('ping_presence', params: {
+        'p_lat': loc.lat,
+        'p_lng': loc.lng,
+        'p_radius_miles': rangeMiles,
+      });
+      final v = (n as num?)?.toInt();
+      if (v != onlineNearby) {
+        onlineNearby = v;
+        notifyListeners();
+      }
+    } catch (_) {
+      // Phase 33 not run yet, or offline — the count just doesn't show.
+    }
+  }
+
+  /// Checks the online count again right away (Live Chat just opened).
+  void refreshOnlineNearby() => unawaited(_pingPresence());
+
+  /// The name a Live Chat message shows ('anonymous' for ghost mode).
+  String chatHandleFor(ChatMessage m) {
+    if (m.anon) return 'anonymous';
+    if (m.uid == 'me') return myChatHandle;
+    return people[m.uid]?.handle ?? 'someone';
+  }
+
+  /// The message a reply points at, if it's still around.
+  ChatMessage? chatMessageById(String? id) {
+    if (id == null) return null;
+    for (final m in messages) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  /// The GIPHY key for GIF search, set by an admin (app_config table).
+  String? giphyKey;
+
+  Future<void> _fetchAppConfig() async {
+    try {
+      final rows = await Supabase.instance.client.from('app_config').select('key,value');
+      String? key;
+      for (final r in rows) {
+        if (r['key'] == 'giphy_key') key = r['value'] as String?;
+      }
+      final next = (key == null || key.trim().isEmpty) ? null : key.trim();
+      if (next != giphyKey) {
+        giphyKey = next;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// Admins: turn GIF search on with a GIPHY API key (empty turns it off).
+  Future<String?> setGiphyKey(String key) async {
+    if (!isAdmin) return 'Admins only.';
+    final clean = key.trim();
+    try {
+      await Supabase.instance.client.from('app_config').upsert({
+        'key': 'giphy_key',
+        'value': clean.isEmpty ? null : clean,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      giphyKey = clean.isEmpty ? null : clean;
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'GIFs', phase: 'phase 33', fallback: "Couldn't save the key");
+    }
+  }
+
+  // --- FUNKY avatars (phase 33) ---------------------------------------------
+
+  /// Use one of FUNKY's own avatars ("preset:raccoon") as your picture.
+  Future<String?> setAvatarPreset(String value) async {
+    if (!signedIn) return 'Make an account to pick a picture.';
+    me = me.copyWith(clearPhotoPath: true, photoUrl: value);
+    notifyListeners();
+    _persist();
+    await _setAvatarPending(false);
+    try {
+      final ok = await _updateOwnProfile({'avatar_url': value});
+      if (!ok) return "Saved on this phone, but your profile couldn't be updated yet. Try again in a minute.";
+      return null;
+    } catch (e) {
+      return "Saved on this phone, but other people can't see it yet: ${_friendlySendError(e)}";
+    }
   }
 
   @override

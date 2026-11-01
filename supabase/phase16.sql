@@ -15,8 +15,10 @@ declare
 begin
   with del as (
     delete from public.places p
-    where p.created_at < now() - interval '24 hours'
-      and p.admin_verified = false
+    where p.admin_verified = false
+      -- A place with a date (phase 33) stays until a day after it starts.
+      -- Read through jsonb so this still works before that column exists.
+      and greatest(p.created_at, coalesce((to_jsonb(p) ->> 'starts_at')::timestamptz, p.created_at)) < now() - interval '24 hours'
     returning 1
   )
   select count(*) into n from del;

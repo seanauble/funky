@@ -6,6 +6,7 @@ import '../data/app_store.dart';
 import '../data/models.dart';
 import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
+import 'contacts_friends_screen.dart';
 import 'person_profile_screen.dart';
 import '../services/share_links.dart';
 
@@ -107,6 +108,17 @@ class _AddFriendsScreenState extends State<AddFriendsScreen> {
         children: [
           const EmptyNote(text: "Search for a username to add someone as a friend."),
           const SizedBox(height: 16),
+          FunkyCard(
+            padding: EdgeInsets.zero,
+            child: ListTile(
+              leading: Icon(Icons.contacts_outlined, color: tokens.brand),
+              title: Text('Find friends from contacts', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              subtitle: Text("See who's already on FUNKY", style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+              trailing: Icon(Icons.chevron_right_rounded, color: tokens.mute),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ContactsFriendsScreen())),
+            ),
+          ),
+          const SizedBox(height: 12),
           _InviteCard(tokens: tokens),
         ],
       );

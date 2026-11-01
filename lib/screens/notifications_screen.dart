@@ -7,10 +7,12 @@ import '../data/notification_models.dart';
 import '../widgets/ui_widgets.dart';
 import '../root_shell.dart';
 import 'account_screen.dart';
+import 'admin_panel_screen.dart';
 import 'dm_thread_screen.dart';
 import 'friend_requests_screen.dart';
 import 'group_thread_screen.dart';
 import 'place_detail_screen.dart';
+import 'posts_screen.dart';
 
 /// Opened from the bell. Newest first: new DMs, friend requests, new
 /// verified places near you, and reports at the place you're going to
@@ -46,9 +48,20 @@ class NotificationsScreen extends StatelessWidget {
       case 'place':
       case 'report':
       case 'photo':
+      case 'friends_going':
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
+      case 'post_comment':
+      case 'post_like':
+      case 'friend_post':
+      case 'post_award':
+        final postId = n.data['post_id'] as String?;
+        if (postId == null) return;
+        navigator.push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: postId)));
+      case 'story_report':
+        if (!store.isAdmin) return;
+        navigator.push(MaterialPageRoute(builder: (_) => const AdminPanelScreen()));
     }
   }
 
@@ -155,6 +168,20 @@ class _NotificationTile extends StatelessWidget {
         return Icons.alternate_email;
       case 'photo':
         return Icons.photo_outlined;
+      case 'story_report':
+        return Icons.flag_outlined;
+      case 'post_comment':
+        return Icons.mode_comment_outlined;
+      case 'post_like':
+        return Icons.local_fire_department_outlined;
+      case 'friend_post':
+        return Icons.photo_library_outlined;
+      case 'friends_going':
+        return Icons.groups_outlined;
+      case 'post_award':
+        return Icons.emoji_events_outlined;
+      case 'moderation':
+        return Icons.shield_outlined;
       default:
         return Icons.campaign_outlined;
     }

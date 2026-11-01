@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'avatar_editor_screen.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
@@ -15,10 +16,11 @@ import 'camera_capture_screen.dart';
 import 'create_sheet.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
+import 'posts_screen.dart';
 import 'profile_parts.dart';
 import '../services/share_links.dart';
 
-enum _PhotoSource { camera, library }
+enum _PhotoSource { camera, library, avatar, edit }
 
 /// Your own profile tab: picture, name, bio and title up top, Edit / Share,
 /// your numbers, the places you've posted from, and your Memories by month.
@@ -32,6 +34,8 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   // One key per month header, so the calendar button can jump to a month.
   final Map<String, GlobalKey> _monthKeys = {};
+  // Loads all your posts (not just the recent ones) once you're signed in.
+  bool _fetchedMyPosts = false;
 
   Future<void> _confirmDelete(Story story) async {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
@@ -96,8 +100,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final me = store.me;
     final title = store.myLevelTitle;
     final badges = store.myBadges;
-    final myStories = store.myStories; // newest first
+    final myStories = store.myMemories; // newest first (photos & videos only — text Stories never become Memories)
     final places = memoryPlacesFrom(myStories, store);
+    final myPosts = store.postsBy('me');
+    if (!_fetchedMyPosts) {
+      _fetchedMyPosts = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.read<AppStore>().fetchPostsBy('me');
+      });
+    }
 
     // Memories by month, newest month first.
     final byMonth = <String, List<Story>>{};
@@ -294,12 +305,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Divider(height: 1, color: tokens.line),
           ],
           const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(child: Text('Posts', style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800))),
+              if (myPosts.length > 6)
+                GestureDetector(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen(byUid: 'me', title: 'Your posts'))),
+                  child: Text('See all ${myPosts.length}', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (myPosts.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                'Share a few pics, an event, or ask your area something. Tap + and pick POST.',
+                style: TextStyle(color: tokens.mute, fontSize: 13),
+              ),
+            )
+          else
+            PostsGrid(posts: myPosts.take(6).toList()),
+          const SizedBox(height: 6),
+          Divider(height: 1, color: tokens.line),
+          const SizedBox(height: 14),
           Text('Memories', style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800)),
           if (myStories.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6, bottom: 10),
               child: Text(
-                "Post a Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on one to keep it forever.",
+                "Post a photo or video Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on one to keep it forever. Text stories don't become Memories.",
                 style: TextStyle(color: tokens.mute, fontSize: 13),
               ),
             ),
@@ -377,14 +412,29 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       context: context,
       backgroundColor: tokens.surface,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => const _PhotoSourceSheet(),
+      builder: (_) => _PhotoSourceSheet(canEdit: store.me.photoPath != null && File(store.me.photoPath!).existsSync()),
     );
     if (source == null || !mounted) return;
-    if (source == _PhotoSource.camera) {
-      await _changePhotoFromCamera(store);
-    } else {
-      await _changePhotoFromLibrary(store);
+    switch (source) {
+      case _PhotoSource.camera:
+        await _changePhotoFromCamera(store);
+      case _PhotoSource.library:
+        await _changePhotoFromLibrary(store);
+      case _PhotoSource.avatar:
+        await showAvatarPresetPicker(context);
+      case _PhotoSource.edit:
+        await _editAndUse(store, store.me.photoPath!);
     }
+  }
+
+  /// Crop/rotate/filter the picture, then make it your profile picture.
+  Future<void> _editAndUse(AppStore store, String path) async {
+    final edited = await Navigator.of(context).push<String>(
+      MaterialPageRoute(fullscreenDialog: true, builder: (_) => AvatarEditorScreen(path: path)),
+    );
+    if (edited == null || !mounted) return;
+    final err = await store.setProfilePhoto(edited);
+    if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
   }
 
   Future<void> _changePhotoFromCamera(AppStore store) async {
@@ -398,8 +448,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       );
       return;
     }
-    final err = await store.setProfilePhoto(media.file.path);
-    if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    await _editAndUse(store, media.file.path);
   }
 
   Future<void> _changePhotoFromLibrary(AppStore store) async {
@@ -414,8 +463,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       final dest = '${dir.path}/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedFile = await File(picked.path).copy(dest);
       if (!mounted) return;
-      final err = await store.setProfilePhoto(savedFile.path);
-      if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      await _editAndUse(store, savedFile.path);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not use that photo: $e')));
     }
@@ -649,7 +697,8 @@ class _SignedOutProfile extends StatelessWidget {
 /// The bottom sheet that asks "take a new photo or pick one from your
 /// library" when you tap the pencil badge on your profile picture.
 class _PhotoSourceSheet extends StatelessWidget {
-  const _PhotoSourceSheet();
+  final bool canEdit;
+  const _PhotoSourceSheet({this.canEdit = false});
 
   @override
   Widget build(BuildContext context) {
@@ -671,6 +720,17 @@ class _PhotoSourceSheet extends StatelessWidget {
             title: Text('Choose from Library', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
             onTap: () => Navigator.of(context).pop(_PhotoSource.library),
           ),
+          ListTile(
+            leading: Icon(Icons.face_retouching_natural_outlined, color: tokens.ink),
+            title: Text('Pick a FUNKY avatar', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.of(context).pop(_PhotoSource.avatar),
+          ),
+          if (canEdit)
+            ListTile(
+              leading: Icon(Icons.crop_rounded, color: tokens.ink),
+              title: Text('Crop or edit current photo', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+              onTap: () => Navigator.of(context).pop(_PhotoSource.edit),
+            ),
           const SizedBox(height: 8),
         ],
       ),

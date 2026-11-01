@@ -1,3 +1,4 @@
+import '../data/avatar_presets.dart';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -101,6 +102,36 @@ class EmptyNote extends StatelessWidget {
   }
 }
 
+/// The little green "you've been here" pin-with-a-check next to a place's
+/// name — shown on places where you've tapped "I'm going" or posted a Story
+/// (see AppStore.hasBeenTo). Tapping it says what it means.
+class BeenHereBadge extends StatelessWidget {
+  final double size;
+  final int nights;
+  const BeenHereBadge({super.key, this.size = 15, this.nights = 0});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final label = nights > 1 ? "You've been here $nights nights" : "You've been here";
+    return Tooltip(
+      message: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              content: Text('$label — you tapped "I\'m going" or posted a story here.'),
+              duration: const Duration(seconds: 2),
+            ));
+        },
+        child: Icon(Icons.where_to_vote_rounded, size: size, color: tokens.friend, semanticLabel: label),
+      ),
+    );
+  }
+}
+
 class FootNote extends StatelessWidget {
   final String text;
   const FootNote({super.key, required this.text});
@@ -137,7 +168,18 @@ class FunkyAvatar extends StatelessWidget {
     final letter = label.isNotEmpty ? label.substring(0, 1).toUpperCase() : '?';
     final path = photoPath;
     final url = photoUrl;
-    final hasUrl = url != null && url.isNotEmpty;
+    // One of FUNKY's own avatars ("preset:raccoon") — bundled in the app.
+    final presetAsset = presetAvatarAsset(url);
+    final hasUrl = url != null && url.isNotEmpty && presetAsset == null && !isPresetAvatar(url);
+    Widget preset() => ClipOval(
+          child: Image.asset(
+            presetAsset!,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _initialCircle(color, letter),
+          ),
+        );
     Widget remote() => ClipOval(
           child: Image.network(
             url!,
@@ -158,10 +200,11 @@ class FunkyAvatar extends StatelessWidget {
           // If the local file's gone missing (the OS cleared it, or the app's
           // folder moved) fall back to the uploaded picture — and only then
           // to the initial circle — instead of a broken-image icon.
-          errorBuilder: (_, __, ___) => hasUrl ? remote() : _initialCircle(color, letter),
+          errorBuilder: (_, __, ___) => presetAsset != null ? preset() : (hasUrl ? remote() : _initialCircle(color, letter)),
         ),
       );
     }
+    if (presetAsset != null) return preset();
     if (hasUrl) return remote();
     return _initialCircle(color, letter);
   }
@@ -863,13 +906,20 @@ class _TextHit {
 /// tap. Use this instead of a bare Text(...) wherever a message's own text
 /// is shown — chat bubbles, DMs.
 /// With [mentions], @names show bold blue (highlighted if it's [myHandle]).
-Widget filteredMessageText(String text, TextStyle? style, {String? myHandle, bool mentions = false}) {
+/// [text] with any slur masked like "f*****" — for spots that can't show
+/// the tap-to-reveal blur (grid tiles, comment previews, titles).
+String maskBadWords(String text) => text.replaceAllMapped(_blurredWordPattern, (m) {
+      final w = m[0]!;
+      return w.isEmpty ? w : w[0] + '*' * (w.length - 1);
+    });
+
+Widget filteredMessageText(String text, TextStyle? style, {String? myHandle, bool mentions = false, int? maxLines, TextOverflow? overflow}) {
   final hits = <_TextHit>[
     for (final m in _blurredWordPattern.allMatches(text)) _TextHit(m.start, m.end, false),
     if (mentions)
       for (final m in mentionPattern.allMatches(text)) _TextHit(m.start, m.end, true),
   ]..sort((a, b) => a.start.compareTo(b.start));
-  if (hits.isEmpty) return Text(text, style: style);
+  if (hits.isEmpty) return Text(text, style: style, maxLines: maxLines, overflow: overflow);
   final me = myHandle?.toLowerCase();
   final spans = <InlineSpan>[];
   var last = 0;
@@ -896,7 +946,7 @@ Widget filteredMessageText(String text, TextStyle? style, {String? myHandle, boo
     last = h.end;
   }
   if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
-  return Text.rich(TextSpan(style: style, children: spans));
+  return Text.rich(TextSpan(style: style, children: spans), maxLines: maxLines, overflow: overflow);
 }
 
 /// A text field controller that shows any @name being typed in bold blue,

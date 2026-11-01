@@ -12,6 +12,9 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
+import '../data/geo.dart';
+import '../data/session.dart';
+import '../data/when_labels.dart';
 import '../services/address_search.dart';
 import '../theme/colors.dart';
 import '../widgets/kind_picker.dart';
@@ -21,20 +24,23 @@ import '../services/video_filter_service.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'camera_capture_screen.dart';
+import 'create_post_page.dart';
 import 'place_detail_screen.dart';
 
 const int _maxRecordMs = 15000;
 
-const _tabLabels = ['CAMERA', 'TEXT', 'POLL', 'PLACE'];
+const _tabLabels = ['CAMERA', 'POST', 'TEXT', 'POLL', 'PLACE'];
 
 int _pageIndexForKind(CreateKind kind) {
   switch (kind) {
     case CreateKind.story:
       return 0; // Straight to the camera — that's the whole point of "+".
+    case CreateKind.post:
+      return 1;
     case CreateKind.poll:
-      return 2;
-    case CreateKind.place:
       return 3;
+    case CreateKind.place:
+      return 4;
   }
 }
 
@@ -104,6 +110,7 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
               onPageChanged: (i) => setState(() => _page = i),
               children: [
                 _CameraStoryPage(onBusyChanged: (v) => setState(() => _cameraBusy = v)),
+                const PostFormPage(),
                 const _TextStoryPage(),
                 const _PollFormPage(),
                 const _PlaceFormPage(),
@@ -243,6 +250,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   // take, same as zoom resets on a lens flip.
   int _filterIndex = 0;
   double _filterSwipeAccum = 0;
+  // ignore: unused_field
   static const double _filterSwipeThreshold = 50;
   bool _showFilterLabel = false;
   Timer? _filterLabelTimer;
@@ -1797,6 +1805,75 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   // PlaceMediaThumbnail) until someone actually posts a Story there.
   File? _coverPhoto;
 
+  // When it happens (parties, events, tailgates, frat parties): tonight
+  // (optionally with a start time) or another night up to 60 days out.
+  bool _anotherNight = false;
+  DateTime? _startsAt;
+  // Events: what kind, and the bar or club it's at.
+  String? _eventType;
+  Place? _host;
+
+  bool get _canHaveDate => const {PlaceKind.party, PlaceKind.event, PlaceKind.tailgate, PlaceKind.frat}.contains(_kind);
+
+  /// The calendar day tonight's night started on (before 5 AM it's still
+  /// last night).
+  DateTime _tonightDay() {
+    final now = DateTime.now();
+    final d = now.hour < 5 ? now.subtract(const Duration(days: 1)) : now;
+    return DateTime(d.year, d.month, d.day);
+  }
+
+  Future<void> _pickTonightTime() async {
+    final t = await showTimePicker(
+      context: context,
+      initialTime: _startsAt != null ? TimeOfDay.fromDateTime(_startsAt!) : const TimeOfDay(hour: 22, minute: 0),
+    );
+    if (t == null || !mounted) return;
+    var d = _tonightDay();
+    // After midnight is still tonight.
+    if (t.hour < 14) d = d.add(const Duration(days: 1));
+    setState(() => _startsAt = DateTime(d.year, d.month, d.day, t.hour, t.minute));
+  }
+
+  Future<void> _pickAnotherNight() async {
+    final today = _tonightDay();
+    final first = today.add(const Duration(days: 1));
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _startsAt != null && _startsAt!.isAfter(first) ? DateUtils.dateOnly(_startsAt!) : first,
+      firstDate: first,
+      lastDate: today.add(const Duration(days: 60)),
+      helpText: 'What day?',
+    );
+    if (date == null || !mounted) return;
+    final t = await showTimePicker(
+      context: context,
+      initialTime: _startsAt != null ? TimeOfDay.fromDateTime(_startsAt!) : const TimeOfDay(hour: 22, minute: 0),
+      helpText: 'What time does it start?',
+    );
+    if (!mounted) return;
+    final time = t ?? const TimeOfDay(hour: 22, minute: 0);
+    setState(() {
+      _anotherNight = true;
+      _startsAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    });
+  }
+
+  Future<void> _pickHost(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final venues = store.rankedPlaces.where((p) => p.kind == PlaceKind.bar || p.kind == PlaceKind.club).toList()
+      ..sort((a, b) => a.distance.compareTo(b.distance));
+    final picked = await showModalBottomSheet<Place>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (_) => _HostPickerSheet(venues: venues),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _host = picked);
+  }
+
   // Address search: suggestions as you type, and the one you picked (whose
   // coordinates the pin drops at).
   Timer? _addressDebounce;
@@ -1915,8 +1992,16 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     // live as you type so you find out before you even try to submit,
     // not after.
     final picked = _pickedAddress;
-    final duplicate = trimmedName.isEmpty ? null : store.similarNearbyPlace(trimmedName, at: picked == null ? null : LatLng(picked.lat, picked.lng));
-    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null;
+    final dated = _canHaveDate ? _startsAt : null;
+    final duplicate = trimmedName.isEmpty
+        ? null
+        : store.similarNearbyPlace(
+            trimmedName,
+            at: picked != null ? LatLng(picked.lat, picked.lng) : (_host != null ? LatLng(_host!.lat, _host!.lng) : null),
+            night: dated == null ? null : sessionKey(dated),
+            ignoreId: _kind == PlaceKind.event ? _host?.id : null,
+          );
+    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && (!_anotherNight || _startsAt != null);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
@@ -1943,7 +2028,14 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             autofocus: true,
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
-              hintText: 'Taverns Bar',
+              hintText: switch (_kind) {
+                PlaceKind.frat => 'TKE Late Night',
+                PlaceKind.party => "Jake's birthday party",
+                PlaceKind.event => 'Trivia Night',
+                PlaceKind.tailgate => 'Penn State tailgate',
+                PlaceKind.club => 'Club Vibe',
+                _ => 'Taverns Bar',
+              },
               hintStyle: TextStyle(color: tokens.mute),
               filled: true,
               fillColor: tokens.raised,
@@ -1969,8 +2061,97 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             runSpacing: 8,
             children: _placeKinds.map((k) => FunkyChip(label: k.$2, active: _kind == k.$1, onPressed: () => setState(() => _kind = k.$1))).toList(),
           ),
+          if (_canHaveDate) ...[
+            const SizedBox(height: 14),
+            Text('When', style: TextStyle(color: tokens.mute, fontSize: 13)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FunkyChip(
+                  label: 'Tonight',
+                  active: !_anotherNight,
+                  onPressed: () => setState(() {
+                    _anotherNight = false;
+                    _startsAt = null;
+                  }),
+                ),
+                FunkyChip(label: 'Another night', active: _anotherNight, onPressed: _pickAnotherNight),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (!_anotherNight)
+              GestureDetector(
+                onTap: _pickTonightTime,
+                child: Text(
+                  _startsAt == null ? '+ Add a start time (optional)' : 'Starts ${clockLabel(_startsAt!)} · tap to change',
+                  style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              )
+            else if (_startsAt != null)
+              GestureDetector(
+                onTap: _pickAnotherNight,
+                child: Text(
+                  '${whenLabel(_startsAt!)} · tap to change',
+                  style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+            if (_anotherNight) ...[
+              const SizedBox(height: 4),
+              Text("It shows under Upcoming until that night, then moves to Tonight.", style: TextStyle(color: tokens.mute, fontSize: 12)),
+            ],
+          ],
+          if (_kind == PlaceKind.event) ...[
+            const SizedBox(height: 14),
+            Text('What kind of event', style: TextStyle(color: tokens.mute, fontSize: 13)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final t in placeEventTypes)
+                  FunkyChip(
+                    label: '${t.$3} ${t.$2}',
+                    active: _eventType == t.$1,
+                    onPressed: () => setState(() => _eventType = _eventType == t.$1 ? null : t.$1),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text('At a bar or club? (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
+            const SizedBox(height: 6),
+            if (_host == null)
+              OutlinedButton.icon(
+                onPressed: () => _pickHost(store),
+                icon: Icon(Icons.storefront_outlined, size: 18, color: tokens.ink),
+                label: Text('Pick the bar or club', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: tokens.line),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(12)),
+                child: Row(
+                  children: [
+                    Icon(Icons.storefront_rounded, color: tokens.brand, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_host!.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800))),
+                    IconButton(onPressed: () => setState(() => _host = null), icon: Icon(Icons.close_rounded, color: tokens.mute, size: 20)),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 4),
+            Text(
+              _host == null ? 'Trivia, karaoke, live music at a bar? Pick it and the event shows on that spot too.' : 'Shows on ${_host!.name} too, and the pin goes there.',
+              style: TextStyle(color: tokens.mute, fontSize: 12),
+            ),
+          ],
           const SizedBox(height: 14),
-          Text('Address', style: TextStyle(color: tokens.mute, fontSize: 13)),
+          Text(_host == null ? 'Address' : 'Address (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
           const SizedBox(height: 6),
           TextField(
             controller: _addressController,
@@ -2042,10 +2223,10 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
           const SizedBox(height: 14),
-          Text('Cover photo (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
+          Text(_canHaveDate ? 'Flyer or cover photo (optional)' : 'Cover photo (optional)', style: TextStyle(color: tokens.mute, fontSize: 13)),
           const SizedBox(height: 4),
           Text(
-            "Shown until someone posts the first Story here — then that takes over.",
+            _canHaveDate ? 'Shows in full on its page, with the frat or school letters if the name has them.' : 'Shown on its page and in lists.',
             style: TextStyle(color: tokens.mute, fontSize: 12),
           ),
           const SizedBox(height: 8),
@@ -2098,12 +2279,16 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                           final found = await AddressSearch.search(typed, nearLat: here?.lat, nearLng: here?.lng);
                           if (found.isNotEmpty) pin = found.first;
                         }
+                        final host = _kind == PlaceKind.event ? _host : null;
                         final place = await store.addPlace(
                           _nameController.text.trim(),
                           _kind,
-                          typed.isEmpty ? 'Address not given' : typed,
+                          typed.isEmpty ? (host != null ? (host.address.isNotEmpty && host.address != 'Address not given' ? host.address : host.name) : 'Address not given') : typed,
                           coverPhotoPath: _coverPhoto?.path,
-                          at: pin == null ? null : LatLng(pin.lat, pin.lng),
+                          at: pin != null ? LatLng(pin.lat, pin.lng) : (host != null ? LatLng(host.lat, host.lng) : null),
+                          startsAt: _canHaveDate ? _startsAt : null,
+                          eventType: _kind == PlaceKind.event ? _eventType : null,
+                          hostPlaceId: host?.id,
                         );
                         if (!context.mounted) return;
                         if (place == null) {
@@ -2132,6 +2317,75 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Picks the bar or club an event is at, nearest first, with a search box.
+class _HostPickerSheet extends StatefulWidget {
+  final List<RankedPlace> venues;
+  const _HostPickerSheet({required this.venues});
+
+  @override
+  State<_HostPickerSheet> createState() => _HostPickerSheetState();
+}
+
+class _HostPickerSheetState extends State<_HostPickerSheet> {
+  String _q = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final q = _q.trim().toLowerCase();
+    final shown = widget.venues.where((v) => q.isEmpty || v.name.toLowerCase().contains(q)).take(40).toList();
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.7,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                child: TextField(
+                  autofocus: true,
+                  onChanged: (v) => setState(() => _q = v),
+                  style: TextStyle(color: tokens.ink),
+                  decoration: InputDecoration(
+                    hintText: 'Search bars and clubs near you',
+                    hintStyle: TextStyle(color: tokens.mute),
+                    prefixIcon: Icon(Icons.search_rounded, color: tokens.mute),
+                    filled: true,
+                    fillColor: tokens.raised,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: shown.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          widget.venues.isEmpty ? 'No bars or clubs listed near you yet.' : 'Nothing matches "$_q".',
+                          style: TextStyle(color: tokens.mute),
+                        ),
+                      )
+                    : ListView(
+                        children: [
+                          for (final v in shown)
+                            ListTile(
+                              onTap: () => Navigator.of(context).pop(v.place),
+                              leading: Icon(v.kind == PlaceKind.club ? Icons.nightlife_rounded : Icons.local_bar_outlined, color: tokens.brand),
+                              title: Text(v.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                              subtitle: Text('${placeKindLabel(v.kind)} · ${formatMiles(v.distance)}', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                            ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

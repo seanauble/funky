@@ -67,6 +67,46 @@ class AddressSearch {
     }
   }
 
+  /// The town a map spot is in (or closest to), e.g. "Somers Point" — for
+  /// the area name at the top of the app. Null if nothing useful comes back.
+  static Future<String?> reverseTown(double lat, double lng) async {
+    final uri = Uri.https('photon.komoot.io', '/reverse', {
+      'lat': lat.toStringAsFixed(5),
+      'lon': lng.toStringAsFixed(5),
+      'limit': '8',
+    });
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 8));
+      req.headers.set(HttpHeaders.userAgentHeader, 'FUNKY-app/3.0 (nightlife social app)');
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) return null;
+      final body = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 8));
+      final decoded = jsonDecode(body);
+      if (decoded is! Map || decoded['features'] is! List) return null;
+      String? district;
+      String? locality;
+      String? county;
+      for (final f in decoded['features'] as List) {
+        if (f is! Map || f['properties'] is! Map) continue;
+        final props = f['properties'] as Map;
+        final type = _clean(props['type']);
+        // The point is inside a town: that town's name.
+        final city = _clean(props['city']) ?? (type == 'city' ? _clean(props['name']) : null);
+        if (city != null) return city;
+        district ??= _clean(props['district']) ?? (type == 'district' ? _clean(props['name']) : null);
+        locality ??= _clean(props['locality']) ?? (type == 'locality' ? _clean(props['name']) : null);
+        county ??= _clean(props['county']) ?? (type == 'county' ? _clean(props['name']) : null);
+      }
+      return district ?? locality ?? county;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   static String? _clean(Object? v) {
     final s = v?.toString().trim();
     return (s == null || s.isEmpty) ? null : s;

@@ -12,60 +12,11 @@ import 'dm_thread_screen.dart';
 import 'group_thread_screen.dart';
 import '../services/share_links.dart';
 import '../widgets/avatar_preview.dart';
-
-// The hold-to-react picker's fixed set — "custom" in the sense that it's
-// FUNKY's own curated strip rather than the OS's full emoji keyboard, same
-// idea as iMessage tapbacks rather than a free-for-all picker.
-const _reactionEmojis = ['❤️', '😂', '😮', '😢', '🔥', '👍'];
-
-Future<void> _showReactionPicker(BuildContext context, AppStore store, ChatMessage message) async {
-  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-  final chosen = await showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: tokens.surface,
-    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 14,
-              children: _reactionEmojis
-                  .map((e) => InkWell(
-                        onTap: () => Navigator.of(sheetContext).pop(e),
-                        customBorder: const CircleBorder(),
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Text(e, style: const TextStyle(fontSize: 30)),
-                        ),
-                      ))
-                  .toList(),
-            ),
-            // Only a signed-in FUNKY Admin ever sees this — same hardcoded-
-            // admin gate as the place verification/ban controls elsewhere.
-            // Deletes immediately (no extra confirm) since a single chat
-            // message is low-stakes compared to a place or a ban.
-            if (store.isAdmin) ...[
-              const Divider(height: 24),
-              TextButton.icon(
-                onPressed: () {
-                  store.deleteMessage(message.id);
-                  Navigator.of(sheetContext).pop();
-                },
-                icon: Icon(Icons.delete_outline, color: tokens.danger),
-                label: Text('Delete message (Admin)', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w700)),
-              ),
-            ],
-          ],
-        ),
-      ),
-    ),
-  );
-  if (chosen != null) requireAccountThen(context, store, () => store.toggleReaction(message.id, chosen));
-}
+import '../widgets/gif_picker.dart';
+import '../widgets/kind_picker.dart';
+import '../data/when_labels.dart';
+import 'create_sheet.dart';
+import 'live_chat_view.dart';
 
 /// The pop-up shown the moment you flip on ghost mode in Live Chat — the
 /// only place anonymous mode lives now (it used to also be a switch on the
@@ -107,6 +58,9 @@ class _ChatScreenState extends State<ChatScreen> {
   int _segment = 0; // 0 = live chat, 1 = dms
   final _draftController = MentionTextController();
   bool _anon = false;
+  // The message you're answering (swipe right on it, or hold → Reply).
+  ChatMessage? _replyTo;
+  final _focus = FocusNode();
 
   // The "@" picker: while the word being typed starts with "@", people whose
   // name matches are listed above the message box; tapping one fills it in.
@@ -125,6 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _mentionSearchTimer?.cancel();
     _draftController.removeListener(_onDraftChanged);
     _draftController.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -184,10 +139,255 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  void _startReply(ChatMessage m) {
+    setState(() => _replyTo = m);
+    _focus.requestFocus();
+  }
+
+  /// Sends what's typed, plus a spot, poll or GIF if one was picked.
+  void _send(AppStore store, {String? placeId, String? pollId, String? gifUrl}) {
+    final text = _draftController.text.trim();
+    if (text.isEmpty && placeId == null && pollId == null && gifUrl == null) return;
+    void go() {
+      // No account: always anonymous.
+      final anon = _anon || !store.signedIn;
+      final error = store.sendMessage('main', text, anon, replyTo: _replyTo, placeId: placeId, pollId: pollId, gifUrl: gifUrl);
+      if (error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+        return;
+      }
+      _draftController.clear();
+      setState(() => _replyTo = null);
+    }
+
+    // Reading the live chat never needs an account, and a guest can chat
+    // (anonymously) too.
+    if (_anon || store.signedIn || store.isGuest) {
+      go();
+    } else {
+      requireGuestOkThen(context, store, go);
+    }
+  }
+
+  Future<void> _shareSpot(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final tonight = [...store.rankedPlaces];
+    final soon = store.upcomingPlaces;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(sheetContext).size.height * 0.65,
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
+                child: Text('Share a spot', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18)),
+              ),
+              if (tonight.isEmpty && soon.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Text('No spots listed near you yet.', style: TextStyle(color: tokens.mute)),
+                ),
+              for (final p in tonight.take(40))
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(p.id),
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: PlaceMediaThumbnail(
+                        story: null,
+                        coverPhotoPath: p.coverPhotoPath,
+                        coverUrl: p.coverUrl,
+                        photoUrl: p.photoUrl,
+                        fallbackLabel: p.name.isNotEmpty ? p.name.substring(0, 1) : '?',
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  title: Text(p.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                  subtitle: Text(
+                    '${placeKindLabel(p.kind)} · ${p.going > 0 ? '🔥 ${p.going} going · ' : ''}${formatMiles(p.distance)}',
+                    style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                  ),
+                ),
+              if (soon.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 4),
+                  child: Text('Coming up', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w800, fontSize: 13)),
+                ),
+              for (final p in soon.take(20))
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(p.id),
+                  leading: Icon(Icons.event_rounded, color: tokens.brand),
+                  title: Text(p.name, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                  subtitle: Text(whenLabel(p.place.startsAt!), style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    _send(store, placeId: picked);
+  }
+
+  Future<void> _startPoll(AppStore store) async {
+    await requireAccountThen(context, store, () async {
+      final before = DateTime.now().millisecondsSinceEpoch - 1000;
+      await showCreateSheet(context, initial: CreateKind.poll);
+      if (!mounted) return;
+      // Share the poll you just made straight into the chat.
+      final mine = store.polls.where((p) => p.by == 'me' && p.t >= before).toList();
+      if (mine.isNotEmpty) _send(store, pollId: mine.last.id);
+    });
+  }
+
+  Future<void> _sharePoll(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final polls = store.rankedVisiblePolls;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(sheetContext).size.height * 0.6,
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 4, 18, 8),
+                child: Text('Polls', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 18)),
+              ),
+              ListTile(
+                onTap: () => Navigator.of(sheetContext).pop('__new__'),
+                leading: Icon(Icons.add_chart_rounded, color: tokens.brand),
+                title: Text('Start a new poll', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+                subtitle: Text('One a day. It goes in the chat when you post it.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+              ),
+              if (polls.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
+                  child: Text('Share one from around here', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w800, fontSize: 13)),
+                ),
+              for (final poll in polls.take(30))
+                ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(poll.id),
+                  leading: Icon(Icons.poll_outlined, color: tokens.ink),
+                  title: Text(maskBadWords(poll.q), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                  subtitle: Text(
+                    () {
+                      final n = store.pollCounts(poll).fold<int>(0, (a, b) => a + b);
+                      return n == 1 ? '1 vote' : '$n votes';
+                    }(),
+                    style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    if (picked == '__new__') {
+      await _startPoll(store);
+    } else {
+      _send(store, pollId: picked);
+    }
+  }
+
+  Future<void> _pickGif(AppStore store) async {
+    final url = await showGifPicker(context, store);
+    if (url == null || !mounted) return;
+    _send(store, gifUrl: url);
+  }
+
+  Future<void> _showAttachMenu(AppStore store) async {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: tokens.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: Icon(Icons.place_outlined, color: tokens.ink),
+              title: Text('Share a spot', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.of(sheetContext).pop('spot'),
+            ),
+            ListTile(
+              leading: Icon(Icons.poll_outlined, color: tokens.ink),
+              title: Text('Share or start a poll', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+              onTap: () => Navigator.of(sheetContext).pop('poll'),
+            ),
+            if (store.giphyKey != null || store.isAdmin)
+              ListTile(
+                leading: Icon(Icons.gif_box_outlined, color: tokens.ink),
+                title: Text('GIF', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                onTap: () => Navigator.of(sheetContext).pop('gif'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'spot') await _shareSpot(store);
+    if (choice == 'poll') await _sharePoll(store);
+    if (choice == 'gif') await _pickGif(store);
+  }
+
+  void _toggleAnon(AppStore store) {
+    if (!store.signedIn) {
+      Navigator.of(context).push(MaterialPageRoute(fullscreenDialog: true, builder: (_) => const AccountScreen(closeOnSuccess: true)));
+      return;
+    }
+    final turningOn = !_anon;
+    setState(() => _anon = turningOn);
+    if (turningOn) _showAnonymousDialog(context);
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
+    final live = _segment == 0 && store.location != null;
+    final anon = _anon || !store.signedIn;
+    final reply = _replyTo;
+
+    Widget chip(String label, IconData icon, VoidCallback onTap) => Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: GestureDetector(
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+              decoration: BoxDecoration(
+                color: tokens.surface,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: tokens.line, width: 1.2),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 15, color: tokens.ink),
+                  const SizedBox(width: 5),
+                  Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
+        );
 
     return Scaffold(
       backgroundColor: tokens.bg,
@@ -211,9 +411,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   ? _MessagesList(store: store)
                   : store.location == null
                       ? const LocationGate()
-                      : const _LiveChat(),
+                      : LiveChatView(onReply: _startReply),
             ),
-            if (_segment == 0 && store.location != null && _mentionSuggestions.isNotEmpty)
+            if (live && _mentionSuggestions.isNotEmpty)
               Container(
                 width: double.infinity,
                 constraints: const BoxConstraints(maxHeight: 230),
@@ -240,76 +440,142 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                 ),
               ),
-            if (_segment == 0 && store.location != null)
+            if (live)
               Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                decoration: BoxDecoration(color: tokens.bg, border: Border(top: BorderSide(color: tokens.line))),
                 child: SafeArea(
                   top: false,
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      GestureDetector(
-                        onTap: () {
-                          final turningOn = !_anon;
-                          setState(() => _anon = turningOn);
-                          if (turningOn) _showAnonymousDialog(context);
-                        },
-                        child: Container(
-                          width: 38,
-                          height: 38,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(color: _anon ? tokens.brand : tokens.raised, shape: BoxShape.circle),
-                          child: const Text('👻'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
-                          controller: _draftController,
-                          maxLength: 240,
-                          decoration: InputDecoration(
-                            hintText: 'Message',
-                            hintStyle: TextStyle(color: tokens.mute),
-                            filled: true,
-                            fillColor: tokens.raised,
-                            counterText: '',
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(19), borderSide: BorderSide.none),
+                      if (reply != null)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+                          decoration: BoxDecoration(
+                            color: tokens.raised,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border(left: BorderSide(color: tokens.brand, width: 3)),
                           ),
-                          style: TextStyle(color: tokens.ink),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Replying to ${reply.anon ? 'anonymous' : '@${store.chatHandleFor(reply)}'}',
+                                      style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5),
+                                    ),
+                                    Text(
+                                      reply.text.trim().isNotEmpty ? maskBadWords(reply.text) : (reply.gifUrl != null ? 'GIF' : (reply.sharedPlaceId != null ? 'Shared a spot' : 'Shared a poll')),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(color: tokens.mute, fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () => setState(() => _replyTo = null),
+                                icon: Icon(Icons.close_rounded, color: tokens.mute, size: 20),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        SizedBox(
+                          height: 36,
+                          child: ListView(
+                            scrollDirection: Axis.horizontal,
+                            children: [
+                              chip('Share a spot', Icons.place_outlined, () => _shareSpot(store)),
+                              chip('Start a poll', Icons.add_chart_rounded, () => _startPoll(store)),
+                              if (store.visiblePolls.isNotEmpty) chip('Share a poll', Icons.poll_outlined, () => _sharePoll(store)),
+                              if (store.giphyKey != null) chip('GIF', Icons.gif_box_outlined, () => _pickGif(store)),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 6),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _toggleAnon(store),
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 2, bottom: 6),
+                          child: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  !store.signedIn
+                                      ? 'Posting as 👻 anonymous · make an account to use your name'
+                                      : (anon ? 'Posting as 👻 anonymous' : 'Posting as @${store.myChatHandle}'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                              Icon(Icons.chevron_right_rounded, color: tokens.mute, size: 18),
+                            ],
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      GestureDetector(
-                        onTap: () {
-                          final text = _draftController.text.trim();
-                          if (text.isEmpty) return;
-                          void send() {
-                            final error = store.sendMessage('main', text, _anon);
-                            if (error != null) {
-                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
-                              return;
-                            }
-                            _draftController.clear();
-                          }
-                          // Reading/browsing the live chat never needs an
-                          // account. Sending under your real handle does too
-                          // — but a 👻 ghost-mode message never shows a name
-                          // either way, so it goes straight through with no
-                          // account gate at all.
-                          if (_anon) {
-                            send();
-                          } else {
-                            requireGuestOkThen(context, store, send);
-                          }
-                        },
-                        child: Container(
-                          width: 38,
-                          height: 38,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(color: tokens.brand, shape: BoxShape.circle),
-                          child: const Icon(Icons.arrow_upward, color: Colors.white, size: 18),
-                        ),
+                      Row(
+                        children: [
+                          GestureDetector(
+                            onTap: () => _showAttachMenu(store),
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.ink.withValues(alpha: 0.6), width: 1.4)),
+                              child: Icon(Icons.add_rounded, color: tokens.ink, size: 22),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _draftController,
+                              focusNode: _focus,
+                              maxLength: 240,
+                              minLines: 1,
+                              maxLines: 4,
+                              textCapitalization: TextCapitalization.sentences,
+                              decoration: InputDecoration(
+                                hintText: 'Message ${store.areaName ?? 'everyone nearby'}…',
+                                hintStyle: TextStyle(color: tokens.mute),
+                                filled: true,
+                                fillColor: tokens.raised,
+                                counterText: '',
+                                isDense: true,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                                suffixIcon: store.giphyKey != null || store.isAdmin
+                                    ? IconButton(
+                                        onPressed: () => _pickGif(store),
+                                        icon: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                          decoration: BoxDecoration(border: Border.all(color: tokens.mute, width: 1.3), borderRadius: BorderRadius.circular(5)),
+                                          child: Text('GIF', style: TextStyle(color: tokens.mute, fontSize: 10.5, fontWeight: FontWeight.w900)),
+                                        ),
+                                      )
+                                    : null,
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
+                              ),
+                              style: TextStyle(color: tokens.ink),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: () => _send(store),
+                            child: Container(
+                              width: 42,
+                              height: 42,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(color: tokens.orange, shape: BoxShape.circle),
+                              child: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 22),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -674,206 +940,6 @@ class _ConvoEntry {
   final List<ChatMessage> msgs;
   final int t;
   const _ConvoEntry({this.person, this.group, required this.room, required this.msgs, required this.t});
-}
-
-/// "9:41 PM" for today, "Yesterday 11:58 PM" for last night's side of the
-/// 2 PM reset — so you can see when each live-chat message was sent.
-String _sentAtLabel(BuildContext context, int timestampMs) {
-  final sent = DateTime.fromMillisecondsSinceEpoch(timestampMs);
-  final time = TimeOfDay.fromDateTime(sent).format(context);
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
-  final sentDay = DateTime(sent.year, sent.month, sent.day);
-  final daysAgo = today.difference(sentDay).inDays;
-  if (daysAgo <= 0) return time;
-  if (daysAgo == 1) return 'Yesterday $time';
-  return '${sent.month}/${sent.day} $time';
-}
-
-class _LiveChat extends StatelessWidget {
-  const _LiveChat();
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final store = context.watch<AppStore>();
-    // A banned sender's area-chat messages stop showing up for everyone on
-    // this device (see AppStore.banUser) — ghost-mode messages have no uid
-    // to check here either way, so they're unaffected.
-    final msgs = store.liveChatMessages;
-
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            const _BlinkingDot(),
-            const SizedBox(width: 8),
-            Text(
-              'LIVE CHAT',
-              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w900, fontSize: 19, letterSpacing: 0.4),
-            ),
-          ],
-        ),
-        const SizedBox(height: 3),
-        Text('📍 Everyone within ${rangeLabel()} of you, right now', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
-        const SizedBox(height: 16),
-        if (msgs.isEmpty) Text('Nobody has said anything here tonight. Start it off.', style: TextStyle(color: tokens.mute)),
-        ...msgs.map((m) {
-          // A guest's own messages go out under their guest name, not the
-          // signed-out account's.
-          final sender = m.uid == 'me' ? (store.signedIn ? store.me : null) : store.people[m.uid];
-          final handle = m.uid == 'me' ? store.myChatHandle : (sender?.handle ?? m.uid);
-          Widget nameLine;
-          Widget avatar;
-          if (m.anon) {
-            nameLine = Text('anonymous', style: TextStyle(color: tokens.mute, fontSize: 12));
-            avatar = Container(
-              width: 30,
-              height: 30,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(color: tokens.raised, shape: BoxShape.circle),
-              child: const Text('👻', style: TextStyle(fontSize: 15)),
-            );
-          } else {
-            // Tapping the name goes straight to their profile (your own
-            // full profile, for your own messages); tapping the small
-            // picture pops up a bigger preview of it first.
-            nameLine = GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => openProfile(context, m.uid),
-              child: FunkyHandle(handle: handle, person: sender),
-            );
-            avatar = sender != null
-                ? PersonAvatar(person: sender, size: 30)
-                : FunkyAvatar(seed: m.uid, label: handle.isNotEmpty ? handle : '?', size: 30);
-          }
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: GestureDetector(
-              // Double-tap for a quick ❤️ (toggles it back off if you
-              // already reacted with a heart) — hold for the full strip.
-              onDoubleTap: () => requireAccountThen(context, store, () => store.toggleReaction(m.id, '❤️')),
-              onLongPress: () => _showReactionPicker(context, store, m),
-              behavior: HitTestBehavior.opaque,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  avatar,
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Flexible(child: nameLine),
-                      const SizedBox(width: 8),
-                      Text(_sentAtLabel(context, m.t), style: TextStyle(color: tokens.mute, fontSize: 11)),
-                    ],
-                  ),
-                  // Roughly how far away they are, small and grey right under
-                  // the name (not for your own messages).
-                  if (m.uid != 'me' && m.lat != null && m.lng != null && store.location != null)
-                    Text(
-                      awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!))),
-                      style: TextStyle(color: tokens.mute, fontSize: 10.5),
-                    ),
-                  const SizedBox(height: 2),
-                  filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
-                  if (m.uid == 'me' && (m.status == 'sending' || m.status == 'failed'))
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: m.status == 'failed' ? () => store.retryChatMessage(m.id) : null,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              m.status == 'failed' ? 'Not sent · tap to retry' : 'Sending…',
-                              style: TextStyle(color: m.status == 'failed' ? tokens.danger : tokens.mute, fontSize: 11),
-                            ),
-                            if (m.status == 'failed' && store.sendErrorFor(m.id) != null)
-                              Text(store.sendErrorFor(m.id)!, style: TextStyle(color: tokens.mute, fontSize: 10.5)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  if (m.reactions.isNotEmpty) ...[
-                    const SizedBox(height: 5),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: m.reactions.entries.map((entry) {
-                        final mine = entry.value.contains('me');
-                        return GestureDetector(
-                          onTap: () => requireAccountThen(context, store, () => store.toggleReaction(m.id, entry.key)),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: mine ? tokens.brand.withValues(alpha: 0.18) : tokens.raised,
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: mine ? tokens.brand : tokens.line, width: 1),
-                            ),
-                            child: Text(
-                              '${entry.key} ${entry.value.length}',
-                              style: TextStyle(color: tokens.ink, fontSize: 12, fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ],
-              ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }),
-      ],
-    );
-  }
-}
-
-/// A small pulsing red dot — the "this is live" indicator next to LIVE CHAT.
-class _BlinkingDot extends StatefulWidget {
-  const _BlinkingDot();
-
-  @override
-  State<_BlinkingDot> createState() => _BlinkingDotState();
-}
-
-class _BlinkingDotState extends State<_BlinkingDot> with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))
-      ..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween<double>(begin: 1.0, end: 0.25).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut)),
-      child: Container(
-        width: 10,
-        height: 10,
-        decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
-      ),
-    );
-  }
 }
 
 /// "Live Chat | Messages" — plain text tabs with a sliding orange line

@@ -140,6 +140,15 @@ class Place {
   // The admin-approved picture for this place (see place_photo_suggestions
   // in supabase/phase10.sql) — what the map pin and thumbnails prefer.
   final String? photoUrl;
+  // When a party/event/tailgate/frat party happens (phase 33). Null for an
+  // ordinary spot or one that's just "tonight". A future one shows under
+  // Upcoming until its night, then moves to Tonight.
+  final DateTime? startsAt;
+  // For an event: what kind ('trivia', 'karaoke', 'live_music', 'dj',
+  // 'happy_hour', 'game_watch', 'comedy', 'other').
+  final String? eventType;
+  // The bar or club an event is held at (trivia night at Charlie's).
+  final String? hostPlaceId;
 
   const Place({
     required this.id,
@@ -154,7 +163,13 @@ class Place {
     this.coverPhotoPath,
     this.coverUrl,
     this.photoUrl,
+    this.startsAt,
+    this.eventType,
+    this.hostPlaceId,
   });
+
+  /// The night (2 PM to 2 PM) it happens on, e.g. "2026-11-07", or null.
+  String? get night => startsAt == null ? null : sessionKey(startsAt!);
 
   /// The same place somewhere else on the map (an admin moved its pin).
   Place movedTo(double newLat, double newLng) => Place(
@@ -170,6 +185,9 @@ class Place {
         coverPhotoPath: coverPhotoPath,
         coverUrl: coverUrl,
         photoUrl: photoUrl,
+        startsAt: startsAt,
+        eventType: eventType,
+        hostPlaceId: hostPlaceId,
       );
 
   Map<String, dynamic> toJson() => {
@@ -185,6 +203,9 @@ class Place {
         'coverPhotoPath': coverPhotoPath,
         'coverUrl': coverUrl,
         'photoUrl': photoUrl,
+        'startsAt': startsAt?.millisecondsSinceEpoch,
+        'eventType': eventType,
+        'hostPlaceId': hostPlaceId,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -200,7 +221,36 @@ class Place {
         coverPhotoPath: json['coverPhotoPath'] as String?,
         coverUrl: json['coverUrl'] as String?,
         photoUrl: json['photoUrl'] as String?,
+        startsAt: json['startsAt'] is int ? DateTime.fromMillisecondsSinceEpoch(json['startsAt'] as int) : null,
+        eventType: json['eventType'] as String?,
+        hostPlaceId: json['hostPlaceId'] as String?,
       );
+}
+
+/// What an event at a bar or club is.
+const placeEventTypes = <(String, String, String)>[
+  ('trivia', 'Trivia', '🧠'),
+  ('karaoke', 'Karaoke', '🎤'),
+  ('live_music', 'Live music', '🎸'),
+  ('dj', 'DJ night', '🎧'),
+  ('happy_hour', 'Happy hour', '🍻'),
+  ('game_watch', 'Game watch', '🏈'),
+  ('comedy', 'Comedy', '😂'),
+  ('other', 'Other', '✨'),
+];
+
+String placeEventTypeLabel(String? type) {
+  for (final t in placeEventTypes) {
+    if (t.$1 == type) return t.$2;
+  }
+  return 'Event';
+}
+
+String placeEventTypeEmoji(String? type) {
+  for (final t in placeEventTypes) {
+    if (t.$1 == type) return t.$3;
+  }
+  return '✨';
 }
 
 class Poll {
@@ -282,8 +332,18 @@ class ChatMessage {
   final String? storyText;
   final String? storyMediaPath;
   final bool storyIsVideo;
+  // Live Chat extras (phase 33): the message this one answers (with a copy
+  // of its words and who said it, so the quote survives it being deleted),
+  // a shared spot, a shared poll, and a GIF.
+  final String? replyToId;
+  final String? replyText;
+  final String? replyHandle;
+  final String? sharedPlaceId;
+  final String? pollId;
+  final String? gifUrl;
 
   bool get isStoryReply => storyId != null || storyMediaPath != null || storyText != null;
+  bool get isReply => replyToId != null || replyText != null;
 
   const ChatMessage({
     required this.id,
@@ -303,6 +363,12 @@ class ChatMessage {
     this.storyText,
     this.storyMediaPath,
     this.storyIsVideo = false,
+    this.replyToId,
+    this.replyText,
+    this.replyHandle,
+    this.sharedPlaceId,
+    this.pollId,
+    this.gifUrl,
   });
 
   bool get hasMedia => mediaType != null && (mediaPath != null || mediaUrl != null);
@@ -331,6 +397,12 @@ class ChatMessage {
         storyText: storyText,
         storyMediaPath: storyMediaPath,
         storyIsVideo: storyIsVideo,
+        replyToId: replyToId,
+        replyText: replyText,
+        replyHandle: replyHandle,
+        sharedPlaceId: sharedPlaceId,
+        pollId: pollId,
+        gifUrl: gifUrl,
       );
 
   Map<String, dynamic> toJson() => {
@@ -350,6 +422,12 @@ class ChatMessage {
         'storyText': storyText,
         'storyMediaPath': storyMediaPath,
         'storyIsVideo': storyIsVideo,
+        'replyToId': replyToId,
+        'replyText': replyText,
+        'replyHandle': replyHandle,
+        'sharedPlaceId': sharedPlaceId,
+        'pollId': pollId,
+        'gifUrl': gifUrl,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -371,6 +449,12 @@ class ChatMessage {
         storyText: json['storyText'] as String?,
         storyMediaPath: json['storyMediaPath'] as String?,
         storyIsVideo: json['storyIsVideo'] as bool? ?? false,
+        replyToId: json['replyToId'] as String?,
+        replyText: json['replyText'] as String?,
+        replyHandle: json['replyHandle'] as String?,
+        sharedPlaceId: json['sharedPlaceId'] as String?,
+        pollId: json['pollId'] as String?,
+        gifUrl: json['gifUrl'] as String?,
       );
 }
 

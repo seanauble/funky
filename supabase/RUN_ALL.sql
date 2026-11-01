@@ -1,4 +1,4 @@
--- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25). Paste ALL of this into the
+-- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25 + 26 + 27 + 28 + 29 + 30 + 31 + 32 + 33). Paste ALL of this into the
 -- Supabase SQL Editor and press Run. Safe to re-run.
 
 
@@ -2605,7 +2605,6 @@ begin
   end if;
 end $$;
 
-
 -- ======================== phase15.sql ========================
 -- ============================================================
 -- Phase 15: guest mode.
@@ -2696,7 +2695,6 @@ $$;
 
 grant execute on function public.purge_old_guests() to authenticated;
 
-
 -- ======================== phase16.sql ========================
 -- ============================================================
 -- Phase 16: only FUNKY Admin-verified places last past 24 hours.
@@ -2715,8 +2713,10 @@ declare
 begin
   with del as (
     delete from public.places p
-    where p.created_at < now() - interval '24 hours'
-      and p.admin_verified = false
+    where p.admin_verified = false
+      -- A place with a date (phase 33) stays until a day after it starts.
+      -- Read through jsonb so this still works before that column exists.
+      and greatest(p.created_at, coalesce((to_jsonb(p) ->> 'starts_at')::timestamptz, p.created_at)) < now() - interval '24 hours'
     returning 1
   )
   select count(*) into n from del;
@@ -2728,7 +2728,6 @@ grant execute on function public.purge_stale_places() to authenticated;
 
 -- Clear out the ones that are already past their 24 hours.
 select public.purge_stale_places() as stale_places_removed;
-
 
 -- ======================== phase17.sql ========================
 -- ============================================================
@@ -2751,7 +2750,6 @@ as $$
 $$;
 
 grant execute on function public.friend_count(uuid) to authenticated;
-
 
 -- ======================== phase18.sql ========================
 -- ============================================================
@@ -2782,7 +2780,6 @@ drop trigger if exists cap_radius_miles on public.user_locations;
 create trigger cap_radius_miles
   before insert or update on public.user_locations
   for each row execute procedure public.cap_radius_miles();
-
 
 -- ======================== phase19.sql ========================
 -- ============================================================
@@ -2948,7 +2945,6 @@ $$;
 
 grant execute on function public.set_venue_photo(uuid, text) to authenticated;
 
-
 -- ======================== phase20.sql ========================
 -- ============================================================
 -- Phase 20: admins can drag an imported venue's pin to the right spot.
@@ -2979,7 +2975,6 @@ end;
 $$;
 
 grant execute on function public.set_venue_location(uuid, double precision, double precision) to authenticated;
-
 
 -- ======================== phase21.sql ========================
 -- ============================================================
@@ -3038,7 +3033,6 @@ $$;
 
 grant execute on function public.import_venue_candidates(jsonb) to authenticated;
 
-
 -- ======================== phase22.sql ========================
 -- ============================================================
 -- Phase 22: fill in an imported venue's street address.
@@ -3066,7 +3060,6 @@ end;
 $$;
 
 grant execute on function public.set_venue_address(uuid, text) to authenticated;
-
 
 -- ======================== phase23.sql ========================
 -- ============================================================
@@ -3119,7 +3112,6 @@ $$;
 
 grant execute on function public.review_place_photo(uuid, boolean) to authenticated;
 
-
 -- ======================== phase24.sql ========================
 -- ============================================================
 -- Phase 24: stories remember where they were posted, so an Area story
@@ -3129,7 +3121,6 @@ grant execute on function public.review_place_photo(uuid, boolean) to authentica
 
 alter table public.stories add column if not exists lat double precision;
 alter table public.stories add column if not exists lng double precision;
-
 
 -- ======================== phase25.sql ========================
 -- ============================================================
@@ -3165,5 +3156,1590 @@ create policy "Read story media replied to in your DMs"
 
 create index if not exists messages_story_media_path_idx
   on public.messages (story_media_path) where story_media_path is not null;
+
+-- ======================== phase26.sql ========================
+-- ============================================================
+-- Phase 26:
+--   1) Every Story gets a location, so "your radius reaches it" works for
+--      everyone. A Story posted without one (an older app version, or GPS
+--      wasn't ready yet) takes its venue's spot, or else the poster's last
+--      known location. Stories from the last 2 days are back-filled.
+--   2) Report a Story: the flag on a Story sends it to the FUNKY admins,
+--      with a copy of the Story (even if it's anonymous or expires), to
+--      dismiss or remove.
+-- Safe to run more than once.
+-- ============================================================
+
+alter table public.stories add column if not exists lat double precision;
+alter table public.stories add column if not exists lng double precision;
+
+create or replace function public.fill_story_location()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  plat double precision;
+  plng double precision;
+begin
+  if new.lat is not null and new.lng is not null then
+    return new;
+  end if;
+  if new.place_id is not null and new.place_id <> 'main' then
+    select p.lat, p.lng into plat, plng from public.places p where p.id::text = lower(new.place_id);
+  end if;
+  if plat is null then
+    select ul.lat, ul.lng into plat, plng
+      from public.user_locations ul
+     where ul.user_id = new.uid
+       and ul.updated_at > now() - interval '3 days';
+  end if;
+  if plat is not null and plng is not null then
+    new.lat := plat;
+    new.lng := plng;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists stories_fill_location on public.stories;
+create trigger stories_fill_location
+  before insert on public.stories
+  for each row execute function public.fill_story_location();
+
+-- Back-fill recent Stories that were posted without a location.
+update public.stories s
+   set lat = p.lat, lng = p.lng
+  from public.places p
+ where s.lat is null
+   and s.created_at > now() - interval '2 days'
+   and s.place_id is not null
+   and p.id::text = lower(s.place_id);
+
+update public.stories s
+   set lat = ul.lat, lng = ul.lng
+  from public.user_locations ul
+ where s.lat is null
+   and s.created_at > now() - interval '2 days'
+   and ul.user_id = s.uid;
+
+-- ---- Story reports --------------------------------------------------
+
+create table if not exists public.story_reports (
+  id uuid primary key default gen_random_uuid(),
+  story_id uuid references public.stories (id) on delete set null,
+  reporter_id uuid not null references auth.users (id) on delete cascade,
+  poster_id uuid references auth.users (id) on delete cascade,
+  reason text not null check (char_length(reason) between 2 and 80),
+  -- A copy of the Story so it can still be reviewed after it expires or
+  -- is deleted.
+  story_text text,
+  story_media_path text,
+  story_is_video boolean not null default false,
+  story_anon boolean not null default false,
+  story_place_name text,
+  story_created_at timestamptz,
+  status text not null default 'open' check (status in ('open', 'resolved')),
+  outcome text check (outcome is null or outcome in ('dismissed', 'removed')),
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists story_report_one_open
+  on public.story_reports (reporter_id, story_id) where status = 'open';
+create index if not exists story_reports_open_idx
+  on public.story_reports (created_at) where status = 'open';
+
+alter table public.story_reports enable row level security;
+grant select on public.story_reports to authenticated;
+
+-- Only admins read reports. Filing one goes through report_story.
+drop policy if exists "Admins see story reports" on public.story_reports;
+create policy "Admins see story reports"
+  on public.story_reports for select to authenticated
+  using (public.is_admin());
+
+-- Admins can open any Story picture/video (to review a reported one).
+drop policy if exists "Admins read all story media" on storage.objects;
+create policy "Admins read all story media"
+  on storage.objects for select to authenticated
+  using (bucket_id = 'stories' and public.is_admin());
+
+-- File a report. Returns null when it worked, otherwise a message to show.
+create or replace function public.report_story(p_story uuid, p_reason text)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  r text := left(btrim(coalesce(p_reason, '')), 80);
+  s public.stories%rowtype;
+  rid uuid;
+  who text;
+  a record;
+begin
+  if uid is null then return 'Sign in to report a story.'; end if;
+  if public.is_banned() then return 'Your account can''t send reports.'; end if;
+  if char_length(r) < 2 then return 'Pick a reason.'; end if;
+  select * into s from public.stories where id = p_story;
+  if not found then return 'That story isn''t up anymore.'; end if;
+  if s.uid = uid then return 'That''s your own story.'; end if;
+  if exists (select 1 from public.story_reports
+              where reporter_id = uid and story_id = p_story and status = 'open') then
+    return 'You already reported this story. The FUNKY team will take a look.';
+  end if;
+  if (select count(*) from public.story_reports
+       where reporter_id = uid and created_at > now() - interval '1 day') >= 15 then
+    return 'That''s a lot of reports for one day. Try again tomorrow.';
+  end if;
+
+  insert into public.story_reports (
+    story_id, reporter_id, poster_id, reason,
+    story_text, story_media_path, story_is_video, story_anon, story_place_name, story_created_at)
+  values (
+    s.id, uid, s.uid, r,
+    left(s.text, 300), s.media_path, coalesce(s.is_video, false), coalesce(s.anon, false), s.place_name, s.created_at)
+  returning id into rid;
+
+  -- Ping the admins on the first report for this Story.
+  if (select count(*) from public.story_reports where story_id = s.id and status = 'open') = 1 then
+    select handle into who from public.profiles where id = s.uid;
+    for a in
+      select p.id from public.profiles p
+       where p.is_admin
+          or p.id in (select u.id from auth.users u where lower(u.email) = 'seanauble@icloud.com')
+    loop
+      if a.id <> uid then
+        perform public.push_notify(
+          a.id, 'story_report', 'Story reported',
+          (case when coalesce(s.anon, false) then 'An anonymous story' else '@' || coalesce(who, 'someone') || '''s story' end)
+            || ' was reported: ' || r,
+          jsonb_build_object('report_id', rid, 'story_id', s.id));
+      end if;
+    end loop;
+  end if;
+  return null;
+end;
+$$;
+
+-- Admin: close a report (and every other open report on the same Story).
+-- p_remove = true also deletes the Story and lets the poster know.
+create or replace function public.resolve_story_report(p_id uuid, p_remove boolean default false)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  rep public.story_reports%rowtype;
+begin
+  if not public.is_admin() then return 'Admins only.'; end if;
+  select * into rep from public.story_reports where id = p_id;
+  if not found then return 'That report is gone.'; end if;
+
+  update public.story_reports
+     set status = 'resolved',
+         outcome = case when p_remove then 'removed' else 'dismissed' end
+   where status = 'open'
+     and (id = p_id or (rep.story_id is not null and story_id = rep.story_id));
+
+  if p_remove then
+    if rep.story_id is not null then
+      delete from public.stories where id = rep.story_id;
+    end if;
+    if rep.poster_id is not null then
+      perform public.push_notify(
+        rep.poster_id, 'moderation', 'Your story was removed',
+        'One of your stories broke the FUNKY community rules (' || rep.reason || ') and was taken down.',
+        '{}'::jsonb);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+
+grant execute on function public.report_story(uuid, text) to authenticated;
+grant execute on function public.resolve_story_report(uuid, boolean) to authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'story_reports'
+  ) then
+    alter publication supabase_realtime add table public.story_reports;
+  end if;
+end $$;
+
+-- ======================== phase27.sql ========================
+-- ============================================================
+-- Phase 27: "You've been here." Every night you tap "I'm going" on a
+-- place, or post a Story there, is remembered, so the app can put a
+-- been-here badge next to places you've been. Only you can see your own.
+-- Filled in automatically by the database (works for older app versions
+-- too), plus a one-time back-fill from your past Stories.
+-- Safe to run more than once.
+-- ============================================================
+
+create table if not exists public.place_visits (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  place_id text not null,
+  -- The FUNKY "night" (it rolls over at 2 PM Eastern).
+  night date not null,
+  via text not null default 'going' check (via in ('going', 'story')),
+  created_at timestamptz not null default now(),
+  primary key (user_id, place_id, night)
+);
+
+create index if not exists place_visits_user_idx on public.place_visits (user_id);
+
+alter table public.place_visits enable row level security;
+grant select on public.place_visits to authenticated;
+
+drop policy if exists "See your own place visits" on public.place_visits;
+create policy "See your own place visits"
+  on public.place_visits for select to authenticated
+  using (user_id = auth.uid());
+
+create or replace function public.funky_night(ts timestamptz)
+returns date
+language sql
+stable
+as $$
+  select ((ts at time zone 'America/New_York') - interval '14 hours')::date
+$$;
+
+create or replace function public.try_date(t text)
+returns date
+language plpgsql
+immutable
+as $$
+begin
+  if t is null or t !~ '^\d{4}-\d{2}-\d{2}$' then return null; end if;
+  return t::date;
+exception when others then
+  return null;
+end;
+$$;
+
+-- A Story posted at a place.
+create or replace function public.record_story_visit()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if new.place_id is not null and new.place_id <> 'main' then
+    insert into public.place_visits (user_id, place_id, night, via, created_at)
+    values (new.uid, lower(new.place_id), public.funky_night(new.created_at), 'story', new.created_at)
+    on conflict (user_id, place_id, night) do nothing;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists stories_record_visit on public.stories;
+create trigger stories_record_visit
+  after insert on public.stories
+  for each row execute function public.record_story_visit();
+
+-- "I'm going" on a place (profiles.move holds tonight's pick).
+create or replace function public.record_going_visit()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  n date;
+begin
+  if new.move is not null and new.move <> 'in' and new.move <> ''
+     and (tg_op = 'INSERT'
+          or new.move is distinct from old.move
+          or new.move_session is distinct from old.move_session) then
+    n := coalesce(public.try_date(new.move_session), public.funky_night(now()));
+    insert into public.place_visits (user_id, place_id, night, via)
+    values (new.id, lower(new.move), n, 'going')
+    on conflict (user_id, place_id, night) do nothing;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_record_going_visit on public.profiles;
+create trigger profiles_record_going_visit
+  after insert or update of move, move_session on public.profiles
+  for each row execute function public.record_going_visit();
+
+-- Back-fill from Stories already posted at places, and tonight's picks.
+insert into public.place_visits (user_id, place_id, night, via, created_at)
+select s.uid, lower(s.place_id), public.funky_night(s.created_at), 'story', min(s.created_at)
+  from public.stories s
+ where s.place_id is not null and s.place_id <> 'main'
+ group by s.uid, lower(s.place_id), public.funky_night(s.created_at)
+on conflict (user_id, place_id, night) do nothing;
+
+insert into public.place_visits (user_id, place_id, night, via)
+select p.id, lower(p.move), public.try_date(p.move_session), 'going'
+  from public.profiles p
+ where p.move is not null and p.move <> 'in' and p.move <> ''
+   and public.try_date(p.move_session) is not null
+   and exists (select 1 from auth.users u where u.id = p.id)
+on conflict (user_id, place_id, night) do nothing;
+
+-- ======================== phase28.sql ========================
+-- ============================================================
+-- Phase 28:
+--   1) One poll a day per person (the night rolls over at 2 PM Eastern).
+--      Deleting your poll doesn't give you another one that night.
+--      FUNKY admins aren't limited.
+--   2) Text-only Stories never become Memories (can't be saved to the
+--      Timeline). Only photo and video Stories are kept.
+-- Safe to run more than once. Needs phase 27 (funky_night).
+-- ============================================================
+
+create table if not exists public.poll_daily (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  night date not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, night)
+);
+
+-- Nobody reads or writes this directly; only the trigger below does.
+alter table public.poll_daily enable row level security;
+
+create or replace function public.one_poll_a_day()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  n integer;
+begin
+  if auth.uid() is null or public.is_admin() then
+    return new;
+  end if;
+  insert into public.poll_daily (user_id, night)
+  values (auth.uid(), public.funky_night(now()))
+  on conflict (user_id, night) do nothing;
+  get diagnostics n = row_count;
+  if n = 0 then
+    raise exception 'You can only post one poll a day. Check back after the 2 PM reset.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists one_poll_a_day on public.polls;
+create trigger one_poll_a_day
+  before insert on public.polls
+  for each row execute function public.one_poll_a_day();
+
+-- Anyone who already posted a poll tonight has used tonight's.
+insert into public.poll_daily (user_id, night)
+select distinct p.by_uid, public.funky_night(p.created_at)
+  from public.polls p
+ where p.by_uid is not null
+   and p.created_at > now() - interval '2 days'
+   and exists (select 1 from auth.users u where u.id = p.by_uid)
+on conflict (user_id, night) do nothing;
+
+-- Text-only Stories can't be saved as Memories.
+create or replace function public.text_stories_not_memories()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.media_path is null then
+    new.saved_to_timeline := false;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists stories_text_not_memories on public.stories;
+create trigger stories_text_not_memories
+  before insert or update on public.stories
+  for each row execute function public.text_stories_not_memories();
+
+update public.stories set saved_to_timeline = false
+ where media_path is null and saved_to_timeline;
+
+-- ======================== phase29.sql ========================
+-- ============================================================
+-- Phase 29: Posts. A few photos and a caption, optionally tagged at a
+-- place, with likes and comments. Everyone sees every post in their area
+-- (the app shows the posts inside your radius). Unlike Stories, posts
+-- don't disappear after 24 hours.
+-- Guests can look but not post, like or comment. Posts can be reported
+-- (they go to the same admin review list as reported Stories).
+-- Safe to run more than once. Needs phases 15 (is_guest), 26 and 27.
+-- ============================================================
+
+create table if not exists public.posts (
+  id uuid primary key default gen_random_uuid(),
+  uid uuid not null references public.profiles (id) on delete cascade,
+  caption text not null default '' check (char_length(caption) <= 500),
+  place_id text,
+  place_name text check (place_name is null or char_length(place_name) <= 80),
+  lat double precision not null,
+  lng double precision not null,
+  photo_paths text[] not null check (array_length(photo_paths, 1) between 1 and 5),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists posts_created_idx on public.posts (created_at desc);
+create index if not exists posts_uid_idx on public.posts (uid);
+
+alter table public.posts enable row level security;
+grant select, insert, delete on public.posts to authenticated;
+
+drop policy if exists "See posts" on public.posts;
+create policy "See posts" on public.posts for select to authenticated using (true);
+
+drop policy if exists "Post as yourself" on public.posts;
+create policy "Post as yourself" on public.posts for insert to authenticated
+  with check (auth.uid() = uid and not public.is_banned() and not public.is_guest());
+
+drop policy if exists "Delete your own post (admins any)" on public.posts;
+create policy "Delete your own post (admins any)" on public.posts for delete to authenticated
+  using (auth.uid() = uid or public.is_admin());
+
+drop trigger if exists rate_limit_posts on public.posts;
+create trigger rate_limit_posts before insert on public.posts
+  for each row execute procedure public.rate_limit('uid', '86400', '10');
+
+-- ---- Likes ------------------------------------------------------------
+
+create table if not exists public.post_likes (
+  post_id uuid not null references public.posts (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+alter table public.post_likes enable row level security;
+grant select, insert, delete on public.post_likes to authenticated;
+
+drop policy if exists "See post likes" on public.post_likes;
+create policy "See post likes" on public.post_likes for select to authenticated using (true);
+
+drop policy if exists "Like as yourself" on public.post_likes;
+create policy "Like as yourself" on public.post_likes for insert to authenticated
+  with check (auth.uid() = user_id and not public.is_banned() and not public.is_guest());
+
+drop policy if exists "Unlike your own like" on public.post_likes;
+create policy "Unlike your own like" on public.post_likes for delete to authenticated
+  using (auth.uid() = user_id);
+
+-- ---- Comments ---------------------------------------------------------
+
+create table if not exists public.post_comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.posts (id) on delete cascade,
+  uid uuid not null references public.profiles (id) on delete cascade,
+  text text not null check (char_length(btrim(text)) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists post_comments_post_idx on public.post_comments (post_id, created_at);
+
+alter table public.post_comments enable row level security;
+grant select, insert, delete on public.post_comments to authenticated;
+
+drop policy if exists "See comments" on public.post_comments;
+create policy "See comments" on public.post_comments for select to authenticated using (true);
+
+drop policy if exists "Comment as yourself" on public.post_comments;
+create policy "Comment as yourself" on public.post_comments for insert to authenticated
+  with check (auth.uid() = uid and not public.is_banned() and not public.is_guest());
+
+-- Your own comment, any comment on your own post, or an admin.
+drop policy if exists "Delete a comment" on public.post_comments;
+create policy "Delete a comment" on public.post_comments for delete to authenticated
+  using (
+    auth.uid() = uid
+    or public.is_admin()
+    or exists (select 1 from public.posts p where p.id = post_id and p.uid = auth.uid())
+  );
+
+drop trigger if exists rate_limit_post_comments on public.post_comments;
+create trigger rate_limit_post_comments before insert on public.post_comments
+  for each row execute procedure public.rate_limit('uid', '60', '8');
+
+-- Tell the poster when someone comments.
+create or replace function public.notify_post_comment()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  owner uuid;
+  who text;
+begin
+  select uid into owner from public.posts where id = new.post_id;
+  if owner is null or owner = new.uid then
+    return new;
+  end if;
+  select handle into who from public.profiles where id = new.uid;
+  perform public.push_notify(
+    owner, 'post_comment', '@' || coalesce(who, 'someone') || ' commented on your post',
+    left(new.text, 120),
+    jsonb_build_object('post_id', new.post_id, 'from', new.uid));
+  return new;
+end;
+$$;
+
+drop trigger if exists post_comments_notify on public.post_comments;
+create trigger post_comments_notify
+  after insert on public.post_comments
+  for each row execute function public.notify_post_comment();
+
+-- ---- Photos (public bucket: posts are meant to be seen) -----------------
+
+insert into storage.buckets (id, name, public)
+values ('posts', 'posts', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "Upload your own post photos" on storage.objects;
+create policy "Upload your own post photos"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'posts'
+    and (storage.foldername(name)) [1] = auth.uid()::text
+    and not public.is_guest()
+  );
+
+drop policy if exists "Read post photos" on storage.objects;
+create policy "Read post photos"
+  on storage.objects for select to authenticated
+  using (bucket_id = 'posts');
+
+drop policy if exists "Delete your own post photos" on storage.objects;
+create policy "Delete your own post photos"
+  on storage.objects for delete to authenticated
+  using (bucket_id = 'posts' and ((storage.foldername(name)) [1] = auth.uid()::text or public.is_admin()));
+
+-- ---- Reporting a post (same admin list as Story reports) ----------------
+
+alter table public.story_reports add column if not exists post_id uuid references public.posts (id) on delete set null;
+alter table public.story_reports add column if not exists kind text not null default 'story';
+alter table public.story_reports drop constraint if exists story_reports_kind_check;
+alter table public.story_reports add constraint story_reports_kind_check check (kind in ('story', 'post'));
+
+create unique index if not exists post_report_one_open
+  on public.story_reports (reporter_id, post_id) where status = 'open' and post_id is not null;
+
+create or replace function public.report_post(p_post uuid, p_reason text)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  r text := left(btrim(coalesce(p_reason, '')), 80);
+  p public.posts%rowtype;
+  rid uuid;
+  who text;
+  a record;
+begin
+  if uid is null then return 'Sign in to report a post.'; end if;
+  if public.is_banned() then return 'Your account can''t send reports.'; end if;
+  if char_length(r) < 2 then return 'Pick a reason.'; end if;
+  select * into p from public.posts where id = p_post;
+  if not found then return 'That post isn''t up anymore.'; end if;
+  if p.uid = uid then return 'That''s your own post.'; end if;
+  if exists (select 1 from public.story_reports
+              where reporter_id = uid and post_id = p_post and status = 'open') then
+    return 'You already reported this post. The FUNKY team will take a look.';
+  end if;
+  if (select count(*) from public.story_reports
+       where reporter_id = uid and created_at > now() - interval '1 day') >= 15 then
+    return 'That''s a lot of reports for one day. Try again tomorrow.';
+  end if;
+
+  insert into public.story_reports (
+    kind, post_id, reporter_id, poster_id, reason,
+    story_text, story_media_path, story_is_video, story_anon, story_place_name, story_created_at)
+  values (
+    'post', p.id, uid, p.uid, r,
+    left(p.caption, 300), p.photo_paths[1], false, false, p.place_name, p.created_at)
+  returning id into rid;
+
+  if (select count(*) from public.story_reports where post_id = p.id and status = 'open') = 1 then
+    select handle into who from public.profiles where id = p.uid;
+    for a in
+      select pr.id from public.profiles pr
+       where pr.is_admin
+          or pr.id in (select u.id from auth.users u where lower(u.email) = 'seanauble@icloud.com')
+    loop
+      if a.id <> uid then
+        perform public.push_notify(
+          a.id, 'story_report', 'Post reported',
+          '@' || coalesce(who, 'someone') || '''s post was reported: ' || r,
+          jsonb_build_object('report_id', rid, 'post_id', p.id));
+      end if;
+    end loop;
+  end if;
+  return null;
+end;
+$$;
+
+grant execute on function public.report_post(uuid, text) to authenticated;
+
+-- Admin: close a report (and the others on the same Story/post).
+-- p_remove = true also deletes that Story or post and tells the poster.
+create or replace function public.resolve_story_report(p_id uuid, p_remove boolean default false)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  rep public.story_reports%rowtype;
+begin
+  if not public.is_admin() then return 'Admins only.'; end if;
+  select * into rep from public.story_reports where id = p_id;
+  if not found then return 'That report is gone.'; end if;
+
+  update public.story_reports
+     set status = 'resolved',
+         outcome = case when p_remove then 'removed' else 'dismissed' end
+   where status = 'open'
+     and (id = p_id
+          or (rep.story_id is not null and story_id = rep.story_id)
+          or (rep.post_id is not null and post_id = rep.post_id));
+
+  if p_remove then
+    if rep.story_id is not null then
+      delete from public.stories where id = rep.story_id;
+    end if;
+    if rep.post_id is not null then
+      delete from public.posts where id = rep.post_id;
+    end if;
+    if rep.poster_id is not null then
+      perform public.push_notify(
+        rep.poster_id, 'moderation',
+        case when rep.kind = 'post' then 'Your post was removed' else 'Your story was removed' end,
+        'One of your ' || case when rep.kind = 'post' then 'posts' else 'stories' end
+          || ' broke the FUNKY community rules (' || rep.reason || ') and was taken down.',
+        '{}'::jsonb);
+    end if;
+  end if;
+  return null;
+end;
+$$;
+
+grant execute on function public.resolve_story_report(uuid, boolean) to authenticated;
+
+-- ---- Live updates -------------------------------------------------------
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['posts', 'post_likes', 'post_comments'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;
+
+-- ======================== phase30.sql ========================
+-- ============================================================
+-- Phase 30: posts get dislikes, text-only posts ("Anyone up for
+-- trivia?"), and the town they were posted in.
+--   * A post can be just text (no photos), or 1-5 photos with a caption.
+--   * Like or dislike a post (one or the other, never both). Feeds sort
+--     by likes minus dislikes.
+-- Safe to run more than once. Needs phase 29.
+-- ============================================================
+
+alter table public.posts add column if not exists area_name text;
+alter table public.posts drop constraint if exists posts_area_name_len;
+alter table public.posts add constraint posts_area_name_len
+  check (area_name is null or char_length(area_name) <= 60);
+
+alter table public.posts alter column photo_paths set default '{}';
+alter table public.posts drop constraint if exists posts_photo_paths_check;
+alter table public.posts drop constraint if exists posts_has_content;
+alter table public.posts add constraint posts_has_content check (
+  coalesce(array_length(photo_paths, 1), 0) <= 5
+  and (coalesce(array_length(photo_paths, 1), 0) >= 1 or char_length(btrim(caption)) >= 1)
+);
+
+-- ---- Dislikes -----------------------------------------------------------
+
+create table if not exists public.post_dislikes (
+  post_id uuid not null references public.posts (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+alter table public.post_dislikes enable row level security;
+grant select, insert, delete on public.post_dislikes to authenticated;
+
+drop policy if exists "See post dislikes" on public.post_dislikes;
+create policy "See post dislikes" on public.post_dislikes for select to authenticated using (true);
+
+drop policy if exists "Dislike as yourself" on public.post_dislikes;
+create policy "Dislike as yourself" on public.post_dislikes for insert to authenticated
+  with check (auth.uid() = user_id and not public.is_banned() and not public.is_guest());
+
+drop policy if exists "Undo your own dislike" on public.post_dislikes;
+create policy "Undo your own dislike" on public.post_dislikes for delete to authenticated
+  using (auth.uid() = user_id);
+
+-- A like cancels your dislike and the other way round.
+create or replace function public.post_vote_exclusive()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if tg_table_name = 'post_likes' then
+    delete from public.post_dislikes where post_id = new.post_id and user_id = new.user_id;
+  else
+    delete from public.post_likes where post_id = new.post_id and user_id = new.user_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists post_likes_exclusive on public.post_likes;
+create trigger post_likes_exclusive
+  after insert on public.post_likes
+  for each row execute function public.post_vote_exclusive();
+
+drop trigger if exists post_dislikes_exclusive on public.post_dislikes;
+create trigger post_dislikes_exclusive
+  after insert on public.post_dislikes
+  for each row execute function public.post_vote_exclusive();
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'post_dislikes'
+  ) then
+    alter publication supabase_realtime add table public.post_dislikes;
+  end if;
+end $$;
+
+-- ======================== phase31.sql ========================
+-- ============================================================
+-- Phase 31:
+--   1) Delete your account from inside the app (Apple requires it).
+--   2) Block someone: they can't message you, friend you or comment on
+--      your posts, and the app hides each of you from the other.
+--   3) Profiles remember when someone confirmed they're 21+ and agreed
+--      to the Terms.
+--   4) Events: a post can be an event (name, date & time, cover) and
+--      people can tap "I'm going".
+--   5) Find friends from your contacts (matches email addresses, sent as
+--      hashes, never stored).
+--   6) More notifications: "3 friends are heading to Charlie's",
+--      "Your post got 10 likes", "@x posted".
+-- Safe to run more than once. Needs phases 27 (funky_night) and 29/30.
+-- ============================================================
+
+-- ---- 1) Delete my account ---------------------------------------------
+
+create or replace function public.delete_my_account()
+returns text
+language plpgsql
+security definer set search_path = public, auth
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then return 'Not signed in.'; end if;
+  -- Old projects tie uploaded files to their owner; let go of them first
+  -- so the delete below can't be blocked by that.
+  begin
+    execute 'update storage.objects set owner = null where owner = $1' using uid;
+  exception when others then
+    null;
+  end;
+  -- Everything of yours (profile, stories, posts, messages, …) is removed
+  -- with the account.
+  delete from auth.users where id = uid;
+  return null;
+end;
+$$;
+
+revoke all on function public.delete_my_account() from public, anon;
+grant execute on function public.delete_my_account() to authenticated;
+
+-- ---- 2) Blocking ---------------------------------------------------------
+
+create table if not exists public.blocks (
+  blocker_id uuid not null references public.profiles (id) on delete cascade,
+  blocked_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blocker_id, blocked_id),
+  check (blocker_id <> blocked_id)
+);
+
+alter table public.blocks enable row level security;
+grant select on public.blocks to authenticated;
+
+-- You see who you blocked, and who blocked you (so both apps hide each other).
+drop policy if exists "See blocks you're part of" on public.blocks;
+create policy "See blocks you're part of" on public.blocks for select to authenticated
+  using (auth.uid() = blocker_id or auth.uid() = blocked_id);
+
+create or replace function public.is_blocked_between(a uuid, b uuid)
+returns boolean
+language sql
+stable
+security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.blocks
+    where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a)
+  )
+$$;
+
+create or replace function public.block_user(p_user uuid)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then return 'Sign in first.'; end if;
+  if p_user is null or p_user = uid then return 'You can''t block yourself.'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then return 'That account isn''t around anymore.'; end if;
+  insert into public.blocks (blocker_id, blocked_id) values (uid, p_user)
+  on conflict do nothing;
+  -- No more friendship or pending requests either way.
+  delete from public.friendships
+   where (requester_id = uid and addressee_id = p_user)
+      or (requester_id = p_user and addressee_id = uid);
+  return null;
+end;
+$$;
+
+create or replace function public.unblock_user(p_user uuid)
+returns text
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if auth.uid() is null then return 'Sign in first.'; end if;
+  delete from public.blocks where blocker_id = auth.uid() and blocked_id = p_user;
+  return null;
+end;
+$$;
+
+grant execute on function public.block_user(uuid) to authenticated;
+grant execute on function public.unblock_user(uuid) to authenticated;
+
+-- Blocked = no messages, friend requests or comments between you.
+create or replace function public.stop_if_blocked()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  a uuid;
+  b uuid;
+begin
+  if tg_table_name = 'messages' then
+    a := new.sender_id; b := new.recipient_id;
+  elsif tg_table_name = 'friendships' then
+    a := new.requester_id; b := new.addressee_id;
+  elsif tg_table_name = 'post_comments' then
+    a := new.uid; select p.uid into b from public.posts p where p.id = new.post_id;
+  end if;
+  if a is not null and b is not null and a <> b and public.is_blocked_between(a, b) then
+    raise exception 'You can''t do that: one of you blocked the other.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists messages_stop_if_blocked on public.messages;
+create trigger messages_stop_if_blocked before insert on public.messages
+  for each row execute function public.stop_if_blocked();
+
+drop trigger if exists friendships_stop_if_blocked on public.friendships;
+create trigger friendships_stop_if_blocked before insert on public.friendships
+  for each row execute function public.stop_if_blocked();
+
+drop trigger if exists post_comments_stop_if_blocked on public.post_comments;
+create trigger post_comments_stop_if_blocked before insert on public.post_comments
+  for each row execute function public.stop_if_blocked();
+
+-- ---- 3) 21+ and Terms ------------------------------------------------------
+
+alter table public.profiles add column if not exists age_confirmed_at timestamptz;
+alter table public.profiles add column if not exists terms_accepted_at timestamptz;
+
+-- ---- 4) Events -----------------------------------------------------------
+
+alter table public.posts add column if not exists event_title text;
+alter table public.posts add column if not exists event_at timestamptz;
+alter table public.posts add column if not exists event_cover text;
+alter table public.posts drop constraint if exists posts_event_fields;
+alter table public.posts add constraint posts_event_fields check (
+  (event_title is null or char_length(event_title) between 1 and 60)
+  and (event_cover is null or char_length(event_cover) <= 20)
+);
+create index if not exists posts_event_at_idx on public.posts (event_at) where event_at is not null;
+
+-- An event can be just its name and time (no photo or caption needed).
+alter table public.posts drop constraint if exists posts_has_content;
+alter table public.posts add constraint posts_has_content check (
+  coalesce(array_length(photo_paths, 1), 0) <= 5
+  and (coalesce(array_length(photo_paths, 1), 0) >= 1
+       or char_length(btrim(caption)) >= 1
+       or event_title is not null)
+);
+
+create table if not exists public.event_going (
+  post_id uuid not null references public.posts (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+alter table public.event_going enable row level security;
+grant select, insert, delete on public.event_going to authenticated;
+
+drop policy if exists "See who's going" on public.event_going;
+create policy "See who's going" on public.event_going for select to authenticated using (true);
+
+drop policy if exists "Say you're going" on public.event_going;
+create policy "Say you're going" on public.event_going for insert to authenticated
+  with check (auth.uid() = user_id and not public.is_banned() and not public.is_guest());
+
+drop policy if exists "Take back going" on public.event_going;
+create policy "Take back going" on public.event_going for delete to authenticated
+  using (auth.uid() = user_id);
+
+-- ---- 5) Find friends from contacts ---------------------------------------
+
+-- p_hashes: sha256 hex of lowercased email addresses from your contacts.
+create or replace function public.match_contacts(p_hashes text[])
+returns table (id uuid, handle text)
+language sql
+stable
+security definer set search_path = public, auth
+as $$
+  select p.id, p.handle
+    from public.profiles p
+    join auth.users u on u.id = p.id
+   where auth.uid() is not null
+     and p.id <> auth.uid()
+     and coalesce(p.banned, false) = false
+     and u.email is not null
+     and encode(sha256(convert_to(lower(btrim(u.email)), 'UTF8')), 'hex') = any (p_hashes[1:2000])
+     and not public.is_blocked_between(auth.uid(), p.id)
+   limit 200
+$$;
+
+revoke all on function public.match_contacts(text[]) from public, anon;
+grant execute on function public.match_contacts(text[]) to authenticated;
+
+-- ---- 6) Notifications -----------------------------------------------------
+
+-- "3 friends are heading to Charlie's" — sent to each friend of whoever
+-- just picked a place, when 2, 3, 5 or 10 of their friends are going there
+-- tonight (once per place and number per night).
+create or replace function public.notify_friends_going()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  f record;
+  n integer;
+  pname text;
+begin
+  if new.move is null or new.move in ('in', '')
+     or (tg_op = 'UPDATE' and new.move is not distinct from old.move
+         and new.move_session is not distinct from old.move_session) then
+    return new;
+  end if;
+  select name into pname from public.places where id::text = lower(new.move);
+  if pname is null then return new; end if;
+
+  for f in
+    select case when fr.requester_id = new.id then fr.addressee_id else fr.requester_id end as friend_id
+      from public.friendships fr
+     where fr.status = 'accepted' and (fr.requester_id = new.id or fr.addressee_id = new.id)
+  loop
+    select count(*) into n
+      from public.friendships fr2
+      join public.profiles p
+        on p.id = case when fr2.requester_id = f.friend_id then fr2.addressee_id else fr2.requester_id end
+     where fr2.status = 'accepted'
+       and (fr2.requester_id = f.friend_id or fr2.addressee_id = f.friend_id)
+       and lower(p.move) = lower(new.move)
+       and p.move_session is not distinct from new.move_session;
+    if n in (2, 3, 5, 10) and not exists (
+      select 1 from public.notifications nt
+       where nt.user_id = f.friend_id and nt.kind = 'friends_going'
+         and nt.data ->> 'place_id' = lower(new.move)
+         and nt.data ->> 'count' = n::text
+         and nt.created_at > now() - interval '14 hours'
+    ) then
+      perform public.push_notify(
+        f.friend_id, 'friends_going',
+        n || ' friends are heading to ' || pname,
+        'See who''s going tonight.',
+        jsonb_build_object('place_id', lower(new.move), 'count', n::text));
+    end if;
+  end loop;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_notify_friends_going on public.profiles;
+create trigger profiles_notify_friends_going
+  after insert or update of move, move_session on public.profiles
+  for each row execute function public.notify_friends_going();
+
+-- "Your post got 10 likes" at 5, 10, 25, 50 and 100 likes.
+create or replace function public.notify_post_likes()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  owner uuid;
+  n integer;
+begin
+  select uid into owner from public.posts where id = new.post_id;
+  if owner is null or owner = new.user_id then return new; end if;
+  select count(*) into n from public.post_likes where post_id = new.post_id;
+  if n in (5, 10, 25, 50, 100) and not exists (
+    select 1 from public.notifications nt
+     where nt.user_id = owner and nt.kind = 'post_like'
+       and nt.data ->> 'post_id' = new.post_id::text and nt.data ->> 'count' = n::text
+  ) then
+    perform public.push_notify(
+      owner, 'post_like', 'Your post got ' || n || ' likes 🔥', 'People in your area are into it.',
+      jsonb_build_object('post_id', new.post_id, 'count', n::text));
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists post_likes_notify on public.post_likes;
+create trigger post_likes_notify
+  after insert on public.post_likes
+  for each row execute function public.notify_post_likes();
+
+-- "@x posted" to their friends (at most once every 3 hours per friend).
+create or replace function public.notify_friend_posted()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  f record;
+  who text;
+  what text;
+begin
+  select handle into who from public.profiles where id = new.uid;
+  what := case
+    when new.event_title is not null then 'New event: ' || new.event_title
+    when char_length(btrim(new.caption)) > 0 then left(new.caption, 100)
+    else 'Tap to see it.'
+  end;
+  for f in
+    select case when fr.requester_id = new.uid then fr.addressee_id else fr.requester_id end as friend_id
+      from public.friendships fr
+     where fr.status = 'accepted' and (fr.requester_id = new.uid or fr.addressee_id = new.uid)
+  loop
+    if not exists (
+      select 1 from public.notifications nt
+       where nt.user_id = f.friend_id and nt.kind = 'friend_post'
+         and nt.data ->> 'from' = new.uid::text
+         and nt.created_at > now() - interval '3 hours'
+    ) and not public.is_blocked_between(f.friend_id, new.uid) then
+      perform public.push_notify(
+        f.friend_id, 'friend_post', '@' || coalesce(who, 'A friend') || ' posted', what,
+        jsonb_build_object('post_id', new.id, 'from', new.uid));
+    end if;
+  end loop;
+  return new;
+end;
+$$;
+
+drop trigger if exists posts_notify_friends on public.posts;
+create trigger posts_notify_friends
+  after insert on public.posts
+  for each row execute function public.notify_friend_posted();
+
+-- ---- Live updates ---------------------------------------------------------
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['blocks', 'event_going'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;
+
+-- ======================== phase32.sql ========================
+-- ============================================================
+-- Phase 32:
+--   1) Crash reports: when the app hits an error it sends a short report
+--      (what went wrong, where, which build). Only admins can read them,
+--      in the admin panel.
+--   2) Top posts win points: each night (2 PM to 2 PM), the 3 best posts
+--      in each area (about 30 miles across) by likes minus dislikes get
+--      500 / 300 / 150 Funky points. Awarded the first time anyone opens
+--      the app after the night ends. A post needs at least 1 net like.
+-- Safe to run more than once. Needs phases 27 (funky_night), 29, 30.
+-- ============================================================
+
+-- ---- 1) Crash reports -----------------------------------------------------
+
+create table if not exists public.crash_reports (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid default auth.uid(),
+  message text not null check (char_length(message) <= 1000),
+  stack text check (stack is null or char_length(stack) <= 6000),
+  context text check (context is null or char_length(context) <= 500),
+  fatal boolean not null default false,
+  build text check (build is null or char_length(build) <= 20),
+  platform text check (platform is null or char_length(platform) <= 120),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists crash_reports_created_idx on public.crash_reports (created_at desc);
+
+alter table public.crash_reports enable row level security;
+grant insert on public.crash_reports to anon, authenticated;
+grant select, delete on public.crash_reports to authenticated;
+
+drop policy if exists "Anyone can send a crash report" on public.crash_reports;
+create policy "Anyone can send a crash report" on public.crash_reports for insert to anon, authenticated
+  with check (user_id is null or user_id = auth.uid());
+
+drop policy if exists "Admins read crash reports" on public.crash_reports;
+create policy "Admins read crash reports" on public.crash_reports for select to authenticated
+  using (public.is_admin());
+
+drop policy if exists "Admins clear crash reports" on public.crash_reports;
+create policy "Admins clear crash reports" on public.crash_reports for delete to authenticated
+  using (public.is_admin());
+
+-- Don't let a crash loop (or anyone) flood the table: past 300 reports in
+-- 10 minutes, extra ones are quietly dropped. Old reports go after 30 days.
+create or replace function public.crash_reports_guard()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if (select count(*) from public.crash_reports where created_at > now() - interval '10 minutes') >= 300 then
+    return null;
+  end if;
+  delete from public.crash_reports where created_at < now() - interval '30 days';
+  return new;
+end;
+$$;
+
+drop trigger if exists crash_reports_guard on public.crash_reports;
+create trigger crash_reports_guard before insert on public.crash_reports
+  for each row execute function public.crash_reports_guard();
+
+-- ---- 2) Top posts win points ------------------------------------------------
+
+-- Which area a spot is in: a grid of cells about 30 miles across.
+create or replace function public.post_region(lat double precision, lng double precision)
+returns text
+language sql
+immutable
+as $$
+  select floor(lat / 0.45)::int || ':' || floor(lng / 0.55)::int
+$$;
+
+create table if not exists public.post_awards (
+  night date not null,
+  region text not null,
+  rank smallint not null check (rank between 1 and 3),
+  post_id uuid references public.posts (id) on delete set null,
+  user_id uuid references auth.users (id) on delete cascade,
+  points integer not null,
+  score integer not null,
+  created_at timestamptz not null default now(),
+  primary key (night, region, rank)
+);
+
+alter table public.post_awards enable row level security;
+grant select on public.post_awards to authenticated;
+
+drop policy if exists "See post awards" on public.post_awards;
+create policy "See post awards" on public.post_awards for select to authenticated using (true);
+
+-- Hands out last few nights' awards that haven't been given yet. Safe to
+-- call any number of times, from anyone's phone. Returns how many it gave.
+create or replace function public.award_top_posts()
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  tonight date := public.funky_night(now());
+  n date;
+  r record;
+  pts integer;
+  inserted integer;
+  given integer := 0;
+begin
+  -- Points are normally admin-only on profiles; this is the server itself
+  -- awarding them, so act without the caller's identity from here on.
+  perform set_config('request.jwt.claim.sub', '', true);
+  perform set_config('request.jwt.claims', '{}', true);
+
+  for n in select d::date from generate_series(tonight - 3, tonight - 1, interval '1 day') d loop
+    for r in
+      select ranked.*
+        from (
+          select scored.*,
+                 row_number() over (partition by scored.region order by scored.score desc, scored.created_at asc) as rk
+            from (
+              select p.id, p.uid, p.created_at,
+                     public.post_region(p.lat, p.lng) as region,
+                     (select count(*) from public.post_likes l where l.post_id = p.id)
+                       - (select count(*) from public.post_dislikes d2 where d2.post_id = p.id) as score
+                from public.posts p
+                join public.profiles pr on pr.id = p.uid
+               where public.funky_night(p.created_at) = n
+                 and not coalesce(pr.banned, false)
+            ) scored
+        ) ranked
+       where ranked.rk <= 3 and ranked.score >= 1
+    loop
+      pts := case r.rk when 1 then 500 when 2 then 300 else 150 end;
+      insert into public.post_awards (night, region, rank, post_id, user_id, points, score)
+      values (n, r.region, r.rk, r.id, r.uid, pts, r.score)
+      on conflict do nothing;
+      get diagnostics inserted = row_count;
+      if inserted = 1 then
+        update public.profiles set bonus_points = bonus_points + pts where id = r.uid;
+        perform public.push_notify(
+          r.uid, 'post_award',
+          'Your post was #' || r.rk || ' last night 🏆',
+          '+' || pts || ' Funky points. Keep it up.',
+          jsonb_build_object('post_id', r.id, 'rank', r.rk::text));
+        given := given + 1;
+      end if;
+    end loop;
+  end loop;
+  return given;
+end;
+$$;
+
+grant execute on function public.award_top_posts() to authenticated;
+
+-- ======================== phase33.sql ========================
+-- ============================================================
+-- Phase 33:
+--   1) Upcoming: parties, events, tailgates and frat parties can have a
+--      date and time. They show under Upcoming until their night, then
+--      move to Tonight. An event can be held at a bar or club (trivia,
+--      karaoke...). People can say they're going ahead of time.
+--   2) Guests (no account): can look around and Live Chat anonymously,
+--      but can't post, comment, like, RSVP, add friends or message.
+--   3) Live Chat: replies, sharing a spot or a poll, GIFs, and a count of
+--      how many people are online in your area.
+--   4) Profile pictures: new accounts start with a random FUNKY avatar.
+--   5) Stories: any recent Story still missing a location gets one, so
+--      "your radius reaches it" works for every Story.
+-- Safe to run more than once. Needs phases 2-32.
+-- ============================================================
+
+-- ---- 1) Dated places, events at bars, RSVPs ---------------------------
+
+alter table public.places add column if not exists starts_at timestamptz;
+alter table public.places add column if not exists event_type text;
+alter table public.places add column if not exists host_place_id uuid references public.places (id) on delete set null;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'places_event_type_check') then
+    alter table public.places add constraint places_event_type_check
+      check (event_type is null or event_type in ('trivia', 'karaoke', 'live_music', 'dj', 'happy_hour', 'game_watch', 'comedy', 'other'));
+  end if;
+  -- No dates more than 60 days out.
+  if not exists (select 1 from pg_constraint where conname = 'places_starts_at_check') then
+    alter table public.places add constraint places_starts_at_check
+      check (starts_at is null or starts_at < created_at + interval '61 days');
+  end if;
+end;
+$$;
+
+create index if not exists places_starts_at_idx on public.places (starts_at) where starts_at is not null;
+create index if not exists places_host_idx on public.places (host_place_id) where host_place_id is not null;
+
+-- A dated place stays until a day after it starts (an undated one: a day
+-- after it was added). FUNKY-verified places always stay.
+create or replace function public.purge_stale_places()
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  n integer;
+begin
+  with del as (
+    delete from public.places p
+    where p.admin_verified = false
+      and greatest(p.created_at, coalesce(p.starts_at, p.created_at)) < now() - interval '24 hours'
+    returning 1
+  )
+  select count(*) into n from del;
+  return coalesce(n, 0);
+end;
+$$;
+
+grant execute on function public.purge_stale_places() to authenticated;
+
+create table if not exists public.place_rsvps (
+  place_id uuid not null references public.places (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (place_id, user_id)
+);
+
+create index if not exists place_rsvps_user_idx on public.place_rsvps (user_id);
+
+alter table public.place_rsvps enable row level security;
+grant select, insert, delete on public.place_rsvps to authenticated;
+
+drop policy if exists "See who's going ahead" on public.place_rsvps;
+create policy "See who's going ahead" on public.place_rsvps for select to authenticated using (true);
+
+drop policy if exists "Say you're going ahead" on public.place_rsvps;
+create policy "Say you're going ahead" on public.place_rsvps for insert to authenticated
+  with check (user_id = auth.uid() and not public.is_banned());
+
+drop policy if exists "Take back going ahead" on public.place_rsvps;
+create policy "Take back going ahead" on public.place_rsvps for delete to authenticated
+  using (user_id = auth.uid());
+
+-- ---- 2) Guests ---------------------------------------------------------
+
+drop policy if exists "Guests can't post" on public.posts;
+create policy "Guests can't post" on public.posts as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't like posts" on public.post_likes;
+create policy "Guests can't like posts" on public.post_likes as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't dislike posts" on public.post_dislikes;
+create policy "Guests can't dislike posts" on public.post_dislikes as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't comment" on public.post_comments;
+create policy "Guests can't comment" on public.post_comments as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't say going" on public.event_going;
+create policy "Guests can't say going" on public.event_going as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't RSVP" on public.place_rsvps;
+create policy "Guests can't RSVP" on public.place_rsvps as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+drop policy if exists "Guests can't post polls" on public.polls;
+create policy "Guests can't post polls" on public.polls as restrictive for insert to authenticated
+  with check (not public.is_guest());
+
+-- Guests can Live Chat, but only anonymously.
+drop policy if exists "Guests chat anonymously" on public.chat_messages;
+create policy "Guests chat anonymously" on public.chat_messages as restrictive for insert to authenticated
+  with check (not public.is_guest() or anon);
+
+-- ---- 3) Live Chat: replies, shared spots and polls, GIFs ----------------
+
+alter table public.chat_messages add column if not exists reply_to uuid references public.chat_messages (id) on delete set null;
+alter table public.chat_messages add column if not exists reply_text text;
+alter table public.chat_messages add column if not exists reply_handle text;
+alter table public.chat_messages add column if not exists place_id uuid references public.places (id) on delete set null;
+alter table public.chat_messages add column if not exists poll_id uuid references public.polls (id) on delete set null;
+alter table public.chat_messages add column if not exists gif_url text;
+
+do $$
+begin
+  -- A message can be just a GIF, a spot or a poll, with no words.
+  alter table public.chat_messages drop constraint if exists chat_messages_text_check;
+  if not exists (select 1 from pg_constraint where conname = 'chat_messages_text_ok') then
+    alter table public.chat_messages add constraint chat_messages_text_ok
+      check (char_length(text) <= 240
+             and (char_length(text) >= 1 or gif_url is not null or place_id is not null or poll_id is not null));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'chat_messages_extras_ok') then
+    alter table public.chat_messages add constraint chat_messages_extras_ok
+      check ((reply_text is null or char_length(reply_text) <= 240)
+             and (reply_handle is null or char_length(reply_handle) <= 40)
+             and (gif_url is null or (char_length(gif_url) <= 400 and gif_url ~ '^https://(media[0-9]*|i)\.giphy\.com/')));
+  end if;
+end;
+$$;
+
+-- Someone replied to your Live Chat message: let them know (even if your
+-- message was anonymous; the replier never learns who you are).
+create or replace function public.notify_chat_reply()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  author uuid := coalesce(new.sender_id, auth.uid());
+  target uuid;
+  title text;
+begin
+  if new.reply_to is null then
+    return new;
+  end if;
+  select coalesce(m.sender_id, a.uid) into target
+    from public.chat_messages m
+    left join public.chat_message_authors a on a.message_id = m.id
+   where m.id = new.reply_to;
+  if target is null or target = author then
+    return new;
+  end if;
+  if new.anon or new.sender_id is null then
+    title := 'Someone replied to you in live chat';
+  else
+    title := '@' || public.notif_handle(new.sender_id) || ' replied to you';
+  end if;
+  perform public.push_notify(
+    target, 'mention', title,
+    left(case when coalesce(new.text, '') = '' then (case when new.gif_url is not null then 'GIF' when new.place_id is not null then 'Shared a spot' else 'Shared a poll' end) else new.text end, 120),
+    jsonb_build_object('chat', true, 'message_id', new.id)
+  );
+  return new;
+end;
+$$;
+
+revoke all on function public.notify_chat_reply() from public, anon, authenticated;
+
+drop trigger if exists notify_chat_reply on public.chat_messages;
+create trigger notify_chat_reply after insert on public.chat_messages
+  for each row execute function public.notify_chat_reply();
+
+-- Who's online near you: each open app checks in about once a minute with
+-- a rough location (rounded to ~1 km). Nobody can read the table; the
+-- function only ever hands back a count.
+create table if not exists public.presence (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  lat double precision not null,
+  lng double precision not null,
+  seen_at timestamptz not null default now()
+);
+
+create index if not exists presence_seen_idx on public.presence (seen_at);
+
+alter table public.presence enable row level security;
+revoke all on public.presence from anon, authenticated;
+
+create or replace function public.ping_presence(p_lat double precision, p_lng double precision, p_radius_miles double precision default 10)
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+  r double precision := least(greatest(coalesce(p_radius_miles, 10), 1), 5000);
+  n integer;
+begin
+  if me is null or p_lat is null or p_lng is null then
+    return 0;
+  end if;
+  insert into public.presence (user_id, lat, lng, seen_at)
+  values (me, round(p_lat::numeric, 2)::double precision, round(p_lng::numeric, 2)::double precision, now())
+  on conflict (user_id) do update set lat = excluded.lat, lng = excluded.lng, seen_at = now();
+
+  select count(*) into n
+    from public.presence pr
+   where pr.seen_at > now() - interval '5 minutes'
+     and 3958.8 * 2 * asin(least(1.0, sqrt(
+           power(sin(radians(pr.lat - p_lat) / 2), 2)
+           + cos(radians(p_lat)) * cos(radians(pr.lat)) * power(sin(radians(pr.lng - p_lng) / 2), 2)))) <= r;
+
+  delete from public.presence where seen_at < now() - interval '1 day';
+  return coalesce(n, 0);
+end;
+$$;
+
+grant execute on function public.ping_presence(double precision, double precision, double precision) to authenticated;
+
+-- App settings the app reads (just the GIF search key for now). Only
+-- admins can change them.
+create table if not exists public.app_config (
+  key text primary key check (char_length(key) <= 40),
+  value text check (value is null or char_length(value) <= 200),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_config enable row level security;
+grant select on public.app_config to anon, authenticated;
+grant insert, update, delete on public.app_config to authenticated;
+
+drop policy if exists "Read app settings" on public.app_config;
+create policy "Read app settings" on public.app_config for select to anon, authenticated
+  using (key in ('giphy_key'));
+
+drop policy if exists "Admins add app settings" on public.app_config;
+create policy "Admins add app settings" on public.app_config for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists "Admins change app settings" on public.app_config;
+create policy "Admins change app settings" on public.app_config for update to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "Admins remove app settings" on public.app_config;
+create policy "Admins remove app settings" on public.app_config for delete to authenticated
+  using (public.is_admin());
+
+-- ---- 4) A random FUNKY avatar for every new account ----------------------
+
+create or replace function public.random_avatar_preset()
+returns text
+language sql
+volatile
+as $$
+  select 'preset:' || (array['raccoon', 'giraffe', 'seagull', 'pup', 'cat', 'blob',
+                             'flame', 'star', 'ghost', 'disco', 'cloud', 'elephant'])[1 + floor(random() * 12)::int]
+$$;
+
+alter table public.profiles alter column avatar_url set default public.random_avatar_preset();
+
+-- ---- 5) Every recent Story has a location --------------------------------
+
+update public.stories s
+   set lat = p.lat, lng = p.lng
+  from public.places p
+ where s.lat is null
+   and s.created_at > now() - interval '7 days'
+   and s.place_id is not null
+   and p.id::text = lower(s.place_id);
+
+update public.stories s
+   set lat = ul.lat, lng = ul.lng
+  from public.user_locations ul
+ where s.lat is null
+   and s.created_at > now() - interval '7 days'
+   and ul.user_id = s.uid;
 
 select 'FUNKY backend ready' as status;

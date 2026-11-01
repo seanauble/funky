@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'data/app_store.dart';
 import 'root_shell.dart';
+import 'screens/admin_panel_screen.dart';
 import 'screens/call_screen.dart';
 import 'screens/dm_thread_screen.dart';
 import 'screens/friend_requests_screen.dart';
 import 'screens/group_thread_screen.dart';
 import 'screens/place_detail_screen.dart';
+import 'screens/posts_screen.dart';
 
 /// Lets code outside the widget tree (a tapped push notification) push
 /// screens.
@@ -59,9 +61,22 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
     case 'place':
     case 'report':
     case 'photo':
+    case 'friends_going':
       final placeId = data['place_id'];
       if (placeId is! String) return;
       navigator.popUntil((r) => r.isFirst);
       navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
+    case 'post_comment':
+    case 'post_like':
+    case 'friend_post':
+    case 'post_award':
+      final postId = data['post_id'];
+      if (postId is! String) return;
+      navigator.popUntil((r) => r.isFirst);
+      navigator.push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: postId)));
+    case 'story_report':
+      if (!store.isAdmin) return;
+      navigator.popUntil((r) => r.isFirst);
+      navigator.push(MaterialPageRoute(builder: (_) => const AdminPanelScreen()));
   }
 }

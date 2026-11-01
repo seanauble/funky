@@ -5,18 +5,24 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/geo.dart';
 import '../data/models.dart';
+import '../data/post_models.dart';
 import '../data/session.dart' as session;
 import '../widgets/kind_picker.dart';
 import '../widgets/location_gate.dart';
 import '../widgets/place_rating_card.dart';
 import '../widgets/poll_bars.dart';
+import '../widgets/poll_card.dart';
 import '../widgets/rainbow_ring.dart';
 import '../widgets/avatar_preview.dart';
+import '../widgets/org_badge.dart';
+import '../data/when_labels.dart';
+import 'upcoming_section.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'add_friends_screen.dart';
 import 'create_sheet.dart';
-import 'places_screen.dart';
+import 'polls_screen.dart';
+import 'posts_screen.dart';
 import 'profile_parts.dart' show storyMedia;
 import 'place_detail_screen.dart';
 import '../root_shell.dart';
@@ -30,8 +36,10 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Which tab under the story rings is showing — Tonight is the full feed.
-  _HomeTab _tab = _HomeTab.tonight;
+  // The big Tonight / Friends switch under the story rings, and the kind
+  // of spot picked underneath it (All, Bars, Clubs, Parties…).
+  _HomeSide _side = _HomeSide.tonight;
+  _HomeKind _kind = _HomeKind.all;
 
   @override
   Widget build(BuildContext context) {
@@ -65,14 +73,14 @@ class _HomeScreenState extends State<HomeScreen> {
     // Only Stories from the last 24 hours make a ring. On the Friends tab
     // the rings are your friends' stories from anywhere; everywhere else
     // they're stories posted inside your area (your radius).
-    final friendsOnly = _tab == _HomeTab.friends;
+    final friendsOnly = _side == _HomeSide.friends;
     bool isFriend(String uid) => store.me.friends.contains(uid);
     bool counts(Story s) => friendsOnly ? isFriend(s.uid) : store.isStoryNearby(s);
     bool hasUnseenFrom(String uid) => store.liveStoriesByUser(uid).any((s) => counts(s) && !s.views.contains('me'));
     final storytellerIds = <String>{
       for (final s in store.stories)
         if (store.isLiveStory(s) && counts(s) && (s.place == null || s.place == 'main' || store.isPlaceVerified(s.place!))) s.uid,
-    }..remove('me')..removeWhere(store.isBanned);
+    }..remove('me')..removeWhere(store.isHidden);
     // Friends always lead the queue (green ring), full stop — ahead of
     // unwatched strangers, not just tie-broken by them. Within each of
     // those two groups, unwatched rings still come before already-watched
@@ -181,11 +189,30 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           const SizedBox(height: 12),
-          _HomeTabBar(selected: _tab, onChanged: (t) => setState(() => _tab = t)),
-          if (_tab == _HomeTab.friends)
-            const _FriendsTonight()
-          else if (_tab != _HomeTab.tonight)
-            _PlacesOfKind(tab: _tab)
+          _SideSwitch(
+            side: _side,
+            onChanged: (s) => setState(() {
+              _side = s;
+              // Upcoming has no bars or clubs (they're there every night).
+              if (s == _HomeSide.upcoming && !_HomeKind.upcomingKinds.contains(_kind)) _kind = _HomeKind.all;
+            }),
+          ),
+          const SizedBox(height: 12),
+          _KindBar(
+            selected: _kind,
+            kinds: _side == _HomeSide.upcoming ? _HomeKind.upcomingKinds : _HomeKind.values,
+            onChanged: (k) => setState(() => _kind = k),
+          ),
+          if (_side == _HomeSide.friends)
+            _FriendsTonight(kind: _kind)
+          else if (_side == _HomeSide.upcoming)
+            UpcomingSection(
+              kinds: _kind.kinds,
+              includeEventPosts: _kind == _HomeKind.all || _kind == _HomeKind.events,
+              emptyLabel: _kind == _HomeKind.all ? 'parties or events' : _kind.plural,
+            )
+          else if (_kind != _HomeKind.all)
+            _TonightKind(kind: _kind)
           else ...[
           FunkyCard(
             margin: const EdgeInsets.only(top: 14),
@@ -213,7 +240,9 @@ class _HomeScreenState extends State<HomeScreen> {
           SectionHeader(
             title: 'Trending nearby',
             action: 'See all',
-            onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PlacesScreen())),
+            // Jump to the Map tab (pushing a second copy of it on top used to
+            // leave you stuck there with no back button or tab bar).
+            onAction: () => rootShellTabRequest.value = 3,
           ),
           if (verifiedPlaces.isEmpty)
             FunkyCard(
@@ -259,13 +288,18 @@ class _HomeScreenState extends State<HomeScreen> {
                               // Same switch as the Place Detail banner —
                               // shows the latest posted photo/video here
                               // once there is one.
-                              child: PlaceMediaThumbnail(
-                                story: store.latestMediaStoryFor(p.id),
-                                coverPhotoPath: p.coverPhotoPath,
-                                coverUrl: p.coverUrl,
-                                photoUrl: p.photoUrl,
-                                fallbackLabel: p.name.substring(0, 1),
-                                fontSize: 22,
+                              child: OrgBadgeCorner(
+                                badge: placeOrgBadge(p.place),
+                                small: true,
+                                inset: 4,
+                                child: PlaceMediaThumbnail(
+                                  story: store.latestMediaStoryFor(p.id),
+                                  coverPhotoPath: p.coverPhotoPath,
+                                  coverUrl: p.coverUrl,
+                                  photoUrl: p.photoUrl,
+                                  fallbackLabel: p.name.substring(0, 1),
+                                  fontSize: 22,
+                                ),
                               ),
                             ),
                           ),
@@ -320,6 +354,70 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
+          // Tonight's events (event posts), soonest first.
+          if (store.tonightEventPosts.isNotEmpty) ...[
+            SectionHeader(
+              title: 'Events tonight',
+              action: 'Add event',
+              onAction: () => showCreateSheet(context, initial: CreateKind.post),
+            ),
+            UpcomingEventsStrip(events: store.tonightEventPosts.take(10).toList()),
+          ],
+          // A peek at what's coming up, with a jump to the Upcoming side.
+          if (store.upcomingPlaces.isNotEmpty || store.upcomingEventPosts.isNotEmpty) ...[
+            SectionHeader(
+              title: 'Coming up',
+              action: 'See all',
+              onAction: () => setState(() {
+                _side = _HomeSide.upcoming;
+                _kind = _HomeKind.all;
+              }),
+            ),
+            for (final p in store.upcomingPlaces.take(2)) UpcomingPlaceCard(place: p),
+            if (store.upcomingPlaces.isEmpty)
+              UpcomingEventsStrip(events: store.upcomingEventPosts.take(10).toList()),
+          ],
+          // Posts: everyone's in your area, most liked first.
+          SectionHeader(
+            title: 'Posts',
+            action: store.postsNearby.isEmpty ? 'New post' : 'See all',
+            onAction: store.postsNearby.isEmpty
+                ? () => showCreateSheet(context, initial: CreateKind.post)
+                : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen())),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              "🏆 Tonight's top 3 posts near you win 500 · 300 · 150 Funky points",
+              style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (store.postsNearby.isEmpty)
+            FunkyCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('No posts around here yet.', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Share a few pics from tonight, or ask something like "Anyone up for trivia?". Everyone in your area sees it.',
+                    style: TextStyle(color: tokens.mute, fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  FunkyChip(label: 'Make a post', active: true, onPressed: () => showCreateSheet(context, initial: CreateKind.post)),
+                ],
+              ),
+            )
+          else ...[
+            PostsGrid(posts: store.rankPosts(store.postsNearby).take(6).toList()),
+            if (store.postsNearby.length > 6)
+              Center(
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PostsFeedScreen())),
+                  child: Text('See all ${store.postsNearby.length} posts', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+                ),
+              ),
+          ],
           SectionHeader(
             title: 'Live Chat',
             action: 'Open chat',
@@ -337,39 +435,23 @@ class _HomeScreenState extends State<HomeScreen> {
             action: 'Ask a poll',
             onAction: () => showCreateSheet(context, initial: CreateKind.poll),
           ),
+          // Top 3 (most votes) here; the rest are one tap away.
           if (store.visiblePolls.isEmpty)
             const EmptyNote(text: 'No other polls tonight. Ask the first one.')
-          else
-            ...store.visiblePolls.map((poll) {
-              final counts = store.pollCounts(poll);
-              final mine = store.me.votes[poll.id];
-              return FunkyCard(
-                margin: const EdgeInsets.only(bottom: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: Text(poll.q, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700))),
-                        if (poll.by == 'me' || store.isAdmin)
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () => _confirmDeletePoll(context, store, poll),
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 10, bottom: 4),
-                              child: Icon(Icons.delete_outline, size: 20, color: tokens.mute),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    PollBars(options: poll.options, counts: counts, selectedIndex: mine, onSelect: (i) => store.votePoll(poll.id, i)),
-                  ],
+          else ...[
+            for (final poll in store.rankedVisiblePolls.take(3)) PollCard(key: ValueKey(poll.id), poll: poll),
+            if (store.visiblePolls.length > 3)
+              Center(
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AllPollsScreen())),
+                  child: Text(
+                    'View all ${store.visiblePolls.length} polls',
+                    style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800),
+                  ),
                 ),
-              );
-            }),
-          FootNote(text: 'Chat, Stories, places and polls are wiped at 2 PM. Next fresh start in ${session.untilReset()}.'),
+              ),
+          ],
+          FootNote(text: 'Chat, Stories and polls reset at 2 PM (posts and FUNKY-verified places stay). Next fresh start in ${session.untilReset()}.'),
           ],
         ],
       ),
@@ -377,80 +459,174 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The tabs under the story rings. Tonight and Friends lead; the rest
-/// narrow the night down to one kind of spot.
-enum _HomeTab { tonight, friends, bars, parties, events, tailgate, fraternity }
+/// The big switch under the story rings: what's happening around you
+/// tonight, or what your friends are up to.
+enum _HomeSide { tonight, upcoming, friends }
 
-extension on _HomeTab {
+/// The kinds of spot under the switch. "All" is the full page.
+enum _HomeKind {
+  all,
+  bars,
+  clubs,
+  parties,
+  events,
+  tailgate,
+  fraternity;
+
+  /// What the Upcoming side offers — no bars or clubs.
+  static const upcomingKinds = [all, parties, events, tailgate, fraternity];
+}
+
+extension on _HomeKind {
   String get label => switch (this) {
-        _HomeTab.tonight => 'Tonight',
-        _HomeTab.friends => 'Friends',
-        _HomeTab.bars => 'Bars',
-        _HomeTab.parties => 'Parties',
-        _HomeTab.events => 'Events',
-        _HomeTab.tailgate => 'Tailgate',
-        _HomeTab.fraternity => 'Fraternity',
+        _HomeKind.all => 'All',
+        _HomeKind.bars => 'Bars',
+        _HomeKind.clubs => 'Clubs',
+        _HomeKind.parties => 'Parties',
+        _HomeKind.events => 'Events',
+        _HomeKind.tailgate => 'Tailgates',
+        _HomeKind.fraternity => 'Frats',
       };
 
   IconData get icon => switch (this) {
-        _HomeTab.tonight => Icons.calendar_today_outlined,
-        _HomeTab.friends => Icons.groups_rounded,
-        _HomeTab.bars => Icons.local_bar_outlined,
-        _HomeTab.parties => Icons.celebration_outlined,
-        _HomeTab.events => Icons.confirmation_number_outlined,
-        _HomeTab.tailgate => Icons.sports_football_outlined,
-        _HomeTab.fraternity => Icons.account_balance_outlined,
+        _HomeKind.all => Icons.apps_rounded,
+        _HomeKind.bars => Icons.local_bar_outlined,
+        _HomeKind.clubs => Icons.nightlife_rounded,
+        _HomeKind.parties => Icons.celebration_outlined,
+        _HomeKind.events => Icons.confirmation_number_outlined,
+        _HomeKind.tailgate => Icons.sports_football_outlined,
+        _HomeKind.fraternity => Icons.account_balance_outlined,
       };
 
-  /// The kinds of place each spot tab lists (bars include clubs).
+  /// The kinds of place this filter covers.
   Set<PlaceKind> get kinds => switch (this) {
-        _HomeTab.bars => const {PlaceKind.bar, PlaceKind.club},
-        _HomeTab.parties => const {PlaceKind.party},
-        _HomeTab.events => const {PlaceKind.event},
-        _HomeTab.tailgate => const {PlaceKind.tailgate},
-        _HomeTab.fraternity => const {PlaceKind.frat},
-        _ => const <PlaceKind>{},
+        _HomeKind.bars => const {PlaceKind.bar},
+        _HomeKind.clubs => const {PlaceKind.club},
+        _HomeKind.parties => const {PlaceKind.party},
+        _HomeKind.events => const {PlaceKind.event},
+        _HomeKind.tailgate => const {PlaceKind.tailgate},
+        _HomeKind.fraternity => const {PlaceKind.frat},
+        _HomeKind.all => const <PlaceKind>{},
       };
 
-  /// "bars", "parties"… for empty-state sentences.
+  /// "bars", "parties"… for headings and empty-state sentences.
   String get plural => switch (this) {
-        _HomeTab.bars => 'bars',
-        _HomeTab.parties => 'parties',
-        _HomeTab.events => 'events',
-        _HomeTab.tailgate => 'tailgates',
-        _HomeTab.fraternity => 'frat parties',
-        _ => 'spots',
+        _HomeKind.bars => 'bars',
+        _HomeKind.clubs => 'clubs',
+        _HomeKind.parties => 'parties',
+        _HomeKind.events => 'events',
+        _HomeKind.tailgate => 'tailgates',
+        _HomeKind.fraternity => 'frat parties',
+        _HomeKind.all => 'spots',
       };
+
+  /// Whether [kind] (a post's or place's kind, or null) passes this filter.
+  bool matches(PlaceKind? kind) => this == _HomeKind.all || (kind != null && kinds.contains(kind));
 }
 
-class _HomeTabBar extends StatelessWidget {
-  final _HomeTab selected;
-  final ValueChanged<_HomeTab> onChanged;
-  const _HomeTabBar({required this.selected, required this.onChanged});
+/// Three big squares side by side: Tonight, Upcoming and Friends.
+class _SideSwitch extends StatelessWidget {
+  final _HomeSide side;
+  final ValueChanged<_HomeSide> onChanged;
+  const _SideSwitch({required this.side, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final spots = store.verifiedRankedPlaces.length;
+    final soon = store.upcomingPlaces.length + store.upcomingEventPosts.length;
+    final friendsOut = store.signedIn ? store.myFriends.where((f) => f.move != null && f.move != 'in').length : 0;
+
+    Widget tile(_HomeSide s, IconData icon, String title, String sub) {
+      final active = s == side;
+      return Expanded(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onChanged(s),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            height: 92,
+            padding: const EdgeInsets.fromLTRB(11, 10, 8, 10),
+            decoration: BoxDecoration(
+              gradient: active ? LinearGradient(colors: [tokens.orange, tokens.brand], begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
+              color: active ? null : tokens.surface,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: active ? Colors.transparent : tokens.line, width: 1.2),
+              boxShadow: active ? [BoxShadow(color: tokens.orange.withValues(alpha: 0.28), blurRadius: 14, offset: const Offset(0, 5))] : null,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: active ? Colors.white.withValues(alpha: 0.22) : tokens.raised),
+                  child: Icon(icon, color: active ? Colors.white : tokens.ink, size: 18),
+                ),
+                const Spacer(),
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: active ? Colors.white : tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5),
+                ),
+                Text(
+                  sub,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: active ? Colors.white.withValues(alpha: 0.85) : tokens.mute, fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        tile(_HomeSide.tonight, Icons.nightlife_rounded, 'Tonight', spots == 1 ? '1 spot' : '$spots spots'),
+        const SizedBox(width: 8),
+        tile(_HomeSide.upcoming, Icons.event_rounded, 'Upcoming', soon == 0 ? 'Plan ahead' : '$soon coming up'),
+        const SizedBox(width: 8),
+        tile(_HomeSide.friends, Icons.groups_rounded, 'Friends', store.signedIn ? '$friendsOut going out' : 'Your crew'),
+      ],
+    );
+  }
+}
+
+/// The spot kinds under the switch: All, Bars, Clubs, Parties…
+class _KindBar extends StatelessWidget {
+  final _HomeKind selected;
+  final List<_HomeKind> kinds;
+  final ValueChanged<_HomeKind> onChanged;
+  const _KindBar({required this.selected, required this.kinds, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 38,
+      height: 36,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
-        itemCount: _HomeTab.values.length,
+        itemCount: kinds.length,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
-          final tab = _HomeTab.values[i];
-          return _HomeTabChip(tab: tab, active: tab == selected, onTap: () => onChanged(tab));
+          final k = kinds[i];
+          return _KindChip(kind: k, active: k == selected, onTap: () => onChanged(k));
         },
       ),
     );
   }
 }
 
-class _HomeTabChip extends StatelessWidget {
-  final _HomeTab tab;
+class _KindChip extends StatelessWidget {
+  final _HomeKind kind;
   final bool active;
   final VoidCallback onTap;
-  const _HomeTabChip({required this.tab, required this.active, required this.onTap});
+  const _KindChip({required this.kind, required this.active, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -461,21 +637,18 @@ class _HomeTabChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: active ? tokens.brand : tokens.surface,
-          borderRadius: BorderRadius.circular(19),
-          border: Border.all(color: active ? tokens.brand : tokens.line, width: 1.2),
+          color: active ? tokens.ink : tokens.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: active ? tokens.ink : tokens.line, width: 1.2),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(tab.icon, size: 16, color: active ? Colors.white : tokens.mute),
-            const SizedBox(width: 6),
-            Text(
-              tab.label,
-              style: TextStyle(color: active ? Colors.white : tokens.ink, fontSize: 13.5, fontWeight: FontWeight.w700),
-            ),
+            Icon(kind.icon, size: 15, color: active ? tokens.bg : tokens.mute),
+            const SizedBox(width: 5),
+            Text(kind.label, style: TextStyle(color: active ? tokens.bg : tokens.ink, fontSize: 13, fontWeight: FontWeight.w700)),
           ],
         ),
       ),
@@ -483,9 +656,63 @@ class _HomeTabChip extends StatelessWidget {
   }
 }
 
-/// Home's Friends tab: where your friends said they're going tonight.
+/// Tonight + a spot kind: those spots near you, then posts tagged at them.
+class _TonightKind extends StatelessWidget {
+  final _HomeKind kind;
+  const _TonightKind({required this.kind});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final isEvents = kind == _HomeKind.events;
+    final posts = store.rankPosts(store.postsNearby.where((p) => (isEvents && p.isEvent) || kind.matches(store.postPlaceKind(p))));
+    final events = isEvents ? store.tonightEventPosts : const <Post>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (isEvents) ...[
+          SectionHeader(
+            title: 'Events tonight',
+            action: 'Add event',
+            onAction: () => showCreateSheet(context, initial: CreateKind.post),
+          ),
+          if (events.isEmpty)
+            const EmptyNote(text: 'No event posts for tonight near you. Check Upcoming for what\'s coming, or post one: flip on "This is an event" when you make a post.')
+          else
+            UpcomingEventsStrip(events: events.take(15).toList()),
+        ],
+        _PlacesOfKind(kind: kind),
+        if (posts.isNotEmpty) ...[
+          SectionHeader(
+            title: 'Posts at ${kind.plural}',
+            action: posts.length > 6 ? 'See all' : null,
+            onAction: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => PostsFeedScreen(kinds: kind.kinds, title: '${kind.label} posts'),
+            )),
+          ),
+          PostsGrid(posts: posts.take(6).toList()),
+          if (posts.length > 6)
+            Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => PostsFeedScreen(kinds: kind.kinds, title: '${kind.label} posts'),
+                )),
+                child: Text('See all ${posts.length} posts', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// The Friends side: your friends' stories are in the rings up top; this
+/// shows where they're going tonight and everything they've posted
+/// (from anywhere, not just your area), narrowed by the spot kind.
 class _FriendsTonight extends StatelessWidget {
-  const _FriendsTonight();
+  final _HomeKind kind;
+  const _FriendsTonight({required this.kind});
 
   @override
   Widget build(BuildContext context) {
@@ -499,7 +726,7 @@ class _FriendsTonight extends StatelessWidget {
         onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen(closeOnSuccess: true))),
       );
     }
-    final friends = store.myFriends.where((f) => !store.isBanned(f.id)).toList();
+    final friends = store.myFriends.where((f) => !store.isHidden(f.id)).toList();
     if (friends.isEmpty) {
       return _TabNote(
         text: 'No friends on FUNKY yet. Add some to see where everyone is going tonight.',
@@ -521,20 +748,27 @@ class _FriendsTonight extends StatelessWidget {
         (byPlace[move] ??= []).add(f);
       }
     }
-    final placeIds = byPlace.keys.toList()..sort((a, b) => byPlace[b]!.length.compareTo(byPlace[a]!.length));
     Place? placeFor(String id) {
       for (final p in store.places) {
         if (p.id == id) return p;
       }
       return null;
     }
+    final placeIds = byPlace.keys.where((id) => kind.matches(placeFor(id)?.kind)).toList()
+      ..sort((a, b) => byPlace[b]!.length.compareTo(byPlace[a]!.length));
+    final friendPosts = store.rankPosts(store.friendsPosts.where((p) => kind.matches(store.postPlaceKind(p))));
+    void openFriendPosts() => Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => PostsFeedScreen(friends: true, kinds: kind == _HomeKind.all ? null : kind.kinds),
+        ));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionHeader(title: 'Where your friends are going'),
+        SectionHeader(title: kind == _HomeKind.all ? 'Where your friends are going' : 'Friends going to ${kind.plural}'),
         if (placeIds.isEmpty)
-          const EmptyNote(text: "None of your friends has picked a spot yet tonight.")
+          EmptyNote(
+            text: kind == _HomeKind.all ? "None of your friends has picked a spot yet tonight." : 'None of your friends are headed to ${kind.plural} yet.',
+          )
         else
           ...placeIds.map((id) {
             final place = placeFor(id);
@@ -579,11 +813,42 @@ class _FriendsTonight extends StatelessWidget {
               ),
             );
           }),
-        if (stayingIn.isNotEmpty) ...[
+        SectionHeader(
+          title: "Friends' posts",
+          action: friendPosts.length > 6 ? 'See all' : null,
+          onAction: openFriendPosts,
+        ),
+        if (friendPosts.isEmpty)
+          EmptyNote(text: kind == _HomeKind.all ? 'None of your friends have posted yet.' : 'No posts from friends at ${kind.plural} yet.')
+        else ...[
+          PostsGrid(posts: friendPosts.take(6).toList()),
+          if (friendPosts.length > 6)
+            Center(
+              child: TextButton(
+                onPressed: openFriendPosts,
+                child: Text('See all ${friendPosts.length} posts', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
+              ),
+            ),
+        ],
+        // Upcoming parties/events your friends said they're going to.
+        Builder(builder: (context) {
+          final soon = store.upcomingPlaces
+              .where((p) => (kind == _HomeKind.all || kind.kinds.contains(p.kind)) && store.friendsGoingToPlace(p.id).isNotEmpty)
+              .toList();
+          if (soon.isEmpty) return const SizedBox.shrink();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SectionHeader(title: 'Friends going soon'),
+              for (final p in soon.take(5)) UpcomingPlaceCard(place: p),
+            ],
+          );
+        }),
+        if (kind == _HomeKind.all && stayingIn.isNotEmpty) ...[
           const SectionHeader(title: 'Staying in'),
           FunkyCard(child: _AvatarRow(people: stayingIn)),
         ],
-        if (undecided.isNotEmpty) ...[
+        if (kind == _HomeKind.all && undecided.isNotEmpty) ...[
           const SectionHeader(title: "Haven't picked yet"),
           FunkyCard(child: _AvatarRow(people: undecided)),
         ],
@@ -638,19 +903,19 @@ class _AvatarRow extends StatelessWidget {
 /// Home's Bars / Parties / Events / Tailgate / Fraternity tabs: every spot of
 /// that kind within your range, busiest first.
 class _PlacesOfKind extends StatelessWidget {
-  final _HomeTab tab;
-  const _PlacesOfKind({required this.tab});
+  final _HomeKind kind;
+  const _PlacesOfKind({required this.kind});
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final kinds = tab.kinds;
+    final kinds = kind.kinds;
     final list = store.rankedPlaces.where((p) => kinds.contains(p.kind) && !store.isBanned(p.place.by)).toList();
     final friendIds = store.me.friends.toSet();
     if (list.isEmpty) {
       return _TabNote(
-        text: 'No ${tab.plural} listed within ${rangeLabel()} yet. Put the first one on the map.',
+        text: 'No ${kind.plural} listed within ${rangeLabel()} yet. Put the first one on the map.',
         action: 'Add a place or event',
         onAction: () => showCreateSheet(context, initial: CreateKind.place),
       );
@@ -658,7 +923,7 @@ class _PlacesOfKind extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SectionHeader(title: '${tab.label} near you'),
+        SectionHeader(title: '${kind.label} near you'),
         ...list.map((p) {
           final verified = store.isPlaceVerified(p.id);
           final friendsGoing = friendIds.where((id) => store.people[id]?.move == p.id).length;
@@ -674,13 +939,18 @@ class _PlacesOfKind extends StatelessWidget {
                     child: SizedBox(
                       width: 64,
                       height: 64,
-                      child: PlaceMediaThumbnail(
-                        story: store.latestMediaStoryFor(p.id),
-                        coverPhotoPath: p.coverPhotoPath,
-                        coverUrl: p.coverUrl,
-                        photoUrl: p.photoUrl,
-                        fallbackLabel: p.name.isNotEmpty ? p.name.substring(0, 1) : '?',
-                        fontSize: 22,
+                      child: OrgBadgeCorner(
+                        badge: placeOrgBadge(p.place),
+                        small: true,
+                        inset: 3,
+                        child: PlaceMediaThumbnail(
+                          story: store.latestMediaStoryFor(p.id),
+                          coverPhotoPath: p.coverPhotoPath,
+                          coverUrl: p.coverUrl,
+                          photoUrl: p.photoUrl,
+                          fallbackLabel: p.name.isNotEmpty ? p.name.substring(0, 1) : '?',
+                          fontSize: 22,
+                        ),
                       ),
                     ),
                   ),
@@ -699,13 +969,35 @@ class _PlacesOfKind extends StatelessWidget {
                               const SizedBox(width: 4),
                               Icon(Icons.verified, size: 15, color: store.isAdminVerified(p.id) ? tokens.gold : tokens.brand),
                             ],
+                            if (store.hasBeenTo(p.id)) ...[
+                              const SizedBox(width: 4),
+                              BeenHereBadge(size: 16, nights: store.nightsAt(p.id)),
+                            ],
                           ],
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${placeKindLabel(p.kind)} · ${p.distance < 0.1 ? 'right by you' : '${formatMiles(p.distance)} away'}',
+                          [
+                            p.place.eventType != null ? placeEventTypeLabel(p.place.eventType) : placeKindLabel(p.kind),
+                            if (p.place.startsAt != null) clockLabel(p.place.startsAt!),
+                            p.distance < 0.1 ? 'right by you' : '${formatMiles(p.distance)} away',
+                          ].join(' · '),
                           style: TextStyle(color: tokens.mute, fontSize: 12),
                         ),
+                        // A bar's event tonight ("🧠 Trivia Night tonight").
+                        Builder(builder: (context) {
+                          final ev = store.tonightEventAt(p.id);
+                          if (ev == null) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              '${placeEventTypeEmoji(ev.eventType)} ${ev.name} tonight${ev.startsAt != null ? ' · ${clockLabel(ev.startsAt!)}' : ''}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12),
+                            ),
+                          );
+                        }),
                         const SizedBox(height: 2),
                         RatingSummaryLine(placeId: p.id),
                         if (p.going > 0 || friendsGoing > 0) ...[
@@ -871,20 +1163,6 @@ class _StoryRing extends StatelessWidget {
 }
 
 
-Future<void> _confirmDeletePoll(BuildContext context, AppStore store, Poll poll) async {
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Delete this poll?'),
-      content: Text('This removes "${poll.q}" and everyone\'s votes on it.'),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-        TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
-      ],
-    ),
-  );
-  if (ok == true) store.deletePoll(poll.id);
-}
 
 
 /// The three-line Live Chat peek on Home. While people are actually talking
@@ -980,7 +1258,14 @@ class _LiveChatPreviewState extends State<_LiveChatPreview> {
               awayLabel(milesBetween(store.location!, LatLng(m.lat!, m.lng!))),
               style: TextStyle(color: tokens.mute, fontSize: 10.5),
             ),
-          filteredMessageText(m.text, TextStyle(color: tokens.ink), myHandle: store.me.handle, mentions: true),
+          filteredMessageText(
+            m.text.trim().isNotEmpty
+                ? m.text
+                : (m.gifUrl != null ? 'sent a GIF' : (m.sharedPlaceId != null ? '📍 shared a spot' : (m.pollId != null ? '📊 shared a poll' : ''))),
+            TextStyle(color: tokens.ink),
+            myHandle: store.me.handle,
+            mentions: true,
+          ),
         ],
       ),
     );

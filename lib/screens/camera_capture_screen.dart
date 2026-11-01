@@ -78,7 +78,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   // Swipe-to-change-filter — see _onZoomUpdate/_changeFilter, same
   // approach as the Story camera tab.
   int _filterIndex = 0;
+  // ignore: unused_field
   double _filterSwipeAccum = 0;
+  // ignore: unused_field
   static const double _filterSwipeThreshold = 50;
   bool _showFilterLabel = false;
   Timer? _filterLabelTimer;
@@ -199,6 +201,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     controller.setZoomLevel(zoom);
   }
 
+  // ignore: unused_element
   void _changeFilter(int direction) {
     setState(() {
       _filterIndex = (_filterIndex + direction) % cameraFilters.length;

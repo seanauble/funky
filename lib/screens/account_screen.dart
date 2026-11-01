@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../theme/colors.dart';
 import '../widgets/ui_widgets.dart';
+import 'privacy_policy_screen.dart';
+import 'terms_screen.dart';
 
 /// Gates posting and messaging behind a real account. Browsing FUNKY is
 /// always anonymous and free — but posting a Story/poll/place or sending a
@@ -34,6 +36,8 @@ class _AccountScreenState extends State<AccountScreen> {
   final _passwordController = TextEditingController();
   String? _authError;
   bool _busy = false;
+  // Sign up needs "I'm 21+ and agree to the Terms" ticked.
+  bool _agreed = false;
 
   bool _showChangeEmail = false;
   bool _showChangePassword = false;
@@ -60,7 +64,7 @@ class _AccountScreenState extends State<AccountScreen> {
   Future<void> _submitAuth(AppStore store) async {
     setState(() => _busy = true);
     final error = _signUpMode
-        ? await store.signUp(_emailController.text, _passwordController.text)
+        ? await store.signUp(_emailController.text, _passwordController.text, agreedAge21AndTerms: _agreed)
         : await store.signIn(_emailController.text, _passwordController.text);
     if (!mounted) return;
     setState(() {
@@ -151,11 +155,53 @@ class _AccountScreenState extends State<AccountScreen> {
           ),
           if (_showResetPassword) _buildResetPasswordForm(tokens, store),
         ],
+        if (_signUpMode) ...[
+          const SizedBox(height: 14),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _agreed = !_agreed),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: Checkbox(
+                    value: _agreed,
+                    activeColor: tokens.brand,
+                    onChanged: (v) => setState(() => _agreed = v ?? false),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Wrap(
+                      children: [
+                        Text("I'm 21 or older and I agree to the ", style: TextStyle(color: tokens.ink, fontSize: 13.5)),
+                        GestureDetector(
+                          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const TermsScreen())),
+                          child: Text('Terms', style: TextStyle(color: tokens.orange, fontSize: 13.5, fontWeight: FontWeight.w700)),
+                        ),
+                        Text(' and ', style: TextStyle(color: tokens.ink, fontSize: 13.5)),
+                        GestureDetector(
+                          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen())),
+                          child: Text('Privacy Policy', style: TextStyle(color: tokens.orange, fontSize: 13.5, fontWeight: FontWeight.w700)),
+                        ),
+                        Text('.', style: TextStyle(color: tokens.ink, fontSize: 13.5)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 20),
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: _busy ? null : () => _submitAuth(store),
+            onPressed: _busy || (_signUpMode && !_agreed) ? null : () => _submitAuth(store),
             style: ElevatedButton.styleFrom(
               backgroundColor: tokens.brand,
               padding: const EdgeInsets.symmetric(vertical: 14),

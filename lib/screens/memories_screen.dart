@@ -24,7 +24,7 @@ class MemoriesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final myStories = store.myStories; // newest first already
+    final myStories = store.myMemories; // newest first already; text-only Stories aren't Memories
 
     // Group by calendar day — stories within a day keep their own place
     // label (via Story.placeName) rather than being bucketed by place too,

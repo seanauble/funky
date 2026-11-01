@@ -141,6 +141,7 @@ class _RoundCallButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   final double size;
+  // ignore: unused_element_parameter
   const _RoundCallButton({required this.icon, required this.color, required this.label, required this.onTap, this.size = 72});
 
   @override

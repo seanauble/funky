@@ -1,0 +1,1169 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../data/app_store.dart';
+import '../data/models.dart';
+import '../data/post_models.dart';
+import '../widgets/avatar_preview.dart';
+import '../widgets/kind_picker.dart';
+import '../widgets/ui_widgets.dart';
+import '../widgets/org_badge.dart';
+import 'account_screen.dart';
+import 'create_sheet.dart';
+
+/// One post, full size: who posted it and when, the photos (swipe through
+/// them, double-tap to like) with the place pinned on top, the caption,
+/// like / dislike / comment, and the newest two comments. A text-only post
+/// is a question card with quick replies instead of photos.
+class PostCard extends StatefulWidget {
+  final Post post;
+  // On the post's own page: full caption, no comment previews or link.
+  final bool inDetail;
+  const PostCard({super.key, required this.post, this.inDetail = false});
+
+  @override
+  State<PostCard> createState() => _PostCardState();
+}
+
+class _PostCardState extends State<PostCard> {
+  int _page = 0;
+  bool _burst = false;
+  Timer? _burstTimer;
+
+  @override
+  void dispose() {
+    _burstTimer?.cancel();
+    super.dispose();
+  }
+
+  void _openDetail() {
+    if (widget.inDetail) return;
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: widget.post.id)));
+  }
+
+  void _like(AppStore store, Post post, {bool onlyLike = false}) {
+    requireAccountThen(context, store, () {
+      final liked = post.likes.contains('me');
+      if (onlyLike) {
+        setState(() => _burst = true);
+        _burstTimer?.cancel();
+        _burstTimer = Timer(const Duration(milliseconds: 750), () {
+          if (mounted) setState(() => _burst = false);
+        });
+        if (liked) return;
+      }
+      store.togglePostLike(post.id);
+    });
+  }
+
+  void _dislike(AppStore store, Post post) {
+    requireAccountThen(context, store, () async {
+      final err = await store.togglePostDislike(post.id);
+      if (err != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    });
+  }
+
+  void _quickReply(AppStore store, Post post, String text) {
+    requireAccountThen(context, store, () async {
+      final err = await store.addComment(post.id, text);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? 'Replied "$text"')));
+    });
+  }
+
+  Future<void> _menu(AppStore store, Post post) async {
+    final mine = post.uid == 'me';
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!mine)
+              ListTile(
+                leading: const Icon(Icons.person_outline),
+                title: const Text('View profile'),
+                onTap: () => Navigator.of(sheetContext).pop('profile'),
+              ),
+            if (mine || store.isAdmin)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                title: Text(mine ? 'Delete post' : 'Delete post (Admin)', style: const TextStyle(color: Colors.redAccent)),
+                onTap: () => Navigator.of(sheetContext).pop('delete'),
+              ),
+            if (!mine)
+              ListTile(
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('Report post'),
+                onTap: () => Navigator.of(sheetContext).pop('report'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'profile') {
+      openProfile(context, post.uid);
+    } else if (choice == 'delete') {
+      await _confirmDelete(store, post);
+    } else if (choice == 'report') {
+      await _report(store, post);
+    }
+  }
+
+  Future<void> _confirmDelete(AppStore store, Post post) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this post?'),
+        content: const Text('It comes down for everyone, with its likes and comments.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final err = await store.deletePost(post.id);
+    messenger.showSnackBar(SnackBar(content: Text(err ?? 'Post deleted.')));
+    if (err == null && widget.inDetail && mounted) Navigator.of(context).maybePop();
+  }
+
+  Future<void> _report(AppStore store, Post post) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 2),
+              child: Text('Report this post', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Text('Reports are private. The FUNKY team reviews every one.', style: TextStyle(fontSize: 12.5)),
+            ),
+            for (final r in AppStore.storyReportReasons)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.flag_outlined, size: 20),
+                title: Text(r),
+                onTap: () => Navigator.of(sheetContext).pop(r),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (reason == null) return;
+    final msg = await store.reportPost(post, reason);
+    messenger.showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final post = store.postById(widget.post.id) ?? widget.post;
+    final person = store.personById(post.uid);
+    final handle = person?.handle ?? 'someone';
+    final liked = post.likes.contains('me');
+    final disliked = post.dislikes.contains('me');
+    // A location only shows when the poster tagged a place — never the
+    // spot they were standing in.
+    final placeName = post.placeName;
+    final hasPlace = placeName != null && placeName.isNotEmpty;
+    final String? pinTitle = hasPlace ? placeName : null;
+    final String? pinSub = hasPlace ? post.areaName : null;
+    final tonightRank = store.tonightTopPosts[post.id];
+    final wonRank = store.awardRankFor(post.id);
+    final urls = post.photoUrls;
+    final caption = post.caption.trim();
+    final previews = widget.inDetail ? const <PostComment>[] : store.commentPreviewFor(post.id);
+
+    Widget action(IconData icon, Color color, int? count, VoidCallback? onTap, String tip) => InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: color, size: 24, semanticLabel: tip),
+                if (count != null) ...[
+                  const SizedBox(width: 5),
+                  Text('$count', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 14.5)),
+                ],
+              ],
+            ),
+          ),
+        );
+
+    // Quick replies on a question post: the busiest spots near you.
+    final replies = <String>[
+      for (final p in store.verifiedRankedPlaces.take(2)) '${p.name}?',
+      'Still deciding',
+    ];
+
+    return FunkyCard(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Who + when
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 4, 10),
+            child: Row(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => openProfile(context, post.uid),
+                  child: person != null
+                      ? PersonAvatar(person: person, size: 40, preview: false)
+                      : FunkyAvatar(seed: post.uid, label: '?', size: 40),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => openProfile(context, post.uid),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        person != null
+                            ? StyledName(person: person, text: '@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5))
+                            : Text('@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
+                        Text(
+                          post.isTextOnly && pinTitle != null ? '${timeAgoLabel(post.t)} · 📍 $pinTitle' : timeAgoLabel(post.t),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                        ),
+                        if (tonightRank != null || wonRank != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(color: tokens.orange.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(999)),
+                              child: Text(
+                                tonightRank != null
+                                    ? '${topPostMedal(tonightRank)} #$tonightRank tonight · +${AppStore.topPostPoints[tonightRank - 1]} if it holds'
+                                    : '🏆 #$wonRank post of the night',
+                                style: TextStyle(color: tokens.orange, fontSize: 11.5, fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'More',
+                  onPressed: () => _menu(store, post),
+                  icon: Icon(Icons.more_horiz, color: tokens.mute),
+                ),
+              ],
+            ),
+          ),
+          if (post.isTextOnly) ...[
+            // A question card: big text + quick replies.
+            GestureDetector(
+              onTap: widget.inDetail ? null : _openDetail,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                child: filteredMessageText(caption, TextStyle(color: tokens.ink, fontSize: 19, fontWeight: FontWeight.w600, height: 1.25)),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 4),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final r in replies)
+                    ActionChip(
+                      label: Text(r, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+                      backgroundColor: tokens.raised,
+                      side: BorderSide(color: tokens.line),
+                      shape: const StadiumBorder(),
+                      onPressed: () => _quickReply(store, post, r),
+                    ),
+                  if (!widget.inDetail)
+                    ActionChip(
+                      avatar: Icon(Icons.add, size: 18, color: tokens.ink),
+                      label: Text('Add reply', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600)),
+                      backgroundColor: tokens.surface,
+                      side: BorderSide(color: tokens.line),
+                      shape: const StadiumBorder(),
+                      onPressed: _openDetail,
+                    ),
+                ],
+              ),
+            ),
+          ] else ...[
+            // Photos, with the place pinned on top.
+            if (urls.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: AspectRatio(
+                  aspectRatio: 4 / 5,
+                  child: GestureDetector(
+                    onDoubleTap: () => _like(store, post, onlyLike: true),
+                    onTap: widget.inDetail ? null : _openDetail,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Container(
+                          color: tokens.raised,
+                          child: PageView.builder(
+                            itemCount: urls.length,
+                            onPageChanged: (i) => setState(() => _page = i),
+                            itemBuilder: (_, i) => Image.network(
+                              urls[i],
+                              fit: BoxFit.cover,
+                              loadingBuilder: (context, child, progress) => progress == null
+                                  ? child
+                                  : Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: tokens.mute))),
+                              errorBuilder: (_, __, ___) => Center(child: Icon(Icons.broken_image_outlined, color: tokens.mute)),
+                            ),
+                          ),
+                        ),
+                        if (pinTitle != null)
+                          Positioned(
+                            top: 10,
+                            left: 10,
+                            right: 70,
+                            child: Align(
+                              alignment: Alignment.topLeft,
+                              child: Container(
+                                padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
+                                decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.62), borderRadius: BorderRadius.circular(10)),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.location_on, color: Colors.white, size: 18),
+                                    const SizedBox(width: 6),
+                                    Flexible(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(pinTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                                          if (pinSub != null)
+                                            Text(pinSub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (urls.length > 1)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(999)),
+                              child: Text('${_page + 1}/${urls.length}', style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                            ),
+                          ),
+                        IgnorePointer(
+                          child: Center(
+                            child: AnimatedOpacity(
+                              opacity: _burst ? 1 : 0,
+                              duration: const Duration(milliseconds: 180),
+                              child: AnimatedScale(
+                                scale: _burst ? 1 : 0.6,
+                                duration: const Duration(milliseconds: 220),
+                                curve: Curves.easeOutBack,
+                                child: const Icon(Icons.favorite, color: Colors.white, size: 96, shadows: [Shadow(blurRadius: 16, color: Colors.black38)]),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // An event: name, when, cover and "I'm going".
+            if (post.isEvent) EventBlock(post: post),
+            if (caption.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                child: filteredMessageText(
+                  caption,
+                  TextStyle(color: tokens.ink, fontSize: 15.5),
+                  maxLines: widget.inDetail ? null : 4,
+                  overflow: widget.inDetail ? TextOverflow.visible : TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          // Like · dislike · comments
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 4, 12, 0),
+            child: Row(
+              children: [
+                action(liked ? Icons.favorite : Icons.favorite_border, liked ? Colors.redAccent : tokens.ink, post.likes.length, () => _like(store, post), liked ? 'Unlike' : 'Like'),
+                action(disliked ? Icons.thumb_down : Icons.thumb_down_outlined, disliked ? tokens.ink : tokens.mute, post.dislikes.length, () => _dislike(store, post), disliked ? 'Undo dislike' : 'Dislike'),
+                action(Icons.mode_comment_outlined, tokens.ink, post.commentCount, widget.inDetail ? null : _openDetail, 'Comments'),
+                const Spacer(),
+                if (urls.length > 1)
+                  for (var i = 0; i < urls.length; i++)
+                    Container(
+                      width: 6,
+                      height: 6,
+                      margin: const EdgeInsets.symmetric(horizontal: 2),
+                      decoration: BoxDecoration(shape: BoxShape.circle, color: i == _page ? tokens.orange : tokens.line),
+                    ),
+              ],
+            ),
+          ),
+          // The newest two comments.
+          for (final c in previews) _CommentPreview(comment: c),
+          if (!widget.inDetail && post.commentCount > previews.length)
+            GestureDetector(
+              onTap: _openDetail,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 2, 14, 0),
+                child: Text(
+                  post.commentCount == 1 ? 'View 1 comment' : 'View all ${post.commentCount} comments',
+                  style: TextStyle(color: tokens.mute, fontSize: 13),
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+}
+
+/// One comment under a post in the feed: avatar, @handle (in color), text, time.
+class _CommentPreview extends StatelessWidget {
+  final PostComment comment;
+  const _CommentPreview({required this.comment});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final person = store.personById(comment.uid);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 2, 14, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          person != null ? PersonAvatar(person: person, size: 28, preview: false) : FunkyAvatar(seed: comment.uid, label: '?', size: 28),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: '@${person?.handle ?? 'someone'} ', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700)),
+                    TextSpan(text: maskBadWords(comment.text), style: TextStyle(color: tokens.ink)),
+                  ]),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(timeAgoLabel(comment.t), style: TextStyle(color: tokens.mute, fontSize: 11.5)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A two-column, staggered grid of posts (photos at different heights,
+/// question posts as colored cards) — Home's posts sections.
+class PostsGrid extends StatelessWidget {
+  final List<Post> posts;
+  const PostsGrid({super.key, required this.posts});
+
+  static const _ratios = [0.8, 1.0, 0.75, 0.9];
+
+  static double ratioFor(Post p) => _ratios[p.id.hashCode.abs() % _ratios.length];
+
+  @override
+  Widget build(BuildContext context) {
+    final top = context.watch<AppStore>().tonightTopPosts;
+    final left = <Post>[];
+    final right = <Post>[];
+    var hl = 0.0;
+    var hr = 0.0;
+    for (final p in posts) {
+      // Rough height in "column widths", so the two columns stay even.
+      final h = p.photoUrls.isEmpty ? (p.isEvent ? 0.9 : 0.75) : 1 / ratioFor(p) + 0.35;
+      if (hl <= hr) {
+        left.add(p);
+        hl += h;
+      } else {
+        right.add(p);
+        hr += h;
+      }
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: Column(children: [for (final p in left) PostTile(key: ValueKey('tile_${p.id}'), post: p, rank: top[p.id])])),
+        const SizedBox(width: 10),
+        Expanded(child: Column(children: [for (final p in right) PostTile(key: ValueKey('tile_${p.id}'), post: p, rank: top[p.id])])),
+      ],
+    );
+  }
+}
+
+/// One tile in [PostsGrid]: the cover photo with where it was and its 🔥
+/// score, or a question card. Tap to open the post.
+class PostTile extends StatelessWidget {
+  final Post post;
+  // 1, 2 or 3 if it's one of tonight's top posts near you.
+  final int? rank;
+  const PostTile({super.key, required this.post, this.rank});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final p = store.postById(post.id) ?? post;
+    final person = store.personById(p.uid);
+    final handle = person?.handle ?? 'someone';
+    void open() => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: p.id)));
+    final score = p.score;
+    final scoreBadge = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(score < 0 ? Icons.thumb_down_outlined : Icons.local_fire_department, color: score < 0 ? tokens.mute : tokens.orange, size: 18),
+        const SizedBox(width: 2),
+        Text('${score.abs()}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+      ],
+    );
+
+    if (p.isTextOnly) {
+      return GestureDetector(
+        onTap: open,
+        child: Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(color: tokens.orange.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(16)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(maskBadWords(p.caption.trim()), maxLines: 5, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800, height: 1.2)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  person != null ? PersonAvatar(person: person, size: 26, preview: false) : FunkyAvatar(seed: p.uid, label: '?', size: 26),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(handle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 12)),
+                        Text(timeAgoLabel(p.t), style: TextStyle(color: tokens.mute, fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.mode_comment_outlined, color: tokens.mute, size: 16),
+                  const SizedBox(width: 3),
+                  Text('${p.commentCount}', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 12.5)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final ev = p.isEvent;
+    if (ev && p.photoUrls.isEmpty) {
+      // An event without a photo: a flyer card.
+      return GestureDetector(
+        onTap: open,
+        child: Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(color: eventTint, borderRadius: BorderRadius.circular(16)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(eventWhenLabel(p.eventAt!).toUpperCase(),
+                        style: TextStyle(color: tokens.mute, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                  ),
+                  if (postOrgBadge(p) != null) OrgLettersBadge(badge: postOrgBadge(p)!, small: true),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(maskBadWords(p.eventTitle!), maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontSize: 21, fontWeight: FontWeight.w900, height: 1.1)),
+              const SizedBox(height: 8),
+              if (p.placeName != null && p.placeName!.isNotEmpty)
+                Text('📍 ${p.placeName}', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontSize: 12.5, fontWeight: FontWeight.w600)),
+              Text(
+                [if (p.eventCover != null) p.eventCover!, '${p.going.length} going'].join(' · '),
+                style: TextStyle(color: tokens.mute, fontSize: 12.5),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final placeName = p.placeName;
+    final title = ev ? maskBadWords(p.eventTitle!) : (placeName != null && placeName.isNotEmpty ? placeName : '@$handle');
+    // Only a tagged place counts as a location.
+    final sub = placeName != null && placeName.isNotEmpty && !ev ? '@$handle · ${timeAgoLabel(p.t)}' : timeAgoLabel(p.t);
+    final medal = rank;
+    return GestureDetector(
+      onTap: open,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: AspectRatio(
+                aspectRatio: PostsGrid.ratioFor(p),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.network(
+                      p.photoUrls.first,
+                      fit: BoxFit.cover,
+                      loadingBuilder: (context, child, progress) => progress == null ? child : Container(color: tokens.raised),
+                      errorBuilder: (_, __, ___) => Container(color: tokens.raised, child: Icon(Icons.broken_image_outlined, color: tokens.mute)),
+                    ),
+                    // The frat/school letters an event is for, top right.
+                    if (postOrgBadge(p) != null)
+                      Positioned(top: 7, right: 7, child: OrgLettersBadge(badge: postOrgBadge(p)!, small: true))
+                    else if (p.photoUrls.length > 1)
+                      const Positioned(top: 8, right: 8, child: Icon(Icons.collections_rounded, color: Colors.white, size: 18, shadows: [Shadow(blurRadius: 6, color: Colors.black54)])),
+                    if (medal != null && !ev)
+                      Positioned(
+                        left: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.62), borderRadius: BorderRadius.circular(8)),
+                          child: Text('${topPostMedal(medal)} #$medal tonight', style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w800)),
+                        ),
+                      ),
+                    if (ev)
+                      Positioned(
+                        left: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.62), borderRadius: BorderRadius.circular(8)),
+                          child: Text(eventWhenLabel(p.eventAt!), style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w800)),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 14.5)),
+                        Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                      ],
+                    ),
+                  ),
+                  scoreBadge,
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 🥇 🥈 🥉 for tonight's top 3 posts.
+String topPostMedal(int rank) => rank == 1 ? '🥇' : (rank == 2 ? '🥈' : '🥉');
+
+/// The background for event cards (a soft purple).
+const Color eventTint = Color(0x248B5CF6);
+
+const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/// "Tonight · 9 PM", "Tomorrow · 8:30 PM", "Fri, May 23 · 8 PM".
+String eventWhenLabel(DateTime d) {
+  final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final m = d.minute == 0 ? '' : ':${d.minute.toString().padLeft(2, '0')}';
+  final ap = d.hour < 12 ? 'AM' : 'PM';
+  final now = DateTime.now();
+  final days = DateTime(d.year, d.month, d.day).difference(DateTime(now.year, now.month, now.day)).inDays;
+  final String day;
+  if (days == 0) {
+    day = d.hour >= 17 ? 'Tonight' : 'Today';
+  } else if (days == 1) {
+    day = 'Tomorrow';
+  } else {
+    day = '${_weekdays[d.weekday - 1]}, ${_months[d.month - 1]} ${d.day}';
+  }
+  return '$day · $h$m $ap';
+}
+
+/// The event part of a post: a little calendar date, the name, when,
+/// where and the cover, and the "I'm going" button with who's going.
+class EventBlock extends StatelessWidget {
+  final Post post;
+  const EventBlock({super.key, required this.post});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final p = store.postById(post.id) ?? post;
+    final at = p.eventAt!;
+    final going = p.going.contains('me');
+    final friends = store.friendsGoingTo(p);
+    final where = [
+      if (p.placeName != null && p.placeName!.isNotEmpty) '📍 ${p.placeName}',
+      if (p.eventCover != null) p.eventCover!,
+    ].join(' · ');
+    final over = at.isBefore(DateTime.now().subtract(const Duration(hours: 6)));
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: eventTint, borderRadius: BorderRadius.circular(14)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 50,
+                height: 56,
+                decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(10)),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(_months[at.month - 1].toUpperCase(), style: TextStyle(color: tokens.orange, fontSize: 11.5, fontWeight: FontWeight.w800)),
+                    Text('${at.day}', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w900, height: 1.05)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(maskBadWords(p.eventTitle!), style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800)),
+                    Text(eventWhenLabel(at), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13.5)),
+                    if (where.isNotEmpty) Text(where, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              ElevatedButton(
+                onPressed: over
+                    ? null
+                    : () => requireAccountThen(context, store, () async {
+                          final err = await store.toggleEventGoing(p.id);
+                          if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                        }),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: going ? tokens.surface : tokens.brand,
+                  disabledBackgroundColor: tokens.raised,
+                  elevation: 0,
+                  shape: const StadiumBorder(),
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                ),
+                child: Text(
+                  over ? 'Ended' : (going ? "You're going ✓" : "I'm going"),
+                  style: TextStyle(color: going || over ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  [
+                    '${p.going.length} going',
+                    if (friends.isNotEmpty) friends.length == 1 ? '@${friends.first.handle} too' : '${friends.length} friends',
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A sideways row of upcoming event cards (Home). Tap one to open it.
+class UpcomingEventsStrip extends StatelessWidget {
+  final List<Post> events;
+  const UpcomingEventsStrip({super.key, required this.events});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return SizedBox(
+      height: 214,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        itemCount: events.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final p = events[i];
+          return GestureDetector(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: p.id))),
+            child: Container(
+              width: 200,
+              decoration: BoxDecoration(color: eventTint, borderRadius: BorderRadius.circular(16)),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    height: 104,
+                    width: double.infinity,
+                    child: p.photoUrls.isNotEmpty
+                        ? Image.network(
+                            p.photoUrls.first,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(color: tokens.raised),
+                          )
+                        : Container(
+                            alignment: Alignment.center,
+                            child: Icon(Icons.celebration_rounded, color: tokens.orange, size: 40),
+                          ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(eventWhenLabel(p.eventAt!).toUpperCase(),
+                            maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.orange, fontSize: 10.5, fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 2),
+                        Text(maskBadWords(p.eventTitle!),
+                            maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontSize: 15.5, fontWeight: FontWeight.w800, height: 1.15)),
+                        const SizedBox(height: 4),
+                        Text(
+                          [
+                            if (p.placeName != null && p.placeName!.isNotEmpty) p.placeName!,
+                            '${p.going.length} going',
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: tokens.mute, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Every post in your area (or your friends' posts), most liked first.
+class PostsFeedScreen extends StatelessWidget {
+  // Your friends' posts from anywhere instead of everyone's in your area.
+  final bool friends;
+  // Only posts tagged at these kinds of places (null = all).
+  final Set<PlaceKind>? kinds;
+  final String? title;
+  // One person's posts (newest first), or the posts tagged at one place.
+  final String? byUid;
+  final String? placeId;
+  const PostsFeedScreen({super.key, this.friends = false, this.kinds, this.title, this.byUid, this.placeId});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final wanted = kinds;
+    final uid = byUid;
+    final at = placeId;
+    final List<Post> posts;
+    if (uid != null) {
+      posts = store.postsBy(uid);
+    } else if (at != null) {
+      posts = store.rankPosts(store.postsAt(at));
+    } else {
+      final base = friends ? store.friendsPosts : store.postsNearby;
+      posts = store.rankPosts(base.where((p) => wanted == null || wanted.contains(store.postPlaceKind(p))));
+    }
+    final heading = title ?? (friends ? "Friends' posts" : (store.areaName != null ? 'Posts near ${store.areaName}' : 'Posts near you'));
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      appBar: AppBar(
+        backgroundColor: tokens.bg,
+        foregroundColor: tokens.ink,
+        elevation: 0,
+        title: Text(heading),
+        actions: [
+          IconButton(
+            tooltip: 'New post',
+            onPressed: () => showCreateSheet(context, initial: CreateKind.post),
+            icon: Icon(Icons.add_box_outlined, color: tokens.orange),
+          ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: store.refreshPosts,
+        child: posts.isEmpty
+            ? ListView(
+                padding: const EdgeInsets.all(20),
+                children: [
+                  EmptyNote(text: store.postsLoaded ? 'No posts here yet. Share a few pics or ask something.' : 'Loading posts…'),
+                ],
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                itemCount: posts.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == 0) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(uid != null ? 'Newest first' : 'Most liked first', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                    );
+                  }
+                  final p = posts[i - 1];
+                  return PostCard(key: ValueKey(p.id), post: p);
+                },
+              ),
+      ),
+    );
+  }
+}
+
+/// One post with all its comments and a box to add yours.
+class PostDetailScreen extends StatefulWidget {
+  final String postId;
+  const PostDetailScreen({super.key, required this.postId});
+
+  @override
+  State<PostDetailScreen> createState() => _PostDetailScreenState();
+}
+
+class _PostDetailScreenState extends State<PostDetailScreen> {
+  final _controller = TextEditingController();
+  bool _loading = true;
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final store = context.read<AppStore>();
+      await store.ensurePost(widget.postId);
+      await store.fetchComments(widget.postId);
+      if (mounted) setState(() => _loading = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _send(AppStore store) {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _sending) return;
+    requireAccountThen(context, store, () async {
+      setState(() => _sending = true);
+      final err = await store.addComment(widget.postId, text);
+      if (!mounted) return;
+      setState(() => _sending = false);
+      if (err != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+        return;
+      }
+      _controller.clear();
+    });
+  }
+
+  Future<void> _deleteComment(AppStore store, PostComment c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this comment?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok == true) await store.deleteComment(c);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final post = store.postById(widget.postId);
+    final comments = store.commentsFor(widget.postId);
+
+    return Scaffold(
+      backgroundColor: tokens.bg,
+      appBar: AppBar(backgroundColor: tokens.bg, foregroundColor: tokens.ink, elevation: 0, title: const Text('Post')),
+      body: post == null
+          ? Center(
+              child: _loading
+                  ? const CircularProgressIndicator()
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text("This post isn't around anymore.", style: TextStyle(color: tokens.mute)),
+                    ),
+            )
+          : Column(
+              children: [
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    children: [
+                      PostCard(post: post, inDetail: true),
+                      Text(
+                        comments.isEmpty ? (_loading ? 'Loading comments…' : 'No comments yet. Say something.') : 'Comments',
+                        style: TextStyle(color: comments.isEmpty ? tokens.mute : tokens.ink, fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      for (final c in comments)
+                        _CommentRow(
+                          comment: c,
+                          canDelete: c.uid == 'me' || post.uid == 'me' || store.isAdmin,
+                          onDelete: () => _deleteComment(store, c),
+                        ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                  decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _controller,
+                            maxLength: AppStore.maxCommentLength,
+                            minLines: 1,
+                            maxLines: 4,
+                            textCapitalization: TextCapitalization.sentences,
+                            decoration: InputDecoration(
+                              hintText: 'Add a comment…',
+                              hintStyle: TextStyle(color: tokens.mute),
+                              filled: true,
+                              fillColor: tokens.raised,
+                              counterText: '',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+                            ),
+                            style: TextStyle(color: tokens.ink),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        IconButton(
+                          tooltip: 'Send',
+                          onPressed: _sending ? null : () => _send(store),
+                          icon: _sending
+                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                              : Icon(Icons.send_rounded, color: tokens.orange),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _CommentRow extends StatelessWidget {
+  final PostComment comment;
+  final bool canDelete;
+  final VoidCallback onDelete;
+  const _CommentRow({required this.comment, required this.canDelete, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final person = store.personById(comment.uid);
+    final handle = person?.handle ?? 'someone';
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: canDelete ? onDelete : null,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onTap: () => openProfile(context, comment.uid),
+              child: person != null
+                  ? PersonAvatar(person: person, size: 28, preview: false)
+                  : FunkyAvatar(seed: comment.uid, label: '?', size: 28),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text.rich(TextSpan(children: [
+                    TextSpan(text: '@$handle ', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                    TextSpan(text: maskBadWords(comment.text), style: TextStyle(color: tokens.ink)),
+                  ])),
+                  const SizedBox(height: 2),
+                  Text(
+                    canDelete ? '${timeAgoLabel(comment.t)} · hold to delete' : timeAgoLabel(comment.t),
+                    style: TextStyle(color: tokens.mute, fontSize: 11.5),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

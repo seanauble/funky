@@ -6,10 +6,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'data/app_store.dart';
 import 'data/supabase_config.dart';
 import 'screens/call_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'push_router.dart';
+import 'services/crash_reporter.dart';
 import 'services/push_service.dart';
 import 'root_shell.dart';
-import 'theme/colors.dart';
 import 'theme/theme_provider.dart';
 import 'widgets/reset_banner.dart';
 import 'widgets/ui_widgets.dart';
@@ -27,6 +28,8 @@ Future<void> main() async {
     url: SupabaseConfig.url,
     publishableKey: SupabaseConfig.publishableKey,
   );
+  // Errors get reported to the admin panel (see crash_reporter.dart).
+  CrashReporter.install();
   runApp(const FunkyApp());
 }
 
@@ -154,6 +157,8 @@ class _AppRootState extends State<_AppRoot> {
         ),
       );
     }
+    // First run on this phone: the welcome / 21+ / permissions walkthrough.
+    if (!store.onboardingDone) return const OnboardingScreen();
     _hookPushTaps(store);
     // A friend is ringing: bring up the answer/decline screen.
     final ringing = store.incomingCall;

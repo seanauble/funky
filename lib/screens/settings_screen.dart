@@ -7,6 +7,8 @@ import '../widgets/ui_widgets.dart';
 import 'about_screen.dart';
 import 'account_screen.dart';
 import 'admin_panel_screen.dart';
+import 'blocked_accounts_screen.dart';
+import 'contacts_friends_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
 import '../services/share_links.dart';
@@ -47,6 +49,25 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          if (store.signedIn) ...[
+            const SizedBox(height: 10),
+            FunkyCard(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  _SettingsRow(
+                    label: 'Find friends from contacts',
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ContactsFriendsScreen())),
+                  ),
+                  Divider(height: 1, color: tokens.line),
+                  _SettingsRow(
+                    label: 'Blocked accounts${store.blockedPeople.isEmpty ? '' : ' (${store.blockedPeople.length})'}',
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const BlockedAccountsScreen())),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SectionHeader(title: 'Your area'),
           const _RadiusCard(),
           if (store.signedIn) ...[
@@ -110,6 +131,27 @@ class SettingsScreen extends StatelessWidget {
               ],
             ),
           ),
+          if (store.signedIn) ...[
+            const SectionHeader(title: 'Delete account'),
+            FunkyCard(
+              padding: EdgeInsets.zero,
+              child: InkWell(
+                onTap: () => _confirmDeleteAccount(context, store),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_forever_outlined, color: tokens.danger),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text('Delete my account', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
           const SectionHeader(title: 'About'),
           FunkyCard(
             padding: EdgeInsets.zero,
@@ -134,6 +176,67 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Two-step delete: explain what goes, then type DELETE to confirm.
+Future<void> _confirmDeleteAccount(BuildContext context, AppStore store) async {
+  final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+  final controller = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (d) => StatefulBuilder(
+      builder: (d, setState) => AlertDialog(
+        backgroundColor: tokens.surface,
+        title: Text('Delete your account?', style: TextStyle(color: tokens.ink)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'This permanently deletes your profile, posts, stories, memories, messages, friends and points. It can\'t be undone.',
+              style: TextStyle(color: tokens.mute),
+            ),
+            const SizedBox(height: 12),
+            Text('Type DELETE to confirm.', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              onChanged: (_) => setState(() {}),
+              style: TextStyle(color: tokens.ink),
+              decoration: InputDecoration(
+                hintText: 'DELETE',
+                hintStyle: TextStyle(color: tokens.mute),
+                filled: true,
+                fillColor: tokens.raised,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(d).pop(false), child: Text('Cancel', style: TextStyle(color: tokens.mute))),
+          TextButton(
+            onPressed: controller.text.trim().toUpperCase() == 'DELETE' ? () => Navigator.of(d).pop(true) : null,
+            child: Text('Delete forever', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  final messenger = ScaffoldMessenger.of(context);
+  final navigator = Navigator.of(context);
+  showDialog<void>(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator()));
+  final err = await store.deleteAccount();
+  navigator.pop(); // the spinner
+  if (err != null) {
+    messenger.showSnackBar(SnackBar(content: Text(err)));
+    return;
+  }
+  navigator.popUntil((r) => r.isFirst);
+  messenger.showSnackBar(const SnackBar(content: Text('Your account was deleted.')));
 }
 
 class _SettingsRow extends StatelessWidget {

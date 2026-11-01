@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Where people get FUNKY right now — the public TestFlight beta link.
 /// Swap this for the App Store link once FUNKY is live there.
@@ -36,4 +37,22 @@ Future<void> shareFunkyProfile(BuildContext context, String handle, {bool mine =
 Future<void> shareFunkyInvite(BuildContext context, {String? handle}) {
   final who = handle == null ? '' : ' Add me: @$handle.';
   return _shareText(context, "Come out with me on FUNKY 🕺 See where everyone's going tonight.$who\nGet the app: $funkyDownloadUrl");
+}
+
+/// Shares a party, event or spot.
+Future<void> shareFunkyPlace(BuildContext context, String name, {String? when}) {
+  final at = when == null ? '' : ' ($when)';
+  return _shareText(context, "Pull up to $name$at 🕺 See who's going on FUNKY.\nGet the app: $funkyDownloadUrl");
+}
+
+/// Opens Apple Maps with directions to a spot.
+Future<void> openDirections(BuildContext context, double lat, double lng, String name) async {
+  final uri = Uri.parse('https://maps.apple.com/?daddr=$lat,$lng&q=${Uri.encodeComponent(name)}');
+  var ok = false;
+  try {
+    ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {}
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't open Maps.")));
+  }
 }

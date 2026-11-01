@@ -304,6 +304,21 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                       },
                     ),
             ),
+            if (store.isBlocked(person.id) || store.hasBlockedMe(person.id))
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: tokens.surface, border: Border(top: BorderSide(color: tokens.line))),
+                child: SafeArea(
+                  top: false,
+                  child: Text(
+                    store.isBlocked(person.id) ? "You blocked @${person.handle}. Unblock them from their profile to message." : "You can't message this account.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              )
+            else ...[
             if (_replyStory != null)
               _ReplyingToStoryBar(
                 story: _replyStory!,
@@ -363,6 +378,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                 ),
               ),
             ),
+            ],
           ],
         ),
       ),
@@ -679,7 +695,7 @@ class DmMedia extends StatelessWidget {
         ],
       );
     } else if (localOk) {
-      media = Image.file(File(path!), fit: BoxFit.cover, errorBuilder: (_, __, ___) => Icon(Icons.broken_image_outlined, color: tokens.mute));
+      media = Image.file(File(path), fit: BoxFit.cover, errorBuilder: (_, __, ___) => Icon(Icons.broken_image_outlined, color: tokens.mute));
     } else {
       media = Image.network(
         url!,

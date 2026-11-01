@@ -11,7 +11,7 @@ import '../widgets/ui_widgets.dart';
 // longer shown on this screen, which just says "Version 2" plainly instead
 // of "Version 1.0.0 (25)".
 const _appVersion = '3.0';
-const _appBuild = '124';
+// The build number now lives in lib/build_info.dart (crash reports use it).
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});

@@ -11,6 +11,7 @@ import '../data/models.dart';
 import '../services/screenshot_detector.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/ui_widgets.dart';
+import '../widgets/org_badge.dart';
 import 'dm_thread_screen.dart';
 
 /// Full-screen Story playback — tap the right half to advance, the left
@@ -162,6 +163,65 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     } finally {
       if (mounted) setState(() => _savingMedia = false);
     }
+  }
+
+  bool _reporting = false;
+
+  /// The flag in the header: pick a reason and the Story goes to the FUNKY
+  /// admins to review (with who really posted it, even if it's anonymous).
+  /// The video pauses while the sheet is open.
+  Future<void> _reportStory(Story story) async {
+    if (_reporting) return;
+    final store = context.read<AppStore>();
+    final video = _videoController;
+    final wasPlaying = video != null && video.value.isPlaying;
+    if (wasPlaying) await video.pause();
+    if (!mounted) return;
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF17171C),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 14, 8, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text('Report this story', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 17)),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
+                child: Text(
+                  "What's wrong with it? Reports are private. The FUNKY team reviews every one.",
+                  style: TextStyle(color: Colors.white60, fontSize: 12.5),
+                ),
+              ),
+              for (final r in AppStore.storyReportReasons)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.flag_outlined, color: Colors.white70, size: 20),
+                  title: Text(r, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  onTap: () => Navigator.of(sheetContext).pop(r),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (reason == null) {
+      if (wasPlaying && identical(_videoController, video)) await video.play();
+      return;
+    }
+    setState(() => _reporting = true);
+    final msg = await store.reportStory(story, reason);
+    if (!mounted) return;
+    setState(() => _reporting = false);
+    _toast(msg);
+    if (wasPlaying && identical(_videoController, video)) await video.play();
   }
 
   void _ensureVideoFor(Story story, VoidCallback advance) {
@@ -326,46 +386,54 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 ],
                 const SizedBox(height: 16),
                 const SizedBox(height: 12),
-                // Memories auto-delete memoryRetentionDays after posting —
-                // this is the other place (besides the bookmark on the
-                // Memory card itself) to pin one to the Timeline forever.
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.of(sheetContext).pop();
-                      final store = context.read<AppStore>();
-                      if (story.savedToTimeline) {
-                        store.removeFromTimeline(story.id);
-                      } else {
-                        store.saveToTimeline(story.id);
-                      }
-                    },
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      side: BorderSide(color: story.savedToTimeline ? Colors.white54 : Colors.amberAccent),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    icon: Icon(
-                      story.savedToTimeline ? Icons.bookmark_remove_outlined : Icons.bookmark_add_outlined,
-                      color: story.savedToTimeline ? Colors.white70 : Colors.amberAccent,
-                    ),
-                    label: Text(
-                      story.savedToTimeline ? 'Remove from Timeline' : 'Save to Timeline',
-                      style: TextStyle(
+                // Text-only Stories never become Memories, so there's nothing
+                // to save for those.
+                if (context.read<AppStore>().isMemoryStory(story)) ...[
+                  // Memories auto-delete memoryRetentionDays after posting —
+                  // this is the other place (besides the bookmark on the
+                  // Memory card itself) to pin one to the Timeline forever.
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(sheetContext).pop();
+                        final store = context.read<AppStore>();
+                        if (story.savedToTimeline) {
+                          store.removeFromTimeline(story.id);
+                        } else {
+                          store.saveToTimeline(story.id);
+                        }
+                      },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: BorderSide(color: story.savedToTimeline ? Colors.white54 : Colors.amberAccent),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: Icon(
+                        story.savedToTimeline ? Icons.bookmark_remove_outlined : Icons.bookmark_add_outlined,
                         color: story.savedToTimeline ? Colors.white70 : Colors.amberAccent,
-                        fontWeight: FontWeight.w700,
+                      ),
+                      label: Text(
+                        story.savedToTimeline ? 'Remove from Timeline' : 'Save to Timeline',
+                        style: TextStyle(
+                          color: story.savedToTimeline ? Colors.white70 : Colors.amberAccent,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  story.savedToTimeline
-                      ? 'This memory is saved forever.'
-                      : 'Memories auto-delete $memoryRetentionDays days after posting unless saved.',
-                  style: const TextStyle(color: Colors.white38, fontSize: 11.5),
-                ),
+                  const SizedBox(height: 8),
+                  Text(
+                    story.savedToTimeline
+                        ? 'This memory is saved forever.'
+                        : 'Memories auto-delete $memoryRetentionDays days after posting unless saved.',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11.5),
+                  ),
+                ] else
+                  const Text(
+                    "Text stories disappear after 24 hours. They don't go to Memories.",
+                    style: TextStyle(color: Colors.white38, fontSize: 11.5),
+                  ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
@@ -401,6 +469,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     void handleSwipeUp() {
       if (story.uid == 'me') {
         showOwnStorySheet();
+      } else if (story.anon) {
+        // Messaging would give away who posted it.
+        return;
       } else {
         messageFromStory();
       }
@@ -685,6 +756,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                           ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                           : const Icon(Icons.download_outlined, color: Colors.white),
                     ),
+                  // Report — anyone else's Story (anonymous ones included).
+                  if (story.uid != 'me')
+                    IconButton(
+                      onPressed: _reporting ? null : () => _reportStory(story),
+                      tooltip: 'Report this story',
+                      icon: const Icon(Icons.flag_outlined, color: Colors.white),
+                    ),
                   IconButton(
                     onPressed: _close,
                     icon: const Icon(Icons.close, color: Colors.white),
@@ -692,6 +770,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 ],
               ),
             ),
+            // The frat/school letters of where it was posted, small, top right.
+            if (storyOrgBadge(store, story) != null)
+              Positioned(
+                top: pad.top + 68,
+                right: 18,
+                child: OrgLettersBadge(badge: storyOrgBadge(store, story)!, small: true),
+              ),
             // Like button
             Positioned(
               bottom: pad.bottom + 24,
@@ -703,7 +788,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             ),
             // A quiet hint that the swipe-up gesture exists at all — it has
             // no tap target of its own (the whole-screen GestureDetector
-            // above already handles the real gesture), just a nudge.
+            // above already handles the real gesture), just a nudge. None on
+            // someone's anonymous story (messaging them would give it away).
+            if (story.uid == 'me' || !story.anon)
             Positioned(
               bottom: pad.bottom + 28,
               left: 0,
