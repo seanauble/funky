@@ -849,7 +849,16 @@ class _ConvoRow extends StatelessWidget {
         final who = store.personById(msg.uid)?.handle;
         if (who != null) prefix = '@$who: ';
       }
-      if (msg.mediaType != null) {
+      if (msg.gifUrl != null && msg.text.isEmpty) {
+        subtitle = Row(
+          children: [
+            if (prefix.isNotEmpty) Text(prefix, style: previewStyle),
+            Icon(Icons.gif_box_outlined, size: 16, color: previewColor),
+            const SizedBox(width: 6),
+            Text('GIF', style: previewStyle),
+          ],
+        );
+      } else if (msg.mediaType != null) {
         final isVideo = msg.mediaType == 'video';
         subtitle = Row(
           children: [

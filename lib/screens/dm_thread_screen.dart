@@ -11,6 +11,7 @@ import '../data/models.dart';
 import '../theme/colors.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/call_log_line.dart';
+import '../widgets/gif_picker.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'call_screen.dart';
@@ -129,6 +130,19 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
     _draftController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _sendGif(AppStore store) async {
+    final url = await showGifPicker(context, store);
+    if (url == null || !mounted) return;
+    final reply = _replyStory;
+    final error = await store.sendDirectMessage(widget.personId, '', gifUrl: url, replyTo: reply, skipCooldown: true);
+    if (!mounted) return;
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+      return;
+    }
+    if (reply != null) setState(() => _replyStory = null);
   }
 
   void _send(AppStore store) {
@@ -345,6 +359,17 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                       onPressed: _sendingMedia ? null : () => _upload(store),
                       icon: Icon(Icons.photo_library_outlined, color: tokens.brand),
                     ),
+                    if (store.giphyKey != null)
+                      IconButton(
+                        tooltip: 'Send a GIF',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _sendGif(store),
+                        icon: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                          decoration: BoxDecoration(border: Border.all(color: tokens.brand, width: 1.5), borderRadius: BorderRadius.circular(5)),
+                          child: Text('GIF', style: TextStyle(color: tokens.brand, fontSize: 10, fontWeight: FontWeight.w900)),
+                        ),
+                      ),
                     Expanded(
                       child: TextField(
                         controller: _draftController,
@@ -405,15 +430,40 @@ class DmBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final mine = message.uid == 'me';
     final isMedia = message.mediaType != null;
+    final gif = message.gifUrl;
     final textColor = mine ? tokens.onOrange : tokens.ink;
     final bubble = Container(
-      padding: isMedia ? const EdgeInsets.all(4) : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: isMedia || gif != null ? const EdgeInsets.all(4) : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.66),
       decoration: BoxDecoration(
-        color: mine ? tokens.brand : tokens.raised,
+        color: gif != null && message.text.isEmpty ? Colors.transparent : (mine ? tokens.brand : tokens.raised),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: isMedia
+      child: gif != null
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(13),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220, minWidth: 80, minHeight: 80),
+                    child: Image.network(
+                      gif,
+                      fit: BoxFit.cover,
+                      loadingBuilder: (context, child, p) => p == null ? child : Container(width: 180, height: 140, color: tokens.raised),
+                      errorBuilder: (_, _, _) => Container(width: 160, height: 60, color: tokens.raised, alignment: Alignment.center, child: Text('GIF', style: TextStyle(color: tokens.mute))),
+                    ),
+                  ),
+                ),
+                if (message.text.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+                    child: filteredMessageText(message.text, TextStyle(color: textColor)),
+                  ),
+              ],
+            )
+          : isMedia
           ? Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,

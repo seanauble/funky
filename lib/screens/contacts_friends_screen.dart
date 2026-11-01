@@ -42,7 +42,8 @@ class _ContactsFriendsScreenState extends State<ContactsFriendsScreen> {
       _denied = false;
     });
     try {
-      final ok = await FlutterContacts.requestPermission(readonly: true);
+      final status = await FlutterContacts.permissions.request(PermissionType.read);
+      final ok = status == PermissionStatus.granted || status == PermissionStatus.limited;
       if (!ok) {
         if (mounted) {
           setState(() {
@@ -52,7 +53,7 @@ class _ContactsFriendsScreenState extends State<ContactsFriendsScreen> {
         }
         return;
       }
-      final contacts = await FlutterContacts.getContacts(withProperties: true);
+      final contacts = await FlutterContacts.getAll(properties: {ContactProperty.email});
       final emails = <String>[
         for (final c in contacts)
           for (final e in c.emails) e.address,

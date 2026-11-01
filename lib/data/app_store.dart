@@ -317,6 +317,7 @@ class AppStore extends ChangeNotifier {
     await table('Upcoming, chat replies, GIFs, online count (phase 33)', 'place_rsvps', 'place_id');
     await table('Dated parties + events at bars (phase 33)', 'places', 'starts_at,event_type,host_place_id');
     await table('Chat replies, spots, polls, GIFs (phase 33)', 'chat_messages', 'reply_to,place_id,poll_id,gif_url');
+    await table('GIFs in DMs and groups (phase 34)', 'messages', 'gif_url');
     await table('Chat reactions (phase 3)', 'chat_reactions', 'message_id');
     await table('Place cover photos (phase 3)', 'places', 'cover_url');
     await table('Place ratings (phase 9)', 'place_ratings', 'place_id');
@@ -3265,7 +3266,8 @@ class AppStore extends ChangeNotifier {
   /// [replyTo] is the Story you swiped up on, if any — the message carries a
   /// small snapshot of it (caption + the picture's storage path) so the
   /// thread can show what you were replying to.
-  Future<String?> sendDirectMessage(String toPersonId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false, Story? replyTo}) async {
+  Future<String?> sendDirectMessage(String toPersonId, String text,
+      {String? mediaPath, String? mediaType, bool skipCooldown = false, Story? replyTo, String? gifUrl}) async {
     if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
@@ -3276,7 +3278,7 @@ class AppStore extends ChangeNotifier {
     final mp = mediaPath;
     final mt = mediaType;
     final hasMedia = mp != null && mt != null;
-    if (capped.trim().isEmpty && !hasMedia) return null;
+    if (capped.trim().isEmpty && !hasMedia && gifUrl == null) return null;
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
@@ -3306,6 +3308,7 @@ class AppStore extends ChangeNotifier {
       storyText: replyTo == null ? null : _storyReplyCaption(replyTo),
       storyMediaPath: replyTo?.mediaPath,
       storyIsVideo: replyTo != null && (replyTo.videoUrl != null || replyTo.videoPath != null),
+      gifUrl: gifUrl,
     );
     if (replyTo != null) _storyReplySnapshots[local.id] = replyTo;
     messages = _capMessages([...messages, local]);
@@ -3352,6 +3355,7 @@ class AppStore extends ChangeNotifier {
         'text': local.text,
         if (storagePath != null) 'media_path': storagePath,
         if (storagePath != null) 'media_type': local.mediaType,
+        if (local.gifUrl != null) 'gif_url': local.gifUrl,
       };
       final storyCols = <String, dynamic>{
         if (local.storyId != null && _looksLikeUuid(local.storyId!)) 'story_id': local.storyId,
@@ -5369,6 +5373,7 @@ class AppStore extends ChangeNotifier {
       text: row['text'] as String? ?? '',
       anon: false,
       mediaType: row['media_path'] != null ? (row['media_type'] as String? ?? 'image') : null,
+      gifUrl: row['gif_url'] as String?,
     );
   }
 
@@ -5449,7 +5454,7 @@ class AppStore extends ChangeNotifier {
 
   /// Sends a text and/or photo/video to a group. Returns null on success,
   /// otherwise a message to show — same contract as sendDirectMessage.
-  Future<String?> sendGroupMessage(String groupId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false}) async {
+  Future<String?> sendGroupMessage(String groupId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false, String? gifUrl}) async {
     if (selfBanned) return _bannedMessage;
     if (supabaseUserId == null) return 'Sign in to message a group.';
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -5461,7 +5466,7 @@ class AppStore extends ChangeNotifier {
     final mp = mediaPath;
     final mt = mediaType;
     final hasMedia = mp != null && mt != null;
-    if (capped.trim().isEmpty && !hasMedia) return null;
+    if (capped.trim().isEmpty && !hasMedia && gifUrl == null) return null;
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
@@ -5486,6 +5491,7 @@ class AppStore extends ChangeNotifier {
       status: 'sending',
       mediaType: hasMedia ? mt : null,
       mediaPath: hasMedia ? mp : null,
+      gifUrl: gifUrl,
     );
     messages = _capMessages([...messages, local]);
     _lastMessageAt = now;
@@ -5527,6 +5533,7 @@ class AppStore extends ChangeNotifier {
         'text': local.text,
         if (storagePath != null) 'media_path': storagePath,
         if (storagePath != null) 'media_type': local.mediaType,
+        if (local.gifUrl != null) 'gif_url': local.gifUrl,
       }).select();
       final serverId = rows.first['id'] as String;
       _remoteMessageIds.add(serverId);
@@ -6741,6 +6748,7 @@ class AppStore extends ChangeNotifier {
       storyText: row['story_text'] as String?,
       storyMediaPath: row['story_media_path'] as String?,
       storyIsVideo: row['story_is_video'] as bool? ?? false,
+      gifUrl: row['gif_url'] as String?,
     );
   }
 

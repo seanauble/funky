@@ -1039,7 +1039,7 @@ class _PicturePrompt extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                'Your picture is waiting for admin approval.',
+                'Your picture is waiting to be verified by a FUNKY admin. You get 1,000 Funky Points once it is.',
                 style: TextStyle(color: tokens.mute, fontSize: 12.5),
               ),
             ),
@@ -1052,7 +1052,11 @@ class _PicturePrompt extends StatelessWidget {
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                   : Icon(Icons.add_a_photo_outlined, size: 18, color: tokens.ink),
               label: Text(
-                uploading ? 'Uploading…' : (hasPicture ? 'Suggest a new picture' : 'Add a picture'),
+                uploading
+                    ? 'Uploading…'
+                    : isAdmin
+                        ? (hasPicture ? 'Change the picture' : 'Add a picture')
+                        : (hasPicture ? 'Suggest a new picture · 1,000 pts' : 'Upload a verified picture · 1,000 pts'),
                 style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
               ),
               style: OutlinedButton.styleFrom(
@@ -1077,8 +1081,8 @@ class _PicturePrompt extends StatelessWidget {
                   Expanded(
                     child: Text(
                       signedIn
-                          ? 'Get 1,000 Funky Points when your picture is approved. Use your own photo.'
-                          : 'Log in to earn 1,000 Funky Points for an approved picture.',
+                          ? 'Upload a verified picture for 1,000 Funky Points. A FUNKY admin checks every picture before it shows, and you get the points once it\'s verified. Use your own photo.'
+                          : 'Log in to upload a verified picture for 1,000 Funky Points.',
                       style: TextStyle(color: tokens.mute, fontSize: 12),
                     ),
                   ),

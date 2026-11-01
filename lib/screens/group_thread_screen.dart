@@ -10,6 +10,7 @@ import '../data/group_models.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/call_log_line.dart';
+import '../widgets/gif_picker.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
 import 'call_screen.dart';
@@ -288,6 +289,14 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
     });
   }
 
+  Future<void> _sendGif(AppStore store) async {
+    final url = await showGifPicker(context, store);
+    if (url == null || !mounted) return;
+    final error = await store.sendGroupMessage(widget.groupId, '', gifUrl: url, skipCooldown: true);
+    if (!mounted) return;
+    if (error != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+  }
+
   void _send(AppStore store) {
     final text = _draftController.text.trim();
     if (text.isEmpty) return;
@@ -527,6 +536,17 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                       onPressed: _sendingMedia ? null : () => _upload(store),
                       icon: Icon(Icons.photo_library_outlined, color: tokens.brand),
                     ),
+                    if (store.giphyKey != null)
+                      IconButton(
+                        tooltip: 'Send a GIF',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _sendGif(store),
+                        icon: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                          decoration: BoxDecoration(border: Border.all(color: tokens.brand, width: 1.5), borderRadius: BorderRadius.circular(5)),
+                          child: Text('GIF', style: TextStyle(color: tokens.brand, fontSize: 10, fontWeight: FontWeight.w900)),
+                        ),
+                      ),
                     Expanded(
                       child: TextField(
                         controller: _draftController,

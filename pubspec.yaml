@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.0.0+135
+version: 3.0.0+136
 
 environment:
   sdk: ^3.13.3
@@ -92,7 +92,7 @@ dependencies:
   # "Find friends from contacts" (onboarding + Add friends). Only hashes of
   # email addresses leave the phone. Needs NSContactsUsageDescription in
   # ios/Runner/Info.plist.
-  flutter_contacts: ^1.1.9+2
+  flutter_contacts: ^2.2.0
   # sha256 for hashing those contact emails (official dart.dev package).
   crypto: ^3.0.3
   url_launcher: ^6.3.0

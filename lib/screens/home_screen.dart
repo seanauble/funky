@@ -108,7 +108,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Container(
       color: tokens.bg,
-      child: ListView(
+      // Everything on Home sits flat on the page — no boxed-in sections.
+      child: FlatCards(
+        child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
           SizedBox(
@@ -262,28 +264,22 @@ class _HomeScreenState extends State<HomeScreen> {
             )
           else
             SizedBox(
-              height: 156,
+              height: 172,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: verifiedPlaces.take(8).map((p) {
                   return GestureDetector(
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
                     child: Container(
-                      width: 140,
-                      margin: const EdgeInsets.only(right: 10),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: tokens.surface,
-                        border: Border.all(color: tokens.line),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
+                      width: 150,
+                      margin: const EdgeInsets.only(right: 12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(16),
                             child: SizedBox(
-                              height: 60,
+                              height: 104,
                               width: double.infinity,
                               // Same switch as the Place Detail banner —
                               // shows the latest posted photo/video here
@@ -322,21 +318,15 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Text('Covers tonight', style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800)),
             ),
             SizedBox(
-              height: 70,
+              height: 48,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: covered.map((p) {
                   return GestureDetector(
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: p.id))),
                     child: Container(
-                      margin: const EdgeInsets.only(right: 10),
-                      constraints: const BoxConstraints(minWidth: 110),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: tokens.surface,
-                        border: Border.all(color: tokens.line),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
+                      margin: const EdgeInsets.only(right: 22),
+                      constraints: const BoxConstraints(minWidth: 70),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -455,6 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ],
       ),
+      ),
     );
   }
 }
@@ -524,7 +515,8 @@ extension on _HomeKind {
   bool matches(PlaceKind? kind) => this == _HomeKind.all || (kind != null && kinds.contains(kind));
 }
 
-/// Three big squares side by side: Tonight, Upcoming and Friends.
+/// Tonight · Upcoming · Friends — big text tabs with a short orange line
+/// under the one you're on. No boxes.
 class _SideSwitch extends StatelessWidget {
   final _HomeSide side;
   final ValueChanged<_HomeSide> onChanged;
@@ -538,61 +530,60 @@ class _SideSwitch extends StatelessWidget {
     final soon = store.upcomingPlaces.length + store.upcomingEventPosts.length;
     final friendsOut = store.signedIn ? store.myFriends.where((f) => f.move != null && f.move != 'in').length : 0;
 
-    Widget tile(_HomeSide s, IconData icon, String title, String sub) {
+    Widget tab(_HomeSide s, String title, int count) {
       final active = s == side;
-      return Expanded(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => onChanged(s),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-            height: 92,
-            padding: const EdgeInsets.fromLTRB(11, 10, 8, 10),
-            decoration: BoxDecoration(
-              gradient: active ? LinearGradient(colors: [tokens.orange, tokens.brand], begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
-              color: active ? null : tokens.surface,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: active ? Colors.transparent : tokens.line, width: 1.2),
-              boxShadow: active ? [BoxShadow(color: tokens.orange.withValues(alpha: 0.28), blurRadius: 14, offset: const Offset(0, 5))] : null,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: active ? Colors.white.withValues(alpha: 0.22) : tokens.raised),
-                  child: Icon(icon, color: active ? Colors.white : tokens.ink, size: 18),
-                ),
-                const Spacer(),
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: active ? Colors.white : tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5),
-                ),
-                Text(
-                  sub,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: active ? Colors.white.withValues(alpha: 0.85) : tokens.mute, fontSize: 11, fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onChanged(s),
+        child: Padding(
+          padding: const EdgeInsets.only(right: 22, top: 4, bottom: 2),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 160),
+                    style: TextStyle(
+                      color: active ? tokens.ink : tokens.mute,
+                      fontSize: 22,
+                      fontWeight: active ? FontWeight.w900 : FontWeight.w700,
+                      letterSpacing: -0.3,
+                    ),
+                    child: Text(title),
+                  ),
+                  if (count > 0) ...[
+                    const SizedBox(width: 3),
+                    Text('$count', style: TextStyle(color: active ? tokens.orange : tokens.mute, fontSize: 12, fontWeight: FontWeight.w800)),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 4),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                height: 3,
+                width: active ? 26 : 0,
+                decoration: BoxDecoration(color: tokens.orange, borderRadius: BorderRadius.circular(2)),
+              ),
+            ],
           ),
         ),
       );
     }
 
-    return Row(
-      children: [
-        tile(_HomeSide.tonight, Icons.nightlife_rounded, 'Tonight', spots == 1 ? '1 spot' : '$spots spots'),
-        const SizedBox(width: 8),
-        tile(_HomeSide.upcoming, Icons.event_rounded, 'Upcoming', soon == 0 ? 'Plan ahead' : '$soon coming up'),
-        const SizedBox(width: 8),
-        tile(_HomeSide.friends, Icons.groups_rounded, 'Friends', store.signedIn ? '$friendsOut going out' : 'Your crew'),
-      ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          tab(_HomeSide.tonight, 'Tonight', spots),
+          tab(_HomeSide.upcoming, 'Upcoming', soon),
+          tab(_HomeSide.friends, 'Friends', friendsOut),
+        ],
+      ),
     );
   }
 }
@@ -639,9 +630,8 @@ class _KindChip extends StatelessWidget {
         curve: Curves.easeOut,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: active ? tokens.ink : tokens.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: active ? tokens.ink : tokens.line, width: 1.2),
+          color: active ? tokens.ink : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,

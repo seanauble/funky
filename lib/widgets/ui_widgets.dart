@@ -75,17 +75,34 @@ class FunkyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    // Inside a FlatCards area (the Home page) a card is just its content —
+    // no box, no border — lined up with the headings.
+    if (FlatCards.of(context)) {
+      return Padding(
+        padding: (margin ?? EdgeInsets.zero).add(const EdgeInsets.symmetric(vertical: 6)),
+        child: child,
+      );
+    }
     return Container(
       margin: margin,
       padding: padding ?? const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: tokens.surface,
-        border: Border.all(color: tokens.line),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: child,
     );
   }
+}
+
+/// Makes every [FunkyCard] underneath it flat: content only, no box.
+class FlatCards extends InheritedWidget {
+  const FlatCards({super.key, required super.child});
+
+  static bool of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<FlatCards>() != null;
+
+  @override
+  bool updateShouldNotify(FlatCards oldWidget) => false;
 }
 
 class EmptyNote extends StatelessWidget {
