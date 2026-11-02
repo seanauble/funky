@@ -14,12 +14,16 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>FUNKY uses your location to show you what's happening within 25 miles of you tonight. Your exact location is never shown to other people.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>FUNKY uses your location to show you the parties, bars and people within 25 miles of you, and only while you're using the app. Your exact location is never shown to other people.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>FUNKY uses your location to show you the parties, bars and people within 25 miles of you, and only while you're using the app. Your exact location is never shown to other people.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>FUNKY uses your camera to take photos and videos for your Stories, and for video calls with your friends.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>FUNKY uses your microphone to record audio for video Stories and to talk on video calls with your friends.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>FUNKY uses your photo library so you can choose an existing photo for your profile picture. Stories are always taken live in the app, never from your library.</string>
+	<string>FUNKY uses your photo library so you can pick photos for your profile picture, posts, a place's cover picture, and photos or videos you send in messages.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>FUNKY uses this to save a copy of a photo or video to your library when you tap Save, and the video editing tool it uses to stitch a flipped-camera Story together also declares this permission.</string>
 	<key>NSContactsUsageDescription</key>

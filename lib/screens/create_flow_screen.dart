@@ -18,6 +18,7 @@ import '../data/session.dart';
 import '../data/when_labels.dart';
 import '../services/address_search.dart';
 import '../theme/colors.dart';
+import '../widgets/camera_tools.dart';
 import '../widgets/ios_ui.dart';
 import '../widgets/kind_picker.dart';
 import '../widgets/place_destination_picker.dart';
@@ -246,6 +247,16 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   double _maxZoom = 1;
   double _currentZoom = 1;
   double _baseZoom = 1;
+  final ZoomPump _zoomPump = ZoomPump();
+
+  // Flash: the back camera's real flash (a torch while recording); on the
+  // selfie camera the screen lights up white instead.
+  bool _flashOn = false;
+  bool _screenFlash = false;
+  // A selfie photo is flipped to match the preview when it's posted (doing
+  // it at capture made the shutter slow).
+  bool _mirrorPhoto = false;
+  Directory? _dirCache;
 
   // Swipe-to-change-filter — see _onZoomUpdate/_changeFilter. Resets to
   // Normal (index 0) every time this screen is freshly opened for a new
@@ -293,8 +304,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         return;
       }
       _cameras = cameras;
-      _cameraIndex = cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
-      if (_cameraIndex < 0) _cameraIndex = 0;
+      _cameraIndex = mainLens(cameras, CameraLensDirection.back);
       await _openCamera(_cameraIndex);
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
@@ -328,9 +338,40 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         _currentZoom = 1;
       });
       unawaited(_primeZoom(controller));
+      // Flash off unless you turned it on — the plugin defaults to "auto",
+      // which makes every photo wait on a flash check (and fire in the dark).
+      unawaited(_applyFlash(controller));
+      // Gets the recorder (and mic) ready now, so holding the shutter
+      // starts recording right away instead of after a pause.
+      unawaited(controller.prepareForVideoRecording().catchError((_) {}));
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
+  }
+
+  /// Puts the camera's flash where it should be: the back flash for
+  /// photos (or a torch while recording) when it's on, off otherwise. The
+  /// selfie camera has no flash — the screen does that (see _takePhoto).
+  Future<void> _applyFlash(CameraController controller, {bool recording = false}) async {
+    final mode = !_flashOn || _isFrontCamera ? FlashMode.off : (recording ? FlashMode.torch : FlashMode.always);
+    try {
+      await controller.setFlashMode(mode);
+    } catch (_) {}
+  }
+
+  void _toggleFlash() {
+    setState(() => _flashOn = !_flashOn);
+    final c = _controller;
+    if (c != null) unawaited(_applyFlash(c, recording: _isRecording));
+  }
+
+  /// Tap the zoom pill: 1× ↔ 2×.
+  void _toggleZoom() {
+    final c = _controller;
+    if (c == null || _maxZoom <= _minZoom) return;
+    final target = (_currentZoom > _minZoom + 0.05 ? _minZoom : 2.0).clamp(_minZoom, _maxZoom).toDouble();
+    setState(() => _currentZoom = target);
+    _zoomPump.set(c, target);
   }
 
   /// Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
@@ -397,10 +438,11 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     if (details.pointerCount == 1) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
-    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
-    if (zoom == _currentZoom) return;
-    _currentZoom = zoom;
-    controller.setZoomLevel(zoom);
+    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom).toDouble();
+    if ((zoom - _currentZoom).abs() < 0.01) return;
+    // Only the newest value goes to the camera (see ZoomPump) — no backlog.
+    setState(() => _currentZoom = zoom);
+    _zoomPump.set(controller, zoom);
   }
 
   /// Swipe left/right on the open preview to cycle through cameraFilters
@@ -474,7 +516,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       // Ease 32% of the remaining distance per tick — quick enough to feel
       // attached to your finger, slow enough to never jump.
       _currentZoom = (_currentZoom + diff * 0.32).clamp(_minZoom, _maxZoom).toDouble();
-      c.setZoomLevel(_currentZoom).catchError((_) {});
+      _zoomPump.set(c, _currentZoom);
     });
   }
 
@@ -505,36 +547,42 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   }
 
   Future<Directory> _storiesDir() async {
+    final have = _dirCache;
+    if (have != null) return have;
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/stories');
     if (!await dir.exists()) await dir.create(recursive: true);
+    _dirCache = dir;
     return dir;
   }
 
   Future<void> _takePhoto() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
-    _snapController.forward(from: 0);
-    setState(() => _busy = true);
+    final front = _isFrontCamera;
+    final screenFlash = front && _flashOn;
+    if (!screenFlash) _snapController.forward(from: 0);
+    setState(() {
+      _busy = true;
+      _screenFlash = screenFlash;
+    });
     try {
+      // Selfie flash: light the face with a white screen for a beat first.
+      if (screenFlash) await Future<void>.delayed(const Duration(milliseconds: 220));
       final shot = await controller.takePicture();
+      if (screenFlash && mounted) setState(() => _screenFlash = false);
       final dir = await _storiesDir();
-      // The raw shot is kept as-is: the chosen filter is previewed live on
-      // the review screen (and can still be changed there), then baked into
-      // the file only when you post or save it (see _finalMedia).
+      // The raw shot is kept as-is: the chosen filter (and, for a selfie,
+      // the flip to match the preview) is shown live on the review screen
+      // and baked into the file only when you post or save it (see
+      // _finalMedia) — so the shutter itself stays quick.
       final stamp = DateTime.now().millisecondsSinceEpoch;
-      final File savedFile;
-      if (_isFrontCamera) {
-        // Match the selfie preview instead of coming out reversed.
-        final flipped = await mirrorImageBytes(await File(shot.path).readAsBytes());
-        savedFile = await File('${dir.path}/story_$stamp.png').writeAsBytes(flipped);
-      } else {
-        savedFile = await File(shot.path).copy('${dir.path}/story_$stamp.jpg');
-      }
+      final savedFile = await File(shot.path).copy('${dir.path}/story_$stamp.jpg');
       if (!mounted) return;
       setState(() {
         _mediaFile = savedFile;
         _isVideo = false;
+        _mirrorPhoto = front;
         _busy = false;
       });
       widget.onBusyChanged?.call(true);
@@ -542,6 +590,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       if (mounted) setState(() {
         _error = 'Could not take the photo: $e';
         _busy = false;
+        _screenFlash = false;
       });
     }
   }
@@ -551,6 +600,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
   /// bookkeeping (_segmentPaths/_elapsedBeforeCurrentSegmentMs) — those are
   /// only ever reset at the start of a brand-new take, in _startRecording.
   Future<void> _beginSegmentRecording(CameraController controller) async {
+    if (_flashOn && !_isFrontCamera) await _applyFlash(controller, recording: true);
     await controller.startVideoRecording();
     _recordStart = DateTime.now();
     // The lens (and its zoom range) just changed — if you're still holding
@@ -592,6 +642,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       if (elapsed >= _maxRecordMs) _finishRecording();
     });
     try {
+      if (_flashOn && !_isFrontCamera) unawaited(_applyFlash(controller, recording: true));
       await controller.startVideoRecording();
     } catch (e) {
       _recordTicker?.cancel();
@@ -625,6 +676,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     final hadFlips = _segmentPaths.isNotEmpty;
     try {
       final raw = await controller.stopVideoRecording();
+      // Torch back off (or back to photo flash).
+      unawaited(_applyFlash(controller));
       final dir = await _storiesDir();
       final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.mp4';
       final finalSegment = await File(raw.path).copy(dest);
@@ -698,7 +751,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
 
   void _flipCamera() {
     if (_cameras.length < 2 || _busy || _isRecording) return;
-    _openCamera((_cameraIndex + 1) % _cameras.length);
+    final next = flippedLens(_cameras, _cameraIndex);
+    if (next != _cameraIndex) _openCamera(next);
   }
 
   /// Double-tapping the live preview while recording flips the camera
@@ -740,7 +794,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
         await controller.setZoomLevel(_minZoom);
       } catch (_) {}
 
-      final nextIndex = (_cameraIndex + 1) % _cameras.length;
+      final nextIndex = flippedLens(_cameras, _cameraIndex);
       await _openCamera(nextIndex); // rebuilds _controller on the other lens
       final newController = _controller;
       if (!mounted) return;
@@ -773,6 +827,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     setState(() {
       _mediaFile = null;
       _isVideo = false;
+      _mirrorPhoto = false;
     });
     // Defensive — these should already be empty by this point, but a
     // retake is exactly the moment any leftover take-wide state should die.
@@ -845,19 +900,24 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     final raw = _mediaFile;
     if (raw == null) return null;
     final filter = cameraFilters[_filterIndex];
-    final matrix = filter.matrix;
-    if (matrix == null) return raw;
-    final key = '${raw.path}|$_filterIndex';
+    final mirror = !_isVideo && _mirrorPhoto;
+    if (filter.isNormal && !mirror) return raw;
+    final key = '${raw.path}|$_filterIndex|$mirror';
     final cached = _bakedCache[key];
     if (cached != null && cached.existsSync()) return cached;
     final dir = await _storiesDir();
     final stamp = DateTime.now().millisecondsSinceEpoch;
     File? baked;
     if (_isVideo) {
-      final out = await VideoFilterService.apply(raw.path, '${dir.path}/story_${stamp}_f.mp4', matrix);
+      final matrix = filter.matrix ?? VideoFilterService.identity;
+      var out = await VideoFilterService.apply(raw.path, '${dir.path}/story_${stamp}_f.mp4', matrix, overlay: filter.overlay);
+      // If the overlay can't be done, at least keep the colors.
+      if (out == null && filter.overlay != null && filter.matrix != null) {
+        out = await VideoFilterService.apply(raw.path, '${dir.path}/story_${stamp}_g.mp4', matrix);
+      }
       if (out != null) baked = File(out);
     } else {
-      final bytes = await applyCameraFilterToImageBytes(await raw.readAsBytes(), filter);
+      final bytes = await bakeStoryPhoto(await raw.readAsBytes(), filter, mirror: mirror);
       baked = await File('${dir.path}/story_$stamp.png').writeAsBytes(bytes);
     }
     if (baked != null) _bakedCache[key] = baked;
@@ -1010,8 +1070,7 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
     // video shows the filter the whole time, it just isn't baked into the
     // saved file (see applyCameraFilterToImageBytes's doc comment; only
     // photos get that treatment, in _takePhoto below).
-    final filter = cameraFilters[_filterIndex].colorFilter;
-    return filter == null ? preview : ColorFiltered(colorFilter: filter, child: preview);
+    return filteredCameraView(preview, cameraFilters[_filterIndex], motion: _partyController);
   }
 
   Widget _buildCamera(BuildContext context, ThemeTokens tokens) {
@@ -1066,6 +1125,16 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
               child: Opacity(opacity: _flashOpacity.value, child: Container(color: Colors.white)),
             ),
           ),
+          // Selfie flash: the whole screen goes white while the photo's taken.
+          if (_screenFlash) const IgnorePointer(child: ColoredBox(color: Colors.white, child: SizedBox.expand())),
+          // Selfie video with the flash on: a white ring light around the
+          // edge of the screen.
+          if (_isRecording && _flashOn && _isFrontCamera)
+            IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.92), width: 34)),
+              ),
+            ),
 
           // The current filter's name, shown briefly on every swipe —
           // see _changeFilter. Skipped entirely for "Normal" so swiping
@@ -1128,6 +1197,8 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                   // to just go dead (onTap: null) the moment you started
                   // recording, which looked broken since nothing told you
                   // double-tap was the only way to flip once you were live.
+                  _RoundIconButton(icon: _flashOn ? Icons.flash_on_rounded : Icons.flash_off_rounded, onTap: _toggleFlash),
+                  const SizedBox(width: 8),
                   _RoundIconButton(icon: Icons.flip_camera_ios, onTap: () => _isRecording ? _flipDuringRecording() : _flipCamera()),
                 ],
               ),
@@ -1146,6 +1217,11 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
                 // it's bottom-anchored, shove the shutter button down the
                 // instant recording started. Keeping the space reserved
                 // (just invisible) keeps the button locked in place.
+                if (_maxZoom > _minZoom)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: ZoomChip(zoom: _currentZoom, onTap: _toggleZoom),
+                  ),
                 Visibility(
                   visible: !_isRecording,
                   maintainState: true,
@@ -1216,14 +1292,14 @@ class _CameraStoryPageState extends State<_CameraStoryPage> with WidgetsBindingO
       // The filter is previewed live here (starting with whichever one was
       // active when this take was shot) and baked into the file only when
       // you post or save — see _finalMedia.
-      final filter = cameraFilters[_filterIndex].colorFilter;
-      return filter == null ? player : ColorFiltered(colorFilter: filter, child: player);
+      return filteredCameraView(player, cameraFilters[_filterIndex], motion: _partyController);
     }
     // The chosen filter is previewed live here and only baked into a file
     // when you post or save (see _finalMedia), so it can still be changed.
-    final photo = Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
-    final photoFilter = cameraFilters[_filterIndex].colorFilter;
-    return photoFilter == null ? photo : ColorFiltered(colorFilter: photoFilter, child: photo);
+    // A selfie is shown flipped, the way it'll be posted.
+    final image = Image.file(_mediaFile!, fit: BoxFit.cover, width: double.infinity, height: double.infinity);
+    final photo = _mirrorPhoto ? Transform.flip(flipX: true, child: image) : image;
+    return filteredCameraView(photo, cameraFilters[_filterIndex], motion: _partyController);
   }
 
   Widget _buildReview(BuildContext context, ThemeTokens tokens, AppStore store) {

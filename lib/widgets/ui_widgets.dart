@@ -281,12 +281,16 @@ class StyledName extends StatelessWidget {
     // would let this show correctly on anyone else's device looking at
     // this same profile.
     final isAdmin = person.isAdminUser || (person.id == 'me' && context.watch<AppStore>().isAdmin);
-    if (!showCheck && !isAdmin && streak <= 0) return Text(text, style: effective);
+    // RAIN / CYCL — the animated names (top point unlocks).
+    final effect = canUseNameEffect(person.nameEffect, person.points) ? person.nameEffect : null;
+    Widget nameText({TextOverflow? overflow}) =>
+        effect == null ? Text(text, style: effective, overflow: overflow) : AnimatedNameText(text: text, style: effective, effect: effect, overflow: overflow);
+    if (!showCheck && !isAdmin && streak <= 0) return nameText();
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Flexible(child: Text(text, style: effective, overflow: TextOverflow.ellipsis)),
+        Flexible(child: nameText(overflow: TextOverflow.ellipsis)),
         if (showCheck) ...[
           const SizedBox(width: 3),
           Icon(Icons.check_box, size: (effective.fontSize ?? 14) * 0.85, color: effective.color ?? Colors.white),
@@ -306,6 +310,81 @@ class StyledName extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+/// A name that moves, like the old Call of Duty clan tags: 'rain' is a
+/// rainbow sliding across the letters, 'cycle' flashes the whole name
+/// through the colors.
+class AnimatedNameText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  final String effect; // 'rain' or 'cycle'
+  final TextOverflow? overflow;
+  const AnimatedNameText({super.key, required this.text, required this.style, required this.effect, this.overflow});
+
+  @override
+  State<AnimatedNameText> createState() => _AnimatedNameTextState();
+}
+
+class _AnimatedNameTextState extends State<AnimatedNameText> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: _period)..repeat();
+
+  Duration get _period => widget.effect == 'rain' ? const Duration(milliseconds: 2200) : const Duration(milliseconds: 3000);
+
+  static const _rainbow = [
+    Color(0xFFFF3B30),
+    Color(0xFFFF9500),
+    Color(0xFFFFCC00),
+    Color(0xFF34C759),
+    Color(0xFF00C7BE),
+    Color(0xFF007AFF),
+    Color(0xFFAF52DE),
+    Color(0xFFFF2D92),
+    Color(0xFFFF3B30),
+  ];
+
+  @override
+  void didUpdateWidget(AnimatedNameText old) {
+    super.didUpdateWidget(old);
+    if (old.effect != widget.effect) {
+      _c
+        ..duration = _period
+        ..repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final t = _c.value;
+        if (widget.effect == 'cycle') {
+          final color = HSLColor.fromAHSL(1, t * 360, 0.9, dark ? 0.62 : 0.48).toColor();
+          return Text(widget.text, style: widget.style.copyWith(color: color), overflow: widget.overflow, maxLines: 1);
+        }
+        return ShaderMask(
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (bounds) {
+            final w = bounds.width <= 0 ? 1.0 : bounds.width;
+            final shift = t * w;
+            return LinearGradient(
+              colors: _rainbow,
+              tileMode: TileMode.repeated,
+            ).createShader(Rect.fromLTWH(-shift, 0, w, bounds.height));
+          },
+          child: Text(widget.text, style: widget.style.copyWith(color: Colors.white), overflow: widget.overflow, maxLines: 1),
+        );
+      },
     );
   }
 }
@@ -579,8 +658,12 @@ class _VideoFrameThumbnailState extends State<VideoFrameThumbnail> {
 class CameraFilter {
   final String name;
   final List<double>? matrix;
-  const CameraFilter(this.name, this.matrix);
+  // Something painted over the colors: 'rainbow' (Party Mode — a moving
+  // rainbow tint) or 'vignette' (darkened corners, for 2016). Null for none.
+  final String? overlay;
+  const CameraFilter(this.name, this.matrix, {this.overlay});
   ColorFilter? get colorFilter => matrix == null ? null : ColorFilter.matrix(matrix!);
+  bool get isNormal => matrix == null && overlay == null;
 }
 
 /// Swipe left/right on the camera preview to cycle through these — see
@@ -604,8 +687,22 @@ const List<CameraFilter> cameraFilters = [
     0.287, 0.966, 0.097, 0, -45, //
     0, 0, 0, 1, 0,
   ]),
-  // Saturated, a little magenta/cyan-heavy — the "it's a party" look.
-  CameraFilter('Party', [
+  // A moving rainbow washed over everything — Party Mode.
+  CameraFilter('Party Mode', [
+    1.18, -0.12, -0.06, 0, 0, //
+    -0.06, 1.12, -0.06, 0, 0, //
+    -0.06, -0.12, 1.18, 0, 0, //
+    0, 0, 0, 1, 0,
+  ], overlay: 'rainbow'),
+  // Faded, warm and matte with dark corners — 2016 Instagram/VSCO.
+  CameraFilter('2016', [
+    0.743, 0.111, 0.011, 0, 32, //
+    0.032, 0.797, 0.011, 0, 24, //
+    0.032, 0.108, 0.665, 0, 18, //
+    0, 0, 0, 1, 0,
+  ], overlay: 'vignette'),
+  // Saturated, a little magenta/cyan-heavy — the club-lights look.
+  CameraFilter('Club', [
     1.843, -0.595, -0.06, 0, -7.8, //
     -0.151, 1.214, -0.051, 0, -11.8, //
     -0.196, -0.661, 2.177, 0, -1.4, //
@@ -795,6 +892,130 @@ Future<Uint8List> mirrorImageBytes(Uint8List bytes) async {
       Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
       Paint()..filterQuality = FilterQuality.high,
     );
+    final picture = recorder.endRecording();
+    final outputImage = await picture.toImage(outW, outH);
+    try {
+      final byteData = await outputImage.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return bytes;
+      return byteData.buffer.asUint8List();
+    } finally {
+      outputImage.dispose();
+    }
+  } finally {
+    image.dispose();
+  }
+}
+
+const List<Color> _partyRainbow = [
+  Color(0xFFFF3B30),
+  Color(0xFFFF9500),
+  Color(0xFFFFCC00),
+  Color(0xFF34C759),
+  Color(0xFF00C7BE),
+  Color(0xFF007AFF),
+  Color(0xFFAF52DE),
+  Color(0xFFFF2D92),
+  Color(0xFFFF3B30),
+];
+
+/// Shows [child] (the live camera, a photo, a video) the way [filter] will
+/// come out: its colors, plus Party Mode's moving rainbow (driven by
+/// [motion], 0→1 on repeat) or 2016's dark corners.
+Widget filteredCameraView(Widget child, CameraFilter filter, {Animation<double>? motion}) {
+  final cf = filter.colorFilter;
+  var out = cf == null ? child : ColorFiltered(colorFilter: cf, child: child);
+  if (filter.overlay == 'rainbow') {
+    final base = out;
+    Widget masked(double t) => ShaderMask(
+          blendMode: BlendMode.overlay,
+          shaderCallback: (bounds) {
+            final w = bounds.width <= 0 ? 1.0 : bounds.width;
+            return LinearGradient(
+              colors: [for (final c in _partyRainbow) c.withValues(alpha: 0.55)],
+              tileMode: TileMode.repeated,
+            ).createShader(Rect.fromLTWH(-t * w, 0, w, bounds.height));
+          },
+          child: base,
+        );
+    out = motion == null ? masked(0) : AnimatedBuilder(animation: motion, builder: (context, _) => masked(motion.value));
+  } else if (filter.overlay == 'vignette') {
+    out = Stack(
+      fit: StackFit.passthrough,
+      children: [
+        out,
+        const Positioned.fill(
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  radius: 0.95,
+                  colors: [Color(0x00000000), Color(0x00000000), Color(0x8C000000)],
+                  stops: [0.0, 0.55, 1.0],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+  return out;
+}
+
+/// Bakes a photo for posting in one pass: shrinks it to 1440px on the long
+/// side, flips it if it's a selfie ([mirror]), and paints [filter] in —
+/// colors, Party Mode's rainbow, 2016's corners. Returns PNG bytes (the
+/// original bytes if there's nothing to do).
+Future<Uint8List> bakeStoryPhoto(Uint8List bytes, CameraFilter filter, {bool mirror = false}) async {
+  if (filter.isNormal && !mirror) return bytes;
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  try {
+    const maxEdge = 1440.0; // every view downloads it, so keep it small
+    final longEdge = math.max(image.width, image.height).toDouble();
+    final scale = longEdge > maxEdge ? maxEdge / longEdge : 1.0;
+    final outW = (image.width * scale).round();
+    final outH = (image.height * scale).round();
+    final w = outW.toDouble();
+    final h = outH.toDouble();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.save();
+    if (mirror) {
+      canvas.translate(w, 0);
+      canvas.scale(-1, 1);
+    }
+    final paint = Paint()..filterQuality = FilterQuality.high;
+    final cf = filter.colorFilter;
+    if (cf != null) paint.colorFilter = cf;
+    canvas.drawImageRect(image, Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()), Rect.fromLTWH(0, 0, w, h), paint);
+    canvas.restore();
+    final rect = Rect.fromLTWH(0, 0, w, h);
+    if (filter.overlay == 'rainbow') {
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..blendMode = BlendMode.overlay
+          ..shader = ui.Gradient.linear(
+            Offset.zero,
+            Offset(w, 0),
+            [for (final c in _partyRainbow) c.withValues(alpha: 0.55)],
+            [for (var i = 0; i < _partyRainbow.length; i++) i / (_partyRainbow.length - 1)],
+          ),
+      );
+    } else if (filter.overlay == 'vignette') {
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            Offset(w / 2, h / 2),
+            0.95 * math.sqrt(w * w + h * h) / 2,
+            const [Color(0x00000000), Color(0x00000000), Color(0x8C000000)],
+            const [0.0, 0.55, 1.0],
+          ),
+      );
+    }
     final picture = recorder.endRecording();
     final outputImage = await picture.toImage(outW, outH);
     try {

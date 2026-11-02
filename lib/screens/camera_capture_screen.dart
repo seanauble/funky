@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import '../widgets/camera_tools.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/video_filter_service.dart';
@@ -74,6 +75,15 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   double _maxZoom = 1;
   double _currentZoom = 1;
   double _baseZoom = 1;
+  final ZoomPump _zoomPump = ZoomPump();
+
+  // Flash: the back camera's flash (a torch while recording); the selfie
+  // camera lights the screen white instead.
+  bool _flashOn = false;
+  bool _screenFlash = false;
+
+  bool get _isFrontCamera =>
+      _cameraIndex >= 0 && _cameraIndex < _cameras.length && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
 
   // Swipe-to-change-filter — see _onZoomUpdate/_changeFilter, same
   // approach as the Story camera tab.
@@ -100,8 +110,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         return;
       }
       _cameras = cameras;
-      _cameraIndex = cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
-      if (_cameraIndex < 0) _cameraIndex = 0;
+      _cameraIndex = mainLens(cameras, CameraLensDirection.back);
       await _openCamera(_cameraIndex);
     } catch (e) {
       setState(() => _error = 'Could not start the camera: $e');
@@ -139,9 +148,32 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         _currentZoom = 1;
       });
       unawaited(_primeZoom(controller));
+      unawaited(_applyFlash(controller));
+      unawaited(controller.prepareForVideoRecording().catchError((_) {}));
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
     }
+  }
+
+  Future<void> _applyFlash(CameraController controller, {bool recording = false}) async {
+    final mode = !_flashOn || _isFrontCamera ? FlashMode.off : (recording ? FlashMode.torch : FlashMode.always);
+    try {
+      await controller.setFlashMode(mode);
+    } catch (_) {}
+  }
+
+  void _toggleFlash() {
+    setState(() => _flashOn = !_flashOn);
+    final c = _controller;
+    if (c != null) unawaited(_applyFlash(c, recording: _isRecording));
+  }
+
+  void _toggleZoom() {
+    final c = _controller;
+    if (c == null || _maxZoom <= _minZoom) return;
+    final target = (_currentZoom > _minZoom + 0.05 ? _minZoom : 2.0).clamp(_minZoom, _maxZoom).toDouble();
+    setState(() => _currentZoom = target);
+    _zoomPump.set(c, target);
   }
 
   /// Zoom bounds are per-lens (the ultra-wide/telephoto lenses on multi-
@@ -195,10 +227,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     if (details.pointerCount == 1) return;
     final controller = _controller;
     if (controller == null || _maxZoom <= _minZoom) return;
-    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom);
-    if (zoom == _currentZoom) return;
-    _currentZoom = zoom;
-    controller.setZoomLevel(zoom);
+    final zoom = (_baseZoom * details.scale).clamp(_minZoom, _maxZoom).toDouble();
+    if ((zoom - _currentZoom).abs() < 0.01) return;
+    setState(() => _currentZoom = zoom);
+    _zoomPump.set(controller, zoom);
   }
 
   // ignore: unused_element
@@ -248,34 +280,38 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   Future<void> _takePhoto() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _busy || _isRecording) return;
-    _snapController.forward(from: 0);
-    setState(() => _busy = true);
+    final front = _isFrontCamera;
+    final screenFlash = front && _flashOn;
+    if (!screenFlash) _snapController.forward(from: 0);
+    setState(() {
+      _busy = true;
+      _screenFlash = screenFlash;
+    });
     try {
+      if (screenFlash) await Future<void>.delayed(const Duration(milliseconds: 220));
       final shot = await controller.takePicture();
+      if (screenFlash && mounted) setState(() => _screenFlash = false);
       final dir = await _storiesDir();
       final filter = cameraFilters[_filterIndex];
-      final front = _cameraIndex >= 0 && _cameraIndex < _cameras.length && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
       File savedFile;
-      if (filter.colorFilter == null && !front) {
+      if (filter.isNormal && !front) {
         final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg';
         savedFile = await File(shot.path).copy(dest);
       } else {
-        // Bake the filter into the actual saved file — see
-        // applyCameraFilterToImageBytes's doc comment for why this comes
-        // back as PNG rather than JPEG. A front-camera shot is also flipped
-        // to match the selfie preview instead of coming out reversed.
-        var rawBytes = await File(shot.path).readAsBytes();
-        if (front) rawBytes = await mirrorImageBytes(rawBytes);
-        final filteredBytes = await applyCameraFilterToImageBytes(rawBytes, filter);
+        // Bake the filter in (PNG), and flip a selfie to match the preview.
+        final baked = await bakeStoryPhoto(await File(shot.path).readAsBytes(), filter, mirror: front);
         final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.png';
-        savedFile = await File(dest).writeAsBytes(filteredBytes);
+        savedFile = await File(dest).writeAsBytes(baked);
       }
       if (!mounted) return;
       Navigator.of(context).pop(CapturedMedia(file: savedFile, isVideo: false));
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'Could not take the photo: $e');
-        setState(() => _busy = false);
+        setState(() {
+          _busy = false;
+          _screenFlash = false;
+        });
       }
     }
   }
@@ -302,6 +338,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
       if (elapsed >= _maxRecordMs) _stopRecording();
     });
     try {
+      if (_flashOn && !_isFrontCamera) unawaited(_applyFlash(controller, recording: true));
       await controller.startVideoRecording();
     } catch (e) {
       _recordTicker?.cancel();
@@ -322,17 +359,19 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     });
     try {
       final raw = await controller.stopVideoRecording();
+      unawaited(_applyFlash(controller));
       final dir = await _storiesDir();
       final dest = '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}.mp4';
       var savedFile = await File(raw.path).copy(dest);
       // A filtered take gets the filter baked into the file itself (the
       // live preview alone never reaches the saved video).
-      final matrix = cameraFilters[_filterIndex].matrix;
-      if (matrix != null) {
+      final filter = cameraFilters[_filterIndex];
+      if (!filter.isNormal) {
         final baked = await VideoFilterService.apply(
           savedFile.path,
           '${dir.path}/story_${DateTime.now().millisecondsSinceEpoch}_f.mp4',
-          matrix,
+          filter.matrix ?? VideoFilterService.identity,
+          overlay: filter.overlay,
         );
         if (baked != null) savedFile = File(baked);
       }
@@ -355,7 +394,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
 
   void _flipCamera() {
     if (_cameras.length < 2 || _busy || _isRecording) return;
-    _openCamera((_cameraIndex + 1) % _cameras.length);
+    final next = flippedLens(_cameras, _cameraIndex);
+    if (next != _cameraIndex) _openCamera(next);
   }
 
   /// Same full-bleed trick as the Story camera tab — scales the already
@@ -380,8 +420,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         child: Center(child: CameraPreview(controller)),
       ),
     );
-    final filter = cameraFilters[_filterIndex].colorFilter;
-    return filter == null ? preview : ColorFiltered(colorFilter: filter, child: preview);
+    return filteredCameraView(preview, cameraFilters[_filterIndex], motion: _partyController);
   }
 
   @override
@@ -436,6 +475,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
               child: Opacity(opacity: _flashOpacity.value, child: Container(color: Colors.white)),
             ),
           ),
+          if (_screenFlash) const IgnorePointer(child: ColoredBox(color: Colors.white, child: SizedBox.expand())),
+          if (_isRecording && _flashOn && _isFrontCamera)
+            IgnorePointer(
+              child: Container(
+                decoration: BoxDecoration(border: Border.all(color: Colors.white.withValues(alpha: 0.92), width: 34)),
+              ),
+            ),
 
           // The current filter's name, shown briefly on every swipe.
           if (_showFilterLabel && cameraFilters[_filterIndex].name != 'Normal')
@@ -477,9 +523,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
                       ),
                     ),
-                  _RoundIconButton(
-                    icon: Icons.flip_camera_ios,
-                    onTap: _isRecording ? null : _flipCamera,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _RoundIconButton(icon: _flashOn ? Icons.flash_on_rounded : Icons.flash_off_rounded, onTap: _toggleFlash),
+                      const SizedBox(width: 8),
+                      _RoundIconButton(
+                        icon: Icons.flip_camera_ios,
+                        onTap: _isRecording ? null : _flipCamera,
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -494,6 +547,11 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (_maxZoom > _minZoom)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: ZoomChip(zoom: _currentZoom, onTap: _toggleZoom),
+                  ),
                 // Visibility(maintainSize: ...) instead of an `if` — see the
                 // matching comment in create_flow_screen.dart's camera tab:
                 // removing this row outright shrinks the bottom-anchored

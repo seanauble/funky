@@ -468,7 +468,11 @@ class AdminPanelScreen extends StatelessWidget {
                           tokens,
                           title: 'Delete this poll?',
                           body: 'This permanently removes "${poll.q}" and everyone\'s votes on it.',
-                          onConfirm: () => store.deletePoll(poll.id),
+                          onConfirm: () async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            final err = await store.deletePoll(poll.id);
+                            messenger.showSnackBar(SnackBar(content: Text(err ?? 'Poll deleted.')));
+                          },
                         ),
                         icon: Icon(Icons.delete_outline, color: tokens.danger),
                       ),

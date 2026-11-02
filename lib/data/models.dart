@@ -772,6 +772,10 @@ class Person {
   // other name style (see canUseNameColor). Null means "no custom color",
   // i.e. whatever default color that surface already uses.
   final int? nameColor;
+  // An animated name, like the old Call of Duty clan tags: 'cycle' flashes
+  // through colors (5,000 points), 'rain' is a moving rainbow (10,000).
+  // One at a time; null for none. See canUseCycleName / canUseRainName.
+  final String? nameEffect;
 
   // The "going" streak: how many days in a row this person has voted for a
   // place they're going to (see AppStore.setMove). moveStreakDay is the
@@ -821,6 +825,7 @@ class Person {
     this.nameUnderline = false,
     this.nameCheckbox = false,
     this.nameColor,
+    this.nameEffect,
     this.moveStreak = 0,
     this.moveStreakDay,
     this.photoUrl,
@@ -854,6 +859,8 @@ class Person {
     bool? nameCheckbox,
     int? nameColor,
     bool clearNameColor = false,
+    String? nameEffect,
+    bool clearNameEffect = false,
     int? moveStreak,
     String? moveStreakDay,
     String? photoUrl,
@@ -890,6 +897,7 @@ class Person {
         nameUnderline: nameUnderline ?? this.nameUnderline,
         nameCheckbox: nameCheckbox ?? this.nameCheckbox,
         nameColor: clearNameColor ? null : (nameColor ?? this.nameColor),
+        nameEffect: clearNameEffect ? null : (nameEffect ?? this.nameEffect),
         moveStreak: moveStreak ?? this.moveStreak,
         moveStreakDay: moveStreakDay ?? this.moveStreakDay,
         photoUrl: photoUrl ?? this.photoUrl,
@@ -924,6 +932,7 @@ class Person {
         'nameUnderline': nameUnderline,
         'nameCheckbox': nameCheckbox,
         'nameColor': nameColor,
+        'nameEffect': nameEffect,
         'moveStreak': moveStreak,
         'moveStreakDay': moveStreakDay,
         'photoUrl': photoUrl,
@@ -957,6 +966,7 @@ class Person {
         nameUnderline: json['nameUnderline'] as bool? ?? false,
         nameCheckbox: json['nameCheckbox'] as bool? ?? false,
         nameColor: json['nameColor'] as int?,
+        nameEffect: json['nameEffect'] as String?,
         moveStreak: json['moveStreak'] as int? ?? 0,
         moveStreakDay: json['moveStreakDay'] as String?,
         photoUrl: json['photoUrl'] as String?,
@@ -1026,6 +1036,16 @@ bool canUseBoldName(int points) => points >= 500;
 bool canUseItalicName(int points) => points >= 1000;
 bool canUseUnderlineName(int points) => points >= 2000;
 bool canUseCheckName(int points) => points >= 5000;
+// Animated names, the top unlocks: a color-cycling name, then rainbow.
+const int cycleNamePoints = 5000;
+const int rainNamePoints = 10000;
+bool canUseCycleName(int points) => points >= cycleNamePoints;
+bool canUseRainName(int points) => points >= rainNamePoints;
+bool canUseNameEffect(String? effect, int points) => switch (effect) {
+      'cycle' => canUseCycleName(points),
+      'rain' => canUseRainName(points),
+      _ => false,
+    };
 // A custom name color is the cheapest cosmetic to unlock — it's the one
 // everybody wants first — but still points-gated like the rest.
 const int nameColorUnlockPoints = 250;

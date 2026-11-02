@@ -10,16 +10,27 @@ import 'package:flutter/services.dart';
 class VideoFilterService {
   static const _channel = MethodChannel('com.funkyapp.funky/videofilter');
 
-  static Future<String?> apply(String inputPath, String outputPath, List<double> matrix) async {
+  /// [overlay] is a filter's extra layer ('rainbow' for Party Mode,
+  /// 'vignette' for 2016) — painted in by the same native export.
+  static Future<String?> apply(String inputPath, String outputPath, List<double> matrix, {String? overlay}) async {
     try {
       final result = await _channel.invokeMethod<String>('apply', {
         'input': inputPath,
         'output': outputPath,
         'matrix': matrix,
+        if (overlay != null) 'overlay': overlay,
       });
       return result;
     } catch (_) {
       return null;
     }
   }
+
+  /// The "no change" color matrix, for a filter that's only an overlay.
+  static const identity = <double>[
+    1, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, //
+    0, 0, 1, 0, 0, //
+    0, 0, 0, 1, 0,
+  ];
 }

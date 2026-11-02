@@ -69,7 +69,11 @@ class MediaCache {
     final key = keyFor(url);
     final running = _inFlight[key];
     if (running != null) return running;
-    final f = _get(url).whenComplete(() => _inFlight.remove(key));
+    // (A block, not an arrow: returning the removed Future here would make
+    // this wait on itself forever.)
+    final f = _get(url).whenComplete(() {
+      _inFlight.remove(key);
+    });
     _inFlight[key] = f;
     return f;
   }
@@ -116,7 +120,9 @@ class MediaCache {
       await for (final e in d.list()) {
         if (e is! File) continue;
         if (e.path.endsWith('.part')) {
-          await e.delete().catchError((_) => e);
+          // Only leftovers from a crash — not a download happening right now.
+          final age = DateTime.now().difference(await e.lastModified());
+          if (age > const Duration(minutes: 10)) await e.delete().catchError((_) => e);
           continue;
         }
         files.add(e);
@@ -155,7 +161,8 @@ class CachedUrlImage extends ImageProvider<CachedUrlImage> {
 
   Future<ui.Codec> _load(ImageDecoderCallback decode) async {
     Uint8List? bytes;
-    final f = await MediaCache.file(url);
+    // Never wait on the cache forever — worst case it loads the normal way.
+    final f = await MediaCache.file(url).timeout(const Duration(seconds: 30), onTimeout: () => null);
     if (f != null) {
       try {
         bytes = await f.readAsBytes();
@@ -209,11 +216,22 @@ Widget netImage(
   int? cacheWidth,
   int? cacheHeight,
 }) {
+  final cached = MediaCache.isCacheable(url);
+  // A picture read from the phone doesn't report download progress, so a
+  // loading placeholder (an avatar's initial, a spinner) would never show
+  // while it loads — show it until the first frame instead.
+  ImageFrameBuilder? frames = frameBuilder;
+  final loading = loadingBuilder;
+  if (cached && frames == null && loading != null) {
+    frames = (context, child, frame, sync) => frame == null && !sync
+        ? loading(context, child, const ImageChunkEvent(cumulativeBytesLoaded: 0, expectedTotalBytes: null))
+        : child;
+  }
   return Image(
     key: key,
     image: ResizeImage.resizeIfNeeded(cacheWidth, cacheHeight, netImageProvider(url)),
-    frameBuilder: frameBuilder,
-    loadingBuilder: loadingBuilder,
+    frameBuilder: frames,
+    loadingBuilder: cached ? null : loadingBuilder,
     errorBuilder: errorBuilder,
     semanticLabel: semanticLabel,
     width: width,
@@ -234,7 +252,7 @@ Future<VideoPlayerController> openVideoController({String? path, String? url}) a
   if (path != null) return VideoPlayerController.file(File(path));
   final u = url!;
   if (MediaCache.isCacheable(u)) {
-    final f = await MediaCache.file(u);
+    final f = await MediaCache.file(u).timeout(const Duration(seconds: 30), onTimeout: () => null);
     if (f != null) return VideoPlayerController.file(f);
   }
   return VideoPlayerController.networkUrl(Uri.parse(u));

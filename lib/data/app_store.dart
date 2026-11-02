@@ -245,8 +245,21 @@ class AppStore extends ChangeNotifier {
     if (!isAdmin) return 'Admins only.';
     if (amount == 0) return null;
     if (personId == 'me') {
-      final next = me.points + amount;
-      me = me.copyWith(points: next < 0 ? 0 : next);
+      // Through the server's bonus column, same as for anyone else — so a
+      // removal sticks instead of the higher number coming back on the
+      // next sync (earned points only ever sync upward).
+      final uid = supabaseUserId;
+      if (signedIn && uid != null) {
+        try {
+          await Supabase.instance.client.rpc('admin_give_points', params: {'target': uid, 'amount': amount});
+        } catch (e) {
+          return "Couldn't change your points — ${_friendlySendError(e)}";
+        }
+      }
+      final next = me.points + amount < 0 ? 0 : me.points + amount;
+      _appliedBonus += next - me.points;
+      me = me.copyWith(points: next);
+      _dropLockedNameStyles();
       notifyListeners();
       _persist();
       return null;
@@ -396,21 +409,37 @@ class AppStore extends ChangeNotifier {
   /// that no longer exists). Allowed for the admin and for whoever asked the
   /// poll; silently does nothing for anyone else. Also removes it on the
   /// server so it doesn't come back on the next refresh.
-  void deletePoll(String pollId) {
+  /// Deletes your poll (or any, for an admin). Returns an error to show, or
+  /// null. The server delete is waited on, so a poll that couldn't be
+  /// deleted comes back with a reason instead of silently reappearing.
+  Future<String?> deletePoll(String pollId) async {
     final target = polls.where((p) => p.id == pollId).toList();
-    if (target.isEmpty) return;
-    if (!isAdmin && target.first.by != 'me') return;
+    if (target.isEmpty) return null;
+    if (!isAdmin && target.first.by != 'me') return "You can only delete your own polls.";
+    final wasRemote = _remotePollIds.contains(pollId);
+    if (wasRemote) {
+      try {
+        final rows = await Supabase.instance.client.from('polls').delete().eq('id', pollId).select('id');
+        if (rows.isEmpty) return "Couldn't delete that poll — try again.";
+      } catch (e) {
+        final m = e.toString();
+        if (m.contains('chat_messages_text_ok')) {
+          return "Couldn't delete it yet — run the latest RUN_ALL.sql (phase 40) in Supabase.";
+        }
+        return "Couldn't delete that poll — check your connection and try again.";
+      }
+    }
     polls = polls.where((p) => p.id != pollId).toList();
     me = me.copyWith(votes: Map<String, int>.from(me.votes)..remove(pollId));
     people = {
       for (final entry in people.entries) entry.key: entry.value.copyWith(votes: Map<String, int>.from(entry.value.votes)..remove(pollId)),
     };
     _remotePollVotes.remove(pollId);
+    _remotePollIds.remove(pollId);
+    _pollComments.remove(pollId);
     notifyListeners();
     _persist();
-    if (_remotePollIds.remove(pollId)) {
-      _fireAndForgetRemote(() => Supabase.instance.client.from('polls').delete().eq('id', pollId));
-    }
+    return null;
   }
 
   /// Admin-only — sets your own points to the max, comfortably past every
@@ -419,9 +448,20 @@ class AppStore extends ChangeNotifier {
   /// for it. Silently does nothing for a non-admin account.
   void maxOutMyPoints() {
     if (!isAdmin) return;
-    me = me.copyWith(points: 999999);
-    notifyListeners();
-    _persist();
+    unawaited(adminGivePoints('me', 999999 - me.points));
+  }
+
+  /// After points go down: switch off any name style you no longer have
+  /// the points for.
+  void _dropLockedNameStyles() {
+    final p = me.points;
+    me = me.copyWith(
+      nameBold: me.nameBold && canUseBoldName(p),
+      nameItalic: me.nameItalic && canUseItalicName(p),
+      nameUnderline: me.nameUnderline && canUseUnderlineName(p),
+      nameCheckbox: me.nameCheckbox && canUseCheckName(p),
+      clearNameEffect: me.nameEffect != null && !canUseNameEffect(me.nameEffect, p),
+    );
   }
 
   /// Admin-only toggle — silently does nothing for a non-admin account, so
@@ -578,6 +618,16 @@ class AppStore extends ChangeNotifier {
       nameUnderline: underline == null ? null : (underline && canUseUnderlineName(me.points)),
       nameCheckbox: checkbox == null ? null : (checkbox && canUseCheckName(me.points)),
     );
+    notifyListeners();
+    _persist();
+  }
+
+  /// Turns on an animated name — 'cycle' (5,000 points) or 'rain'
+  /// (10,000) — or, with null, turns it off. Only one at a time; one
+  /// that isn't unlocked yet is ignored.
+  void setNameEffect(String? effect) {
+    if (effect != null && !canUseNameEffect(effect, me.points)) return;
+    me = effect == null ? me.copyWith(clearNameEffect: true) : me.copyWith(nameEffect: effect);
     notifyListeners();
     _persist();
   }
@@ -5359,7 +5409,8 @@ class AppStore extends ChangeNotifier {
       unawaited(_uploadAvatar(next.photoPath!));
     }
     final style = row['style'];
-    final hasLocalStyle = next.nameBold || next.nameItalic || next.nameUnderline || next.nameCheckbox || next.nameColor != null;
+    final hasLocalStyle =
+        next.nameBold || next.nameItalic || next.nameUnderline || next.nameCheckbox || next.nameColor != null || next.nameEffect != null;
     if (!hasLocalStyle && style is Map && style.isNotEmpty) {
       next = next.copyWith(
         nameBold: style['bold'] == true,
@@ -5367,6 +5418,7 @@ class AppStore extends ChangeNotifier {
         nameUnderline: style['underline'] == true,
         nameCheckbox: style['check'] == true,
         nameColor: (style['color'] as num?)?.toInt(),
+        nameEffect: style['effect'] as String?,
       );
     }
     final serverStreakDay = row['move_streak_day'] as String?;
@@ -5397,6 +5449,7 @@ class AppStore extends ChangeNotifier {
         'underline': me.nameUnderline,
         'check': me.nameCheckbox,
         'color': me.nameColor,
+        'effect': me.nameEffect,
       },
     };
   }
@@ -7248,6 +7301,7 @@ class AppStore extends ChangeNotifier {
       nameUnderline: styleMap['underline'] == true,
       nameCheckbox: styleMap['check'] == true,
       nameColor: (styleMap['color'] as num?)?.toInt(),
+      nameEffect: styleMap['effect'] as String?,
       moveStreak: (row['move_streak'] as num?)?.toInt() ?? 0,
       moveStreakDay: row['move_streak_day'] as String?,
       isAdminUser: row['is_admin'] as bool? ?? false,
@@ -7823,9 +7877,31 @@ class AppStore extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Removes some notifications (a swipe on the Notifications screen).
+  Future<void> deleteNotifications(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final gone = ids.toSet();
+    notifications = notifications.where((n) => !gone.contains(n.id)).toList();
+    _syncBadge();
+    notifyListeners();
+    try {
+      await Supabase.instance.client.from('notifications').delete().inFilter('id', ids);
+    } catch (_) {}
+  }
+
   /// Makes sure [id]'s profile is loaded so a screen opened from a
   /// notification (a DM thread, a profile) has someone to show.
   Future<void> ensurePerson(String id) => _ensurePeopleFor([id]);
+
+  /// Loads the profiles of everyone in your notifications (for their
+  /// pictures on the Notifications screen).
+  Future<void> ensureNotificationPeople() {
+    final ids = <String>{
+      for (final n in notifications)
+        if (n.data['from'] is String && n.data['from'] != supabaseUserId) n.data['from'] as String,
+    };
+    return ids.isEmpty ? Future.value() : _ensurePeopleFor(ids.toList());
+  }
 
   Future<void> _fetchNotifPrefs() async {
     final uid = supabaseUserId;

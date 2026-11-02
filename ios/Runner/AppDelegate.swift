@@ -122,6 +122,10 @@ final class FunkyPushPlugin: NSObject, FlutterPlugin, UNUserNotificationCenterDe
 final class FunkyVideoFilterPlugin: NSObject, FlutterPlugin {
   static var shared: FunkyVideoFilterPlugin?
 
+  // Party Mode's rainbow, drawn once per video size and reused every frame.
+  private let rainbowLock = NSLock()
+  private var rainbowCache: [String: CIImage] = [:]
+
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
       name: "com.funkyapp.funky/videofilter",
@@ -143,6 +147,9 @@ final class FunkyVideoFilterPlugin: NSObject, FlutterPlugin {
       return
     }
 
+    // An extra layer some filters paint over the colors: "rainbow" (Party
+    // Mode, a rainbow that slides across) or "vignette" (2016's dark corners).
+    let overlay: String = (args["overlay"] as? String) ?? ""
     let m: [Double] = rawMatrix.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
     let asset = AVURLAsset(url: URL(fileURLWithPath: input))
     // Flutter's matrix works on 0-255 values (bias included); Core Image on 0-1.
@@ -162,17 +169,22 @@ final class FunkyVideoFilterPlugin: NSObject, FlutterPlugin {
 
     let composition = AVMutableVideoComposition(asset: asset, applyingCIFiltersWithHandler: { request in
       let source = request.sourceImage
-      guard let filter = CIFilter(name: "CIColorMatrix") else {
-        request.finish(with: source, context: nil)
-        return
+      var filtered: CIImage = source
+      if let filter = CIFilter(name: "CIColorMatrix") {
+        filter.setValue(source, forKey: kCIInputImageKey)
+        filter.setValue(r, forKey: "inputRVector")
+        filter.setValue(g, forKey: "inputGVector")
+        filter.setValue(b, forKey: "inputBVector")
+        filter.setValue(a, forKey: "inputAVector")
+        filter.setValue(bias, forKey: "inputBiasVector")
+        filtered = filter.outputImage ?? source
       }
-      filter.setValue(source, forKey: kCIInputImageKey)
-      filter.setValue(r, forKey: "inputRVector")
-      filter.setValue(g, forKey: "inputGVector")
-      filter.setValue(b, forKey: "inputBVector")
-      filter.setValue(a, forKey: "inputAVector")
-      filter.setValue(bias, forKey: "inputBiasVector")
-      let filtered = filter.outputImage ?? source
+      if overlay == "rainbow" {
+        let seconds: Double = CMTimeGetSeconds(request.compositionTime)
+        filtered = self.addRainbow(to: filtered, extent: source.extent, seconds: seconds.isFinite ? seconds : 0)
+      } else if overlay == "vignette" {
+        filtered = FunkyVideoFilterPlugin.addVignette(to: filtered)
+      }
       request.finish(with: filtered.cropped(to: source.extent), context: context)
     })
 
@@ -199,6 +211,81 @@ final class FunkyVideoFilterPlugin: NSObject, FlutterPlugin {
         }
       }
     }
+  }
+}
+
+extension FunkyVideoFilterPlugin {
+  /// Party Mode: a semi-clear rainbow laid over the frame with an overlay
+  /// blend, sliding sideways once every two seconds.
+  fileprivate func addRainbow(to image: CIImage, extent: CGRect, seconds: Double) -> CIImage {
+    guard let rainbow = rainbowImage(width: Int(extent.width), height: Int(extent.height)) else { return image }
+    let period: Double = 2.0
+    let phase: Double = seconds.truncatingRemainder(dividingBy: period) / period
+    let shift = CGFloat(phase) * extent.width
+    let moved = rainbow
+      .transformed(by: CGAffineTransform(translationX: extent.origin.x - shift, y: extent.origin.y))
+      .cropped(to: extent)
+    guard let blend = CIFilter(name: "CIOverlayBlendMode") else { return image }
+    blend.setValue(moved, forKey: kCIInputImageKey)
+    blend.setValue(image, forKey: kCIInputBackgroundImageKey)
+    return blend.outputImage ?? image
+  }
+
+  /// A rainbow twice as wide as the video (the colors repeat, so sliding it
+  /// by one video-width loops without a seam).
+  fileprivate func rainbowImage(width: Int, height: Int) -> CIImage? {
+    if width <= 0 || height <= 0 { return nil }
+    let key = "\(width)x\(height)"
+    rainbowLock.lock()
+    defer { rainbowLock.unlock() }
+    if let cached = rainbowCache[key] { return cached }
+    let space = CGColorSpaceCreateDeviceRGB()
+    guard let ctx = CGContext(
+      data: nil,
+      width: width * 2,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: 0,
+      space: space,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    let stops: [UIColor] = [
+      UIColor(red: 1.0, green: 0.23, blue: 0.19, alpha: 0.55),
+      UIColor(red: 1.0, green: 0.58, blue: 0.0, alpha: 0.55),
+      UIColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 0.55),
+      UIColor(red: 0.2, green: 0.78, blue: 0.35, alpha: 0.55),
+      UIColor(red: 0.0, green: 0.78, blue: 0.75, alpha: 0.55),
+      UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.55),
+      UIColor(red: 0.69, green: 0.32, blue: 0.87, alpha: 0.55),
+      UIColor(red: 1.0, green: 0.18, blue: 0.57, alpha: 0.55),
+    ]
+    var colors: [CGColor] = []
+    for _ in 0..<2 {
+      for c in stops {
+        colors.append(c.cgColor)
+      }
+    }
+    colors.append(stops[0].cgColor)
+    guard let gradient = CGGradient(colorsSpace: space, colors: colors as CFArray, locations: nil) else { return nil }
+    ctx.drawLinearGradient(
+      gradient,
+      start: CGPoint(x: 0, y: 0),
+      end: CGPoint(x: CGFloat(width * 2), y: 0),
+      options: []
+    )
+    guard let cg = ctx.makeImage() else { return nil }
+    let image = CIImage(cgImage: cg)
+    rainbowCache[key] = image
+    return image
+  }
+
+  /// 2016: darker corners.
+  fileprivate static func addVignette(to image: CIImage) -> CIImage {
+    guard let vignette = CIFilter(name: "CIVignette") else { return image }
+    vignette.setValue(image, forKey: kCIInputImageKey)
+    vignette.setValue(0.9, forKey: kCIInputIntensityKey)
+    vignette.setValue(1.6, forKey: kCIInputRadiusKey)
+    return vignette.outputImage ?? image
   }
 }
 

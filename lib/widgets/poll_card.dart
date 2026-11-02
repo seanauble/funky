@@ -328,5 +328,7 @@ Future<void> confirmDeletePoll(BuildContext context, AppStore store, Poll poll) 
       ],
     ),
   );
-  if (ok == true) store.deletePoll(poll.id);
+  if (ok != true) return;
+  final err = await store.deletePoll(poll.id);
+  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? 'Poll deleted.')));
 }
