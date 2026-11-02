@@ -351,7 +351,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 6, bottom: 10),
               child: Text(
-                "Post a photo or video Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on one to keep it forever. Text stories don't become Memories.",
+                "Post a photo or video Story and it'll show up here for $memoryRetentionDays days — tap the bookmark on one to keep it forever. Stories you post at a place are saved automatically. Text stories don't become Memories.",
                 style: TextStyle(color: tokens.mute, fontSize: 13),
               ),
             ),
@@ -378,7 +378,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 14),
               child: Text(
-                'Memories delete after $memoryRetentionDays days unless you bookmark them. Hold one to delete it.',
+                'Memories delete after $memoryRetentionDays days unless saved. Stories at a place save automatically. Hold one to delete it.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: tokens.mute, fontSize: 12),
               ),
@@ -474,7 +474,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _changePhotoFromLibrary(AppStore store) async {
     try {
-      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90, maxWidth: 1600, maxHeight: 1600);
       if (picked == null || !mounted) return;
       // Copy into our own documents folder — the picker's temp file isn't
       // guaranteed to stick around.

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
@@ -293,7 +294,7 @@ class _UpcomingPostCard extends StatelessWidget {
                   small: true,
                   inset: 4,
                   child: photo != null
-                      ? Image.network(photo, fit: BoxFit.cover, errorBuilder: (_, __, ___) => ColoredBox(color: tokens.raised))
+                      ? netImage(photo, fit: BoxFit.cover, errorBuilder: (_, __, ___) => ColoredBox(color: tokens.raised))
                       : ColoredBox(color: tokens.raised, child: const Center(child: Text('🎉', style: TextStyle(fontSize: 30)))),
                 ),
               ),

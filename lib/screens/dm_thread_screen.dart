@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:gal/gal.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -48,14 +50,13 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
   int _shownCount = -1;
   late Story? _replyStory = widget.replyToStory;
 
+  // The list runs bottom-up (newest at the bottom, at scroll position 0),
+  // so it always opens on the newest messages — even while pictures above
+  // are still loading and changing size.
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+      if (!_scrollController.hasClients || _scrollController.offset <= 0) return;
+      _scrollController.animateTo(0, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
     });
   }
 
@@ -91,7 +92,7 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
       if (!mounted || _sendingMedia) return;
       setState(() => _sendingMedia = true);
       try {
-        final picked = await ImagePicker().pickMedia(imageQuality: 85);
+        final picked = await ImagePicker().pickMedia(imageQuality: 85, maxWidth: 1600, maxHeight: 1600);
         if (picked == null || !mounted) return;
         final lower = picked.path.toLowerCase();
         final isVideo = const ['.mp4', '.mov', '.m4v', '.3gp', '.webm', '.avi'].any(lower.endsWith);
@@ -283,9 +284,12 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                     )
                   : ListView.builder(
                       controller: _scrollController,
+                      reverse: true,
                       padding: const EdgeInsets.all(16),
                       itemCount: timeline.length,
-                      itemBuilder: (context, i) {
+                      itemBuilder: (context, row) {
+                        // Bottom-up: row 0 is the newest.
+                        final i = timeline.length - 1 - row;
                         final item = timeline[i];
                         if (item is CallLogEntry) {
                           return CallLogLine(
@@ -448,7 +452,7 @@ class DmBubble extends StatelessWidget {
                   borderRadius: BorderRadius.circular(13),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 220, minWidth: 80, minHeight: 80),
-                    child: Image.network(
+                    child: netImage(
                       gif,
                       fit: BoxFit.cover,
                       loadingBuilder: (context, child, p) => p == null ? child : Container(width: 180, height: 140, color: tokens.raised),
@@ -652,7 +656,7 @@ class StoryReplyPreview extends StatelessWidget {
           final url = snap.data;
           if (url == null) return _gone(message.storyText);
           if (message.storyIsVideo) return VideoFrameThumbnail(url: url);
-          return Image.network(
+          return netImage(
             url,
             fit: BoxFit.cover,
             width: double.infinity,
@@ -747,7 +751,7 @@ class DmMedia extends StatelessWidget {
     } else if (localOk) {
       media = Image.file(File(path), fit: BoxFit.cover, errorBuilder: (_, __, ___) => Icon(Icons.broken_image_outlined, color: tokens.mute));
     } else {
-      media = Image.network(
+      media = netImage(
         url!,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => Icon(Icons.broken_image_outlined, color: tokens.mute),
@@ -797,8 +801,11 @@ class _DmMediaViewerState extends State<_DmMediaViewer> {
   }
 
   Future<void> _initVideo() async {
-    final path = widget.path;
-    final c = path != null ? VideoPlayerController.file(File(path)) : VideoPlayerController.networkUrl(Uri.parse(widget.url!));
+    final c = await openVideoController(path: widget.path, url: widget.url);
+    if (!mounted) {
+      unawaited(c.dispose());
+      return;
+    }
     _video = c;
     try {
       await c.initialize();
@@ -891,7 +898,7 @@ class _DmMediaViewerState extends State<_DmMediaViewer> {
         child: Center(
           child: path != null
               ? Image.file(File(path), fit: BoxFit.contain)
-              : Image.network(widget.url!, fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48)),
+              : netImage(widget.url!, fit: BoxFit.contain, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48)),
         ),
       );
     }

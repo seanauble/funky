@@ -112,7 +112,8 @@ class _AvatarEditorScreenState extends State<AvatarEditorScreen> {
     if (img == null || _saving) return;
     setState(() => _saving = true);
     try {
-      const out = 640.0;
+      // Big enough for the largest avatar on a 3x screen; small to download.
+      const out = 480.0;
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, out, out));
       canvas.scale(out / side);

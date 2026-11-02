@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
@@ -325,7 +326,7 @@ class _LiveChatBubbleState extends State<LiveChatBubble> {
             borderRadius: BorderRadius.circular(14),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 180, maxHeight: 160, minHeight: 70, minWidth: 70),
-              child: Image.network(
+              child: netImage(
                 m.gifUrl!,
                 fit: BoxFit.cover,
                 loadingBuilder: (context, child, p) => p == null ? child : Container(width: 180, height: 140, color: tokens.raised),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart' as ll;
@@ -246,7 +247,7 @@ class _VenueCard extends StatelessWidget {
                 ? Stack(
                     fit: StackFit.expand,
                     children: [
-                      Image.network(
+                      netImage(
                         venue.customPhotoUrl!,
                         fit: BoxFit.cover,
                         errorBuilder: (_, __, ___) => Container(color: tokens.raised),
@@ -291,7 +292,7 @@ class _VenueCard extends StatelessWidget {
                 : Stack(
                     fit: StackFit.expand,
                     children: [
-                      Image.network(
+                      netImage(
                         store.venuePhotoUrl(photo.ref),
                         fit: BoxFit.cover,
                         loadingBuilder: (_, child, progress) =>
@@ -580,7 +581,7 @@ class _EditSheetState extends State<_EditSheet> {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            Image.network(store.venuePhotoUrl(photos[i].ref, width: 600), fit: BoxFit.cover),
+                            netImage(store.venuePhotoUrl(photos[i].ref, width: 600), fit: BoxFit.cover),
                             if (i == _photo)
                               Positioned(
                                 top: 6,

@@ -1943,7 +1943,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
 
   Future<void> _addCoverPhotoFromLibrary() async {
     try {
-      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85, maxWidth: 1600, maxHeight: 1600);
       if (picked == null || !mounted) return;
       // Copy into our own app-documents folder, same as every camera
       // capture already does — the picker's own temp file isn't guaranteed

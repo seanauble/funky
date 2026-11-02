@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
@@ -76,9 +78,17 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
     final old = _videoController;
     _videoController = null;
     old?.dispose();
-    final localPath = story.videoPath;
-    final controller =
-        localPath != null ? VideoPlayerController.file(File(localPath)) : VideoPlayerController.networkUrl(Uri.parse(story.videoUrl!));
+    // Someone else's video is downloaded once and kept on the phone, so
+    // watching it again doesn't download it again.
+    unawaited(_openVideo(story, advance));
+  }
+
+  Future<void> _openVideo(Story story, VoidCallback advance) async {
+    final controller = await openVideoController(path: story.videoPath, url: story.videoUrl);
+    if (!mounted || _videoForStoryId != story.id) {
+      unawaited(controller.dispose());
+      return;
+    }
     controller.addListener(() {
       final value = controller.value;
       // Fires over and over once a video sits at its end — only move on once.
@@ -88,12 +98,15 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
       }
     });
     controller.setVolume(1);
-    controller.initialize().then((_) {
-      if (!mounted || _videoForStoryId != story.id) return;
-      controller.play();
-      setState(() {});
-    });
     _videoController = controller;
+    try {
+      await controller.initialize();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || _videoForStoryId != story.id) return;
+    controller.play();
+    setState(() {});
   }
 
   @override
@@ -176,7 +189,7 @@ class _PlaceStoryViewerScreenState extends State<PlaceStoryViewerScreen> {
             else if (story.imagePath != null)
               SizedBox.expand(child: Image.file(File(story.imagePath!), fit: BoxFit.cover))
             else if (story.imageUrl != null)
-              SizedBox.expand(child: Image.network(story.imageUrl!, fit: BoxFit.cover))
+              SizedBox.expand(child: netImage(story.imageUrl!, fit: BoxFit.cover))
             else
               Center(
                 child: Padding(

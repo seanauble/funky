@@ -228,14 +228,13 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
     super.dispose();
   }
 
+  // The list runs bottom-up (newest at the bottom, at scroll position 0),
+  // so it always opens on the newest messages — even while pictures above
+  // are still loading and changing size.
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+      if (!_scrollController.hasClients || _scrollController.offset <= 0) return;
+      _scrollController.animateTo(0, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
     });
   }
 
@@ -270,7 +269,7 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
       if (!mounted || _sendingMedia) return;
       setState(() => _sendingMedia = true);
       try {
-        final picked = await ImagePicker().pickMedia(imageQuality: 85);
+        final picked = await ImagePicker().pickMedia(imageQuality: 85, maxWidth: 1600, maxHeight: 1600);
         if (picked == null || !mounted) return;
         final lower = picked.path.toLowerCase();
         final isVideo = const ['.mp4', '.mov', '.m4v', '.3gp', '.webm', '.avi'].any(lower.endsWith);
@@ -474,9 +473,12 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                     )
                   : ListView.builder(
                       controller: _scrollController,
+                      reverse: true,
                       padding: const EdgeInsets.all(16),
                       itemCount: timeline.length,
-                      itemBuilder: (context, i) {
+                      itemBuilder: (context, row) {
+                        // Bottom-up: row 0 is the newest.
+                        final i = timeline.length - 1 - row;
                         final item = timeline[i];
                         if (item is GroupEvent) {
                           return Padding(

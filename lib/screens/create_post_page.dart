@@ -53,10 +53,10 @@ class _PostFormPageState extends State<PostFormPage> {
     try {
       final picker = ImagePicker();
       if (left == 1) {
-        final x = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85, maxWidth: 2160, maxHeight: 2160);
+        final x = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80, maxWidth: 1600, maxHeight: 1600);
         if (x != null && mounted) setState(() => _photos.add(x.path));
       } else {
-        final xs = await picker.pickMultiImage(imageQuality: 85, maxWidth: 2160, maxHeight: 2160, limit: left);
+        final xs = await picker.pickMultiImage(imageQuality: 80, maxWidth: 1600, maxHeight: 1600, limit: left);
         if (xs.isNotEmpty && mounted) setState(() => _photos.addAll(xs.take(left).map((x) => x.path)));
       }
     } catch (e) {

@@ -2,6 +2,7 @@ import '../widgets/ios_ui.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
@@ -9,6 +10,7 @@ import '../data/post_models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/kind_picker.dart';
 import '../widgets/ui_widgets.dart';
+import '../widgets/poll_card.dart' show CommentPreviewRow;
 import '../widgets/org_badge.dart';
 import 'account_screen.dart';
 import 'create_sheet.dart';
@@ -37,7 +39,7 @@ class _PostCardState extends State<PostCard> {
   void _learnAspect(String url) {
     if (_aspects.containsKey(url)) return;
     _aspects[url] = 4 / 5;
-    final stream = NetworkImage(url).resolve(const ImageConfiguration());
+    final stream = netImageProvider(url).resolve(const ImageConfiguration());
     late final ImageStreamListener listener;
     listener = ImageStreamListener((info, _) {
       final h = info.image.height;
@@ -93,10 +95,12 @@ class _PostCardState extends State<PostCard> {
 
   Future<void> _menu(AppStore store, Post post) async {
     final mine = post.uid == 'me';
+    final disliked = post.dislikes.contains('me');
     final choice = await showIosActionSheet<String>(
       context,
       actions: [
         if (!mine) const IosSheetAction('View profile', 'profile'),
+        if (!mine) IosSheetAction(disliked ? 'Undo "Not for me"' : 'Not for me', 'dislike', icon: disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
         if (!mine) const IosSheetAction('Report post', 'report'),
         if (mine || store.isAdmin) IosSheetAction(mine ? 'Delete post' : 'Delete post (Admin)', 'delete', destructive: true),
       ],
@@ -104,6 +108,8 @@ class _PostCardState extends State<PostCard> {
     if (!mounted || choice == null) return;
     if (choice == 'profile') {
       openProfile(context, post.uid);
+    } else if (choice == 'dislike') {
+      _dislike(store, post);
     } else if (choice == 'delete') {
       await _confirmDelete(store, post);
     } else if (choice == 'report') {
@@ -151,7 +157,6 @@ class _PostCardState extends State<PostCard> {
     final person = store.personById(post.uid);
     final handle = person?.handle ?? 'someone';
     final liked = post.likes.contains('me');
-    final disliked = post.dislikes.contains('me');
     // A location only shows when the poster tagged a place — never the
     // spot they were standing in.
     final placeName = post.placeName;
@@ -203,8 +208,8 @@ class _PostCardState extends State<PostCard> {
                   behavior: HitTestBehavior.opaque,
                   onTap: () => openProfile(context, post.uid),
                   child: person != null
-                      ? PersonAvatar(person: person, size: 46, preview: false)
-                      : FunkyAvatar(seed: post.uid, label: '?', size: 46),
+                      ? PersonAvatar(person: person, size: 40, preview: false)
+                      : FunkyAvatar(seed: post.uid, label: '?', size: 40),
                 ),
                 const SizedBox(width: 11),
                 Expanded(
@@ -215,8 +220,8 @@ class _PostCardState extends State<PostCard> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         person != null
-                            ? StyledName(person: person, text: '@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5))
-                            : Text('@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16.5)),
+                            ? StyledName(person: person, text: '@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5))
+                            : Text('@$handle', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
                         Text(
                           post.isTextOnly && pinTitle != null ? '${timeAgoLabel(post.t)} · 📍 $pinTitle' : timeAgoLabel(post.t),
                           maxLines: 1,
@@ -286,16 +291,17 @@ class _PostCardState extends State<PostCard> {
             ),
           ] else ...[
             // Photos, with the place pinned on top.
-            // Wide photos show whole; tall ones are cropped to a square so
-            // one post never fills the screen.
+            // Compact in the feed: wide photos show whole, anything taller
+            // is cropped to 4:3 so a post takes about a third of the screen
+            // and you can still see what's around it.
             if (urls.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
                 child: AspectRatio(
-                  // On the post's own page it can be a little taller (4:5).
-                  aspectRatio: (_aspects[urls.first] ?? 1.0).clamp(widget.inDetail ? 0.8 : 1.0, 1.91),
+                  // On the post's own page it can be taller (up to 4:5).
+                  aspectRatio: (_aspects[urls.first] ?? (widget.inDetail ? 1.0 : 4 / 3)).clamp(widget.inDetail ? 0.8 : 4 / 3, 1.91),
                   child: GestureDetector(
                     onDoubleTap: () => _like(store, post, onlyLike: true),
                     onTap: widget.inDetail ? null : _openDetail,
@@ -307,7 +313,7 @@ class _PostCardState extends State<PostCard> {
                           child: PageView.builder(
                             itemCount: urls.length,
                             onPageChanged: (i) => setState(() => _page = i),
-                            itemBuilder: (_, i) => Image.network(
+                            itemBuilder: (_, i) => netImage(
                               urls[i],
                               fit: BoxFit.cover,
                               frameBuilder: (context, child, frame, sync) {
@@ -382,27 +388,28 @@ class _PostCardState extends State<PostCard> {
                 ),
               ),
             ),
-            // An event: name, when, cover and "I'm going".
-            if (post.isEvent) EventBlock(post: post),
+            // The caption right under the photo.
             if (caption.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
                 child: filteredMessageText(
                   caption,
-                  TextStyle(color: tokens.ink, fontSize: 15.5),
+                  TextStyle(color: tokens.ink, fontSize: 15.5, height: 1.3),
                   maxLines: widget.inDetail ? null : 4,
                   overflow: widget.inDetail ? TextOverflow.visible : TextOverflow.ellipsis,
                 ),
               ),
+            // An event: name, when, where and "I'm going".
+            if (post.isEvent) EventBlock(post: post),
           ],
-          // Like · dislike · comments
+          // Like · comments · save ("Not for me" is in the ··· menu).
           Padding(
-            padding: const EdgeInsets.fromLTRB(6, 4, 12, 0),
+            padding: const EdgeInsets.fromLTRB(6, 6, 4, 0),
             child: Row(
               children: [
                 action(liked ? Icons.favorite : Icons.favorite_border, liked ? tokens.brand : tokens.ink, post.likes.length, () => _like(store, post), liked ? 'Unlike' : 'Like'),
+                const SizedBox(width: 6),
                 action(Icons.chat_bubble_outline_rounded, tokens.ink, post.commentCount, widget.inDetail ? null : _openDetail, 'Comments'),
-                action(disliked ? Icons.thumb_down : Icons.thumb_down_outlined, disliked ? tokens.ink : tokens.mute, post.dislikes.isEmpty ? null : post.dislikes.length, () => _dislike(store, post), disliked ? 'Undo dislike' : 'Dislike'),
                 const Spacer(),
                 if (urls.length > 1)
                   for (var i = 0; i < urls.length; i++)
@@ -421,7 +428,7 @@ class _PostCardState extends State<PostCard> {
             ),
           ),
           // The newest two comments.
-          for (final c in previews) _CommentPreview(comment: c),
+          for (final c in previews) CommentPreviewRow(comment: c, onTap: _openDetail),
           if (!widget.inDetail && post.commentCount > previews.length)
             GestureDetector(
               onTap: _openDetail,
@@ -434,45 +441,6 @@ class _PostCardState extends State<PostCard> {
               ),
             ),
           const SizedBox(height: 12),
-        ],
-      ),
-    );
-  }
-}
-
-/// One comment under a post in the feed: avatar, @handle (in color), text, time.
-class _CommentPreview extends StatelessWidget {
-  final PostComment comment;
-  const _CommentPreview({required this.comment});
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final store = context.watch<AppStore>();
-    final person = store.personById(comment.uid);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 2, 14, 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          person != null ? PersonAvatar(person: person, size: 34, preview: false) : FunkyAvatar(seed: comment.uid, label: '?', size: 34),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text.rich(
-                  TextSpan(children: [
-                    TextSpan(text: '@${person?.handle ?? 'someone'} ', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700)),
-                    TextSpan(text: maskBadWords(comment.text), style: TextStyle(color: tokens.ink)),
-                  ]),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(timeAgoLabel(comment.t), style: TextStyle(color: tokens.mute, fontSize: 11.5)),
-              ],
-            ),
-          ),
         ],
       ),
     );
@@ -636,7 +604,7 @@ class PostTile extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Image.network(
+                    netImage(
                       p.photoUrls.first,
                       fit: BoxFit.cover,
                       loadingBuilder: (context, child, progress) => progress == null ? child : Container(color: tokens.raised),
@@ -738,28 +706,41 @@ class EventBlock extends StatelessWidget {
     final going = p.going.contains('me');
     final friends = store.friendsGoingTo(p);
     final where = [
-      if (p.placeName != null && p.placeName!.isNotEmpty) '📍 ${p.placeName}',
-      if (p.eventCover != null) p.eventCover!,
+      if (p.placeName != null && p.placeName!.isNotEmpty) p.placeName!,
+      if (p.eventCover != null && p.eventCover!.trim().isNotEmpty) p.eventCover!.trim(),
     ].join(' · ');
     final over = at.isBefore(DateTime.now().subtract(const Duration(hours: 6)));
+    final count = [
+      p.going.length == 1 ? '1 going' : '${p.going.length} going',
+      if (friends.isNotEmpty) friends.length == 1 ? '@${friends.first.handle} too' : '${friends.length} friends',
+    ].join(' · ');
+    final onColor = going ? tokens.onOrange : tokens.ink;
+
+    // Same clean card as a poll: white with a thin border, then one wide
+    // "I'm going" bar.
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: eventTint, borderRadius: BorderRadius.circular(14)),
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+      decoration: BoxDecoration(
+        color: tokens.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: tokens.line),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 50,
-                height: 56,
-                decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(10)),
+                width: 46,
+                height: 50,
+                decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(11)),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(_months[at.month - 1].toUpperCase(), style: TextStyle(color: tokens.orange, fontSize: 11.5, fontWeight: FontWeight.w800)),
-                    Text('${at.day}', style: TextStyle(color: tokens.ink, fontSize: 22, fontWeight: FontWeight.w900, height: 1.05)),
+                    Text(_months[at.month - 1].toUpperCase(), style: TextStyle(color: tokens.orange, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.4)),
+                    Text('${at.day}', style: TextStyle(color: tokens.ink, fontSize: 20, fontWeight: FontWeight.w900, height: 1.05)),
                   ],
                 ),
               ),
@@ -768,49 +749,68 @@ class EventBlock extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(maskBadWords(p.eventTitle!), style: TextStyle(color: tokens.ink, fontSize: 18, fontWeight: FontWeight.w800)),
-                    Text(eventWhenLabel(at), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w600, fontSize: 13.5)),
-                    if (where.isNotEmpty) Text(where, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                    Text(maskBadWords(p.eventTitle!), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontSize: 17, fontWeight: FontWeight.w800, height: 1.15)),
+                    const SizedBox(height: 2),
+                    Text(eventWhenLabel(at), style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w600, fontSize: 13.5)),
+                    if (where.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(
+                          children: [
+                            Icon(Icons.location_on_outlined, size: 14, color: tokens.mute),
+                            const SizedBox(width: 3),
+                            Expanded(
+                              child: Text(where, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 13)),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              ElevatedButton(
-                onPressed: over
-                    ? null
-                    : () => requireAccountThen(context, store, () async {
-                          final err = await store.toggleEventGoing(p.id);
-                          if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                        }),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: going ? tokens.surface : tokens.brand,
-                  disabledBackgroundColor: tokens.raised,
-                  elevation: 0,
-                  shape: const StadiumBorder(),
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                ),
-                child: Text(
-                  over ? 'Ended' : (going ? "You're going ✓" : "I'm going"),
-                  style: TextStyle(color: going || over ? tokens.ink : tokens.onOrange, fontWeight: FontWeight.w800),
-                ),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: over
+                ? null
+                : () => requireAccountThen(context, store, () async {
+                      final err = await store.toggleEventGoing(p.id);
+                      if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                    }),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              height: 44,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: going ? tokens.brand : tokens.raised,
+                borderRadius: BorderRadius.circular(12),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  [
-                    '${p.going.length} going',
-                    if (friends.isNotEmpty) friends.length == 1 ? '@${friends.first.handle} too' : '${friends.length} friends',
-                  ].join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13),
-                ),
+              child: Row(
+                children: [
+                  Icon(
+                    over ? Icons.event_busy_outlined : (going ? Icons.check_circle_rounded : Icons.add_circle_outline_rounded),
+                    size: 20,
+                    color: over ? tokens.mute : (going ? tokens.onOrange : tokens.brand),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    over ? 'Ended' : (going ? "You're going" : "I'm going"),
+                    style: TextStyle(color: over ? tokens.mute : onColor, fontWeight: FontWeight.w800, fontSize: 15),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      count,
+                      textAlign: TextAlign.right,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: going ? tokens.onOrange.withValues(alpha: 0.9) : tokens.mute, fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ],
       ),
@@ -848,7 +848,7 @@ class UpcomingEventsStrip extends StatelessWidget {
                     height: 104,
                     width: double.infinity,
                     child: p.photoUrls.isNotEmpty
-                        ? Image.network(
+                        ? netImage(
                             p.photoUrls.first,
                             fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => Container(color: tokens.raised),

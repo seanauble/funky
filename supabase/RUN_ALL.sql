@@ -1,4 +1,4 @@
--- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25 + 26 + 27 + 28 + 29 + 30 + 31 + 32 + 33 + 34 + 35 + 36 + 37). Paste ALL of this into the
+-- FUNKY: everything in one go (phase 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 19 + 20 + 21 + 22 + 23 + 24 + 25 + 26 + 27 + 28 + 29 + 30 + 31 + 32 + 33 + 34 + 35 + 36 + 37 + 38 + 39). Paste ALL of this into the
 -- Supabase SQL Editor and press Run. Safe to re-run.
 
 
@@ -5367,5 +5367,187 @@ end;
 $$;
 
 grant execute on function public.invite_to_place(uuid, uuid[]) to authenticated;
+
+-- ======================== phase38.sql ========================
+-- ============================================================
+-- Phase 38: Memories
+--   1) A photo or video Story posted at a place is saved as a Memory
+--      automatically (it never auto-deletes). Stories already up that were
+--      posted at a place get saved too.
+--   2) Unsaved Memories are deleted 7 days after they were posted (text
+--      Stories, which never become Memories, after 2 days). The app calls
+--      purge_expired_memories() when it opens.
+--   3) The deleted Stories' files are listed in storage_trash so the
+--      owner's app (or an admin's) can remove them from Storage.
+-- Safe to run more than once. Needs phases 2, 28.
+-- ============================================================
+
+-- ---- 1) Stories at a place save themselves ---------------------------------
+
+create or replace function public.place_stories_autosave()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.place_id is not null and new.place_id <> 'main' and new.media_path is not null then
+    new.saved_to_timeline := true;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists stories_place_autosave on public.stories;
+create trigger stories_place_autosave
+  before insert on public.stories
+  for each row execute function public.place_stories_autosave();
+
+update public.stories
+   set saved_to_timeline = true
+ where place_id is not null and place_id <> 'main' and media_path is not null
+   and not saved_to_timeline;
+
+-- ---- 3) Files waiting to be removed from Storage ----------------------------
+
+create table if not exists public.storage_trash (
+  id bigserial primary key,
+  bucket text not null,
+  path text not null,
+  owner_id uuid not null,
+  created_at timestamptz not null default now(),
+  unique (bucket, path)
+);
+
+alter table public.storage_trash enable row level security;
+revoke all on public.storage_trash from anon;
+grant select, delete on public.storage_trash to authenticated;
+
+drop policy if exists "Clean up your own deleted files" on public.storage_trash;
+create policy "Clean up your own deleted files" on public.storage_trash for select to authenticated
+  using (owner_id = auth.uid() or public.is_admin());
+
+drop policy if exists "Clear your own deleted files" on public.storage_trash;
+create policy "Clear your own deleted files" on public.storage_trash for delete to authenticated
+  using (owner_id = auth.uid() or public.is_admin());
+
+-- An admin's app can clear anyone's leftover Story files.
+drop policy if exists "Admins delete story media" on storage.objects;
+create policy "Admins delete story media"
+  on storage.objects for delete to authenticated
+  using (bucket_id = 'stories' and public.is_admin());
+
+-- ---- 2) Delete expired Memories ---------------------------------------------
+
+create or replace function public.purge_expired_memories()
+returns integer
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  n integer;
+begin
+  if auth.uid() is null then return 0; end if;
+  with gone as (
+    delete from public.stories
+     where not saved_to_timeline
+       and (
+         created_at < now() - interval '7 days'
+         or (media_path is null and created_at < now() - interval '2 days')
+       )
+    returning uid, media_path
+  )
+  insert into public.storage_trash (bucket, path, owner_id)
+  select 'stories', media_path, uid from gone where media_path is not null
+  on conflict (bucket, path) do nothing;
+  get diagnostics n = row_count;
+  -- Files nobody could remove in a month are dropped from the list.
+  delete from public.storage_trash where created_at < now() - interval '30 days';
+  return n;
+end;
+$$;
+
+revoke all on function public.purge_expired_memories() from public, anon;
+grant execute on function public.purge_expired_memories() to authenticated;
+
+-- ======================== phase39.sql ========================
+-- ============================================================
+-- Phase 39: Comments on polls
+--   Anyone with an account can comment on a poll ("Charlie's never
+--   misses"). The poll's owner gets a notification. Comments go with the
+--   poll when it's deleted.
+-- Safe to run more than once. Needs phases 2, 7, 15, 31.
+-- ============================================================
+
+create table if not exists public.poll_comments (
+  id uuid primary key default gen_random_uuid(),
+  poll_id uuid not null references public.polls (id) on delete cascade,
+  uid uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  text text not null check (char_length(text) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists poll_comments_poll_idx on public.poll_comments (poll_id, created_at);
+
+alter table public.poll_comments enable row level security;
+grant select, insert, delete on public.poll_comments to authenticated;
+
+drop policy if exists "See poll comments" on public.poll_comments;
+create policy "See poll comments" on public.poll_comments for select to authenticated using (true);
+
+drop policy if exists "Comment on a poll as yourself" on public.poll_comments;
+create policy "Comment on a poll as yourself" on public.poll_comments for insert to authenticated
+  with check (uid = auth.uid() and not public.is_banned() and not public.is_guest());
+
+drop policy if exists "Delete a poll comment" on public.poll_comments;
+create policy "Delete a poll comment" on public.poll_comments for delete to authenticated
+  using (
+    uid = auth.uid()
+    or public.is_admin()
+    or exists (select 1 from public.polls p where p.id = poll_id and p.by_uid = auth.uid())
+  );
+
+drop trigger if exists rate_limit_poll_comments on public.poll_comments;
+create trigger rate_limit_poll_comments before insert on public.poll_comments
+  for each row execute procedure public.rate_limit('uid', '60', '10');
+
+create or replace function public.notify_poll_comment()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  owner uuid;
+  q text;
+  who text;
+begin
+  select by_uid, polls.q into owner, q from public.polls where id = new.poll_id;
+  if owner is null or owner = new.uid then
+    return new;
+  end if;
+  select handle into who from public.profiles where id = new.uid;
+  perform public.push_notify(
+    owner, 'poll_comment', '@' || coalesce(who, 'someone') || ' commented on your poll',
+    left(new.text, 120),
+    jsonb_build_object('poll_id', new.poll_id, 'from', new.uid));
+  return new;
+end;
+$$;
+
+revoke all on function public.notify_poll_comment() from public, anon, authenticated;
+
+drop trigger if exists poll_comments_notify on public.poll_comments;
+create trigger poll_comments_notify after insert on public.poll_comments
+  for each row execute function public.notify_poll_comment();
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (
+       select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'poll_comments'
+     ) then
+    alter publication supabase_realtime add table public.poll_comments;
+  end if;
+end;
+$$;
 
 select 'FUNKY backend ready' as status;

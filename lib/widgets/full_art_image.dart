@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 
 /// A cover photo or flyer shown whole — its own shape, not cropped into a
 /// banner. Very tall or very wide pictures are fit inside a blurred copy of
@@ -38,7 +39,7 @@ class _FullArtImageState extends State<FullArtImage> {
     final path = widget.filePath;
     if (path != null && path.isNotEmpty && File(path).existsSync()) return FileImage(File(path));
     final url = widget.url;
-    if (url != null && url.isNotEmpty) return NetworkImage(url);
+    if (url != null && url.isNotEmpty) return netImageProvider(url);
     return null;
   }
 

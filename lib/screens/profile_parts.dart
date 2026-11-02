@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
@@ -46,7 +47,7 @@ Widget storyMedia(Story s, ThemeTokens tokens) {
     return Image.file(File(path), fit: BoxFit.cover, width: double.infinity, height: double.infinity);
   }
   if (s.imageUrl != null) {
-    return Image.network(
+    return netImage(
       s.imageUrl!,
       fit: BoxFit.cover,
       width: double.infinity,
@@ -291,7 +292,7 @@ class PlaceMemoryCard extends StatelessWidget {
     }
     final url = live?.photoUrl ?? live?.coverUrl;
     final Widget image = url != null
-        ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => storyMedia(place.stories.first, tokens))
+        ? netImage(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => storyMedia(place.stories.first, tokens))
         : storyMedia(place.stories.first, tokens);
     final n = place.stories.length;
     return GestureDetector(

@@ -10,6 +10,7 @@ import 'account_screen.dart';
 import 'admin_panel_screen.dart';
 import 'dm_thread_screen.dart';
 import 'event_chat_screen.dart';
+import 'poll_comments_screen.dart';
 import 'friend_requests_screen.dart';
 import 'group_thread_screen.dart';
 import 'place_detail_screen.dart';
@@ -58,6 +59,10 @@ class NotificationsScreen extends StatelessWidget {
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
+      case 'poll_comment':
+        final pollId = n.data['poll_id'] as String?;
+        if (pollId == null) return;
+        navigator.push(MaterialPageRoute(builder: (_) => PollCommentsScreen(pollId: pollId)));
       case 'post_comment':
       case 'post_like':
       case 'friend_post':
@@ -182,6 +187,8 @@ class _NotificationTile extends StatelessWidget {
         return Icons.forum_outlined;
       case 'invite':
         return Icons.mail_outline_rounded;
+      case 'poll_comment':
+        return Icons.poll_outlined;
       case 'post_like':
         return Icons.local_fire_department_outlined;
       case 'friend_post':

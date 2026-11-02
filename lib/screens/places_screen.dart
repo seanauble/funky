@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:provider/provider.dart';
@@ -507,7 +508,7 @@ class _MarkerPicture extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final steps = <Widget Function(Widget Function() next)>[];
-    Widget Function(Widget Function()) net(String url) => (next) => Image.network(
+    Widget Function(Widget Function()) net(String url) => (next) => netImage(
           url,
           fit: BoxFit.cover,
           width: double.infinity,

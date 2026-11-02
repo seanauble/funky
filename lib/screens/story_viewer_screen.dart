@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -212,9 +214,17 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
     final old = _videoController;
     _videoController = null;
     old?.dispose();
-    final localPath = story.videoPath;
-    final controller =
-        localPath != null ? VideoPlayerController.file(File(localPath)) : VideoPlayerController.networkUrl(Uri.parse(story.videoUrl!));
+    // Someone else's video is downloaded once and kept on the phone, so
+    // watching it again doesn't download it again.
+    unawaited(_openVideo(story, advance));
+  }
+
+  Future<void> _openVideo(Story story, VoidCallback advance) async {
+    final controller = await openVideoController(path: story.videoPath, url: story.videoUrl);
+    if (!mounted || _videoForStoryId != story.id) {
+      unawaited(controller.dispose());
+      return;
+    }
     controller.addListener(() {
       final value = controller.value;
       // Fires over and over once a video sits at its end — only move on once.
@@ -224,12 +234,15 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       }
     });
     controller.setVolume(1);
-    controller.initialize().then((_) {
-      if (!mounted || _videoForStoryId != story.id) return;
-      controller.play();
-      setState(() {});
-    });
     _videoController = controller;
+    try {
+      await controller.initialize();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || _videoForStoryId != story.id) return;
+    controller.play();
+    setState(() {});
   }
 
   @override
@@ -399,7 +412,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                   Text(
                     story.savedToTimeline
                         ? 'This memory is saved forever.'
-                        : 'Memories auto-delete $memoryRetentionDays days after posting unless saved.',
+                        : 'Memories delete $memoryRetentionDays days after posting unless saved. Stories at a place save automatically.',
                     style: const TextStyle(color: Colors.white38, fontSize: 11.5),
                   ),
                 ] else
@@ -550,7 +563,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                     : story.imagePath != null
                         ? SizedBox.expand(child: Image.file(File(story.imagePath!), fit: BoxFit.cover))
                         : story.imageUrl != null
-                            ? SizedBox.expand(child: Image.network(story.imageUrl!, fit: BoxFit.cover))
+                            ? SizedBox.expand(child: netImage(story.imageUrl!, fit: BoxFit.cover))
                             : Center(
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 28),

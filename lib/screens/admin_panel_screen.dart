@@ -1,6 +1,8 @@
+import 'dart:async';
 import '../widgets/ios_ui.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
@@ -308,7 +310,7 @@ class AdminPanelScreen extends StatelessWidget {
                       child: SizedBox(
                         height: 180,
                         width: double.infinity,
-                        child: Image.network(
+                        child: netImage(
                           sug.url,
                           fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => Container(
@@ -673,7 +675,7 @@ class _ReportedStoryThumb extends StatelessWidget {
     final store = context.read<AppStore>();
     // A reported post's photo is in the public posts bucket.
     if (report.isPost) {
-      return Image.network(store.postPhotoUrl(path), fit: BoxFit.cover, errorBuilder: (_, __, ___) => _text());
+      return netImage(store.postPhotoUrl(path), fit: BoxFit.cover, errorBuilder: (_, __, ___) => _text());
     }
     return FutureBuilder<String?>(
       future: store.storyPreviewUrl(path),
@@ -692,7 +694,7 @@ class _ReportedStoryThumb extends StatelessWidget {
           if (report.storyIsVideo)
             VideoFrameThumbnail(url: url)
           else
-            Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _text()),
+            netImage(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _text()),
           if (report.storyIsVideo) const Center(child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 28)),
         ]);
       },
@@ -741,7 +743,11 @@ class _ReportedStoryViewState extends State<_ReportedStoryView> {
     }
     if (!mounted) return;
     if (isVideo && (localVideo != null || url != null)) {
-      final c = localVideo != null ? VideoPlayerController.file(File(localVideo)) : VideoPlayerController.networkUrl(Uri.parse(url!));
+      final c = await openVideoController(path: localVideo, url: url);
+      if (!mounted) {
+        unawaited(c.dispose());
+        return;
+      }
       _video = c;
       try {
         await c.initialize();
@@ -774,7 +780,7 @@ class _ReportedStoryViewState extends State<_ReportedStoryView> {
     } else if (live != null && live.imagePath != null && File(live.imagePath!).existsSync()) {
       body = Image.file(File(live.imagePath!), fit: BoxFit.contain);
     } else if (_url != null && !widget.report.storyIsVideo) {
-      body = Image.network(_url!, fit: BoxFit.contain);
+      body = netImage(_url!, fit: BoxFit.contain);
     } else {
       body = Padding(
         padding: const EdgeInsets.all(24),

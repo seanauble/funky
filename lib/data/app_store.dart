@@ -3773,6 +3773,9 @@ class AppStore extends ChangeNotifier {
     // yet, the phone's last known fix is used; failing that the server
     // fills it in from the venue or your last synced spot (phase 26).
     final here = _gpsLocation ?? await _lastKnownGps();
+    // A photo or video posted at a place saves itself to your Memories (it
+    // won't delete after memoryRetentionDays).
+    final atPlaceWithMedia = place != 'main' && (imagePath != null || videoPath != null);
     String? remoteId;
     final uid = supabaseUserId;
     if (signedIn && uid != null) {
@@ -3801,6 +3804,8 @@ class AppStore extends ChangeNotifier {
           'anon': anon,
           'media_path': mediaPath,
           'is_video': videoPath != null,
+          // A photo or video posted at a place is kept as a Memory for good.
+          if (atPlaceWithMedia) 'saved_to_timeline': true,
           if (here != null) 'lat': here.lat,
           if (here != null) 'lng': here.lng,
         };
@@ -3836,6 +3841,7 @@ class AppStore extends ChangeNotifier {
       session: sessionKey(),
       lat: here?.lat,
       lng: here?.lng,
+      savedToTimeline: atPlaceWithMedia,
       // A real post starts at its real (zero) view count — the demo-seed
       // "a couple people already saw it" boost below is only for the
       // local-only fallback, so a brand-new real account's feed doesn't
@@ -3985,6 +3991,18 @@ class AppStore extends ChangeNotifier {
     stories = updated;
     notifyListeners();
     _persist();
+    _syncSaved(storyId, true);
+  }
+
+  /// Saving or un-saving goes to the server too, which is what deletes
+  /// unsaved Memories after memoryRetentionDays (phase 38) — and keeps the
+  /// choice when you switch phones.
+  void _syncSaved(String storyId, bool saved) {
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null || !_remoteStoryIds.contains(storyId)) return;
+    _fireAndForgetRemote(
+      () => Supabase.instance.client.from('stories').update({'saved_to_timeline': saved}).eq('id', storyId).eq('uid', uid),
+    );
   }
 
   /// Un-pins a Memory, putting it back on the normal memoryRetentionDays
@@ -3997,6 +4015,7 @@ class AppStore extends ChangeNotifier {
     stories = updated;
     notifyListeners();
     _persist();
+    _syncSaved(storyId, false);
   }
 
   /// Drops your own Stories once they're older than memoryRetentionDays,
@@ -4011,6 +4030,44 @@ class AppStore extends ChangeNotifier {
       if (!isMemoryStory(s)) return isLiveStory(s);
       return s.savedToTimeline || s.t >= cutoff;
     }).toList();
+  }
+
+  /// Deletes unsaved Memories older than memoryRetentionDays on the server
+  /// (everyone's — whoever opens the app first does it), then removes your
+  /// own deleted Stories' files from Storage (an admin's app removes
+  /// anyone's). Needs phase 38; quietly does nothing before that.
+  Future<void> _purgeExpiredMemoriesRemote() async {
+    if (supabaseUserId == null || !signedIn) return;
+    final client = Supabase.instance.client;
+    try {
+      await client.rpc('purge_expired_memories');
+    } catch (_) {
+      return;
+    }
+    try {
+      final rows = await client.from('storage_trash').select('id,bucket,path').limit(300);
+      if (rows.isEmpty) return;
+      final byBucket = <String, Map<String, int>>{};
+      for (final r in rows) {
+        final id = (r['id'] as num?)?.toInt();
+        final bucket = r['bucket'] as String?;
+        final path = r['path'] as String?;
+        if (id == null || bucket == null || path == null) continue;
+        (byBucket[bucket] ??= {})[path] = id;
+      }
+      final done = <int>[];
+      for (final e in byBucket.entries) {
+        try {
+          final removed = await client.storage.from(e.key).remove(e.value.keys.toList());
+          final names = removed.map((f) => f.name).toSet();
+          for (final p in e.value.entries) {
+            if (names.contains(p.key)) done.add(p.value);
+          }
+        } catch (_) {}
+      }
+      if (done.isNotEmpty) await client.from('storage_trash').delete().inFilter('id', done);
+    } catch (_) {}
+    unawaited(_fetchRemoteStories());
   }
 
   void likeStory(String id) {
@@ -4480,6 +4537,7 @@ class AppStore extends ChangeNotifier {
     if (!guest) _resetLocalIfDifferentAccount(uid);
     unawaited(_fetchRemoteProfiles());
     unawaited(_fetchRemotePlaces(purge: true));
+    if (!guest) unawaited(_purgeExpiredMemoriesRemote());
     unawaited(_fetchPlaceRatings());
     unawaited(_fetchRemoteChat());
     unawaited(_fetchRemotePolls());
@@ -6793,9 +6851,101 @@ class AppStore extends ChangeNotifier {
       me = me.copyWith(votes: myVotes);
       notifyListeners();
       _persist();
+      unawaited(_fetchPollComments(fetchedIds.toList()));
     } catch (_) {
       // Offline — keep what's showing.
     }
+  }
+
+  // --- Poll comments (phase 39) -------------------------------------------
+
+  final Map<String, List<PostComment>> _pollComments = {};
+
+  /// Every comment on a poll, oldest first. [PostComment.postId] holds the
+  /// poll's id.
+  List<PostComment> pollCommentsFor(String pollId) =>
+      (_pollComments[pollId] ?? const <PostComment>[]).where((c) => !isHidden(c.uid)).toList();
+
+  /// The newest two, for under the poll in the feed.
+  List<PostComment> pollCommentPreview(String pollId) {
+    final all = pollCommentsFor(pollId);
+    return all.length <= 2 ? all : all.sublist(all.length - 2);
+  }
+
+  bool canCommentOnPoll(String pollId) => _remotePollIds.contains(pollId);
+
+  PostComment _pollCommentFromRow(Map<String, dynamic> r) {
+    final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
+    return PostComment(
+      id: r['id'] as String,
+      postId: r['poll_id'] as String,
+      uid: _asMe(r['uid'] as String),
+      text: (r['text'] as String?) ?? '',
+      t: at.millisecondsSinceEpoch,
+    );
+  }
+
+  Future<void> _fetchPollComments(List<String> pollIds) async {
+    if (pollIds.isEmpty || supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('poll_comments')
+          .select()
+          .inFilter('poll_id', pollIds.take(100).toList())
+          .order('created_at')
+          .limit(1000);
+      final byPoll = <String, List<PostComment>>{};
+      final ids = <String>{};
+      for (final r in rows) {
+        if (r['id'] is! String || r['poll_id'] is! String || r['uid'] is! String) continue;
+        final c = _pollCommentFromRow(r);
+        (byPoll[c.postId] ??= []).add(c);
+        if (r['uid'] != supabaseUserId) ids.add(r['uid'] as String);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      for (final id in pollIds) {
+        _pollComments[id] = byPoll[id] ?? const <PostComment>[];
+      }
+      notifyListeners();
+    } catch (_) {
+      // Phase 39 not run yet — polls just show without comments.
+    }
+  }
+
+  /// Reloads one poll's comments (its comments page polls this).
+  Future<void> refreshPollComments(String pollId) => _fetchPollComments([pollId]);
+
+  /// Returns an error to show, or null.
+  Future<String?> addPollComment(String pollId, String text) async {
+    if (selfBanned) return _bannedMessage;
+    final uid = supabaseUserId;
+    if (!signedIn || uid == null) return 'Log in to comment.';
+    if (!_remotePollIds.contains(pollId)) return "This poll isn't on the server yet.";
+    var clean = text.trim();
+    if (clean.isEmpty) return null;
+    if (clean.length > 300) clean = clean.substring(0, 300);
+    if (_tooSoon('poll_comment', 1500)) return 'Slow down a sec.';
+    try {
+      final rows = await _withProfileRepair<List<Map<String, dynamic>>>(
+          () => Supabase.instance.client.from('poll_comments').insert({'poll_id': pollId, 'uid': uid, 'text': clean}).select());
+      final c = _pollCommentFromRow(rows.first);
+      _pollComments[pollId] = [...(_pollComments[pollId] ?? const <PostComment>[]).where((x) => x.id != c.id), c];
+      notifyListeners();
+      return null;
+    } catch (e) {
+      if (e is PostgrestException && e.message.toLowerCase().contains('rate limit')) return 'Slow down a sec.';
+      return _featureError(e, feature: 'Poll comments', phase: 'phase 39', fallback: "Couldn't send that comment");
+    }
+  }
+
+  Future<void> deletePollComment(PostComment c) async {
+    try {
+      await Supabase.instance.client.from('poll_comments').delete().eq('id', c.id);
+    } catch (_) {
+      return;
+    }
+    _pollComments[c.postId] = (_pollComments[c.postId] ?? const <PostComment>[]).where((x) => x.id != c.id).toList();
+    notifyListeners();
   }
 
   // --- Place reports -----------------------------------------------------

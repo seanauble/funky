@@ -5,6 +5,7 @@ import 'screens/admin_panel_screen.dart';
 import 'screens/call_screen.dart';
 import 'screens/dm_thread_screen.dart';
 import 'screens/event_chat_screen.dart';
+import 'screens/poll_comments_screen.dart';
 import 'screens/friend_requests_screen.dart';
 import 'screens/group_thread_screen.dart';
 import 'screens/place_detail_screen.dart';
@@ -73,6 +74,11 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
       if (placeId is! String) return;
       navigator.popUntil((r) => r.isFirst);
       navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
+    case 'poll_comment':
+      final pollId = data['poll_id'];
+      if (pollId is! String) return;
+      navigator.popUntil((r) => r.isFirst);
+      navigator.push(MaterialPageRoute(builder: (_) => PollCommentsScreen(pollId: pollId)));
     case 'post_comment':
     case 'post_like':
     case 'friend_post':

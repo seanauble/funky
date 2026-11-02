@@ -1,3 +1,4 @@
+import 'dart:async';
 import '../data/avatar_presets.dart';
 import 'dart:io';
 import 'dart:math' as math;
@@ -5,6 +6,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../data/app_store.dart';
@@ -198,7 +200,7 @@ class FunkyAvatar extends StatelessWidget {
           ),
         );
     Widget remote() => ClipOval(
-          child: Image.network(
+          child: netImage(
             url!,
             width: size,
             height: size,
@@ -365,15 +367,28 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     final old = _controller;
     _controller = null;
     old?.dispose();
-    final c = path != null ? VideoPlayerController.file(File(path)) : VideoPlayerController.networkUrl(Uri.parse(url!));
+    unawaited(_open(path, url, key));
+  }
+
+  // Downloaded once and looped from the phone after that — a thumbnail
+  // streaming the same video over and over was most of FUNKY's downloads.
+  Future<void> _open(String? path, String? url, String key) async {
+    final c = await openVideoController(path: path, url: url);
+    if (!mounted || _controllerForPath != key) {
+      unawaited(c.dispose());
+      return;
+    }
+    _controller = c;
     c.setLooping(true);
     c.setVolume(0);
-    c.initialize().then((_) {
-      if (!mounted) return;
-      c.play();
-      setState(() {});
-    });
-    _controller = c;
+    try {
+      await c.initialize();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || _controller != c) return;
+    c.play();
+    setState(() {});
   }
 
   @override
@@ -407,7 +422,7 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
       );
     }
     if (story?.imageUrl != null) {
-      return Image.network(
+      return netImage(
         story!.imageUrl!,
         fit: BoxFit.cover,
         width: double.infinity,
@@ -425,7 +440,7 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     final cover = widget.coverPhotoPath;
     final coverUrl = widget.coverUrl;
     Widget letter() => _letterBox(tokens);
-    Widget coverNetwork() => Image.network(
+    Widget coverNetwork() => netImage(
           coverUrl!,
           fit: BoxFit.cover,
           width: double.infinity,
@@ -447,7 +462,7 @@ class _PlaceMediaThumbnailState extends State<PlaceMediaThumbnail> {
     }
 
     if (photo != null) {
-      return Image.network(
+      return netImage(
         photo,
         fit: BoxFit.cover,
         width: double.infinity,
@@ -512,7 +527,11 @@ class _VideoFrameThumbnailState extends State<VideoFrameThumbnail> {
   Future<void> _load() async {
     final path = widget.path;
     final url = widget.url;
-    final c = path != null ? VideoPlayerController.file(File(path)) : VideoPlayerController.networkUrl(Uri.parse(url!));
+    final c = await openVideoController(path: path, url: url);
+    if (!mounted || widget.path != path || widget.url != url) {
+      unawaited(c.dispose());
+      return;
+    }
     _controller = c;
     try {
       await c.initialize();
@@ -651,7 +670,7 @@ class GroupAvatar extends StatelessWidget {
     final url = group.photoUrl;
     if (url == null || url.isEmpty) return fallback;
     return ClipOval(
-      child: Image.network(
+      child: netImage(
         url,
         width: size,
         height: size,
@@ -721,9 +740,9 @@ Future<Uint8List> applyCameraFilterToImageBytes(Uint8List bytes, CameraFilter fi
   try {
     // Phone photos are 12MP+, and dart:ui can only write PNG — an
     // uncompressed-ish 12MP PNG is huge to upload. A Story only ever fills a
-    // phone screen, so the filtered copy is capped at 2048px on its long
+    // phone screen, so the filtered copy is capped at 1440px on its long
     // edge (smaller photos are left at their own size).
-    const maxEdge = 2048.0;
+    const maxEdge = 1440.0; // every view downloads it, so keep it small
     final longEdge = math.max(image.width, image.height).toDouble();
     final scale = longEdge > maxEdge ? maxEdge / longEdge : 1.0;
     final outW = (image.width * scale).round();
@@ -755,13 +774,13 @@ Future<Uint8List> applyCameraFilterToImageBytes(Uint8List bytes, CameraFilter fi
 /// Flips a photo left-to-right. Front-camera shots come out of the camera
 /// un-mirrored, so they look reversed compared to the selfie preview you
 /// just saw — this makes the saved photo match the preview. Capped at
-/// 2048px on the long edge, same as the filter bake above.
+/// 1440px on the long edge, same as the filter bake above.
 Future<Uint8List> mirrorImageBytes(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
   final frame = await codec.getNextFrame();
   final image = frame.image;
   try {
-    const maxEdge = 2048.0;
+    const maxEdge = 1440.0; // every view downloads it, so keep it small
     final longEdge = math.max(image.width, image.height).toDouble();
     final scale = longEdge > maxEdge ? maxEdge / longEdge : 1.0;
     final outW = (image.width * scale).round();

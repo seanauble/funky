@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../services/media_cache.dart';
 import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
@@ -125,7 +126,7 @@ class _MemoryCard extends StatelessWidget {
           else if (story.imageUrl != null)
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: Image.network(story.imageUrl!, height: 140, width: double.infinity, fit: BoxFit.cover),
+              child: netImage(story.imageUrl!, height: 140, width: double.infinity, fit: BoxFit.cover),
             ),
           if (story.videoPath != null || story.imagePath != null || story.videoUrl != null || story.imageUrl != null)
             const SizedBox(height: 8),
