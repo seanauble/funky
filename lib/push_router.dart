@@ -10,6 +10,8 @@ import 'screens/friend_requests_screen.dart';
 import 'screens/group_thread_screen.dart';
 import 'screens/place_detail_screen.dart';
 import 'screens/posts_screen.dart';
+import 'screens/referral_screen.dart';
+import 'screens/event_manage_screen.dart';
 
 /// Lets code outside the widget tree (a tapped push notification) push
 /// screens.
@@ -65,6 +67,9 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
     case 'photo':
     case 'friends_going':
     case 'invite':
+    case 'claim':
+    case 'reward_used':
+    case 'event_role':
       final placeId = data['place_id'];
       if (placeId is! String) return;
       navigator.popUntil((r) => r.isFirst);
@@ -87,7 +92,32 @@ Future<void> openPushTarget(AppStore store, String kind, Map<String, dynamic> da
       if (postId is! String) return;
       navigator.popUntil((r) => r.isFirst);
       navigator.push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: postId)));
+    case 'referral':
+      navigator.popUntil((r) => r.isFirst);
+      navigator.push(MaterialPageRoute(builder: (_) => const ReferralScreen()));
+    case 'event_request':
+      final placeId = data['place_id'];
+      if (placeId is! String) return;
+      navigator.popUntil((r) => r.isFirst);
+      final ev = store.places.where((x) => x.id == placeId).firstOrNull;
+      navigator.push(MaterialPageRoute(
+        builder: (_) => ev != null && store.canManageEvent(ev) ? EventManageScreen(placeId: placeId) : PlaceDetailScreen(placeId: placeId),
+      ));
+    case 'pay':
+      final from = data['from'];
+      final groupId = data['group_id'];
+      final placeId = data['place_id'];
+      navigator.popUntil((r) => r.isFirst);
+      if (from is String) {
+        await store.ensurePerson(from);
+        navigator.push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: from)));
+      } else if (groupId is String) {
+        navigator.push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: groupId)));
+      } else if (placeId is String) {
+        navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
+      }
     case 'story_report':
+    case 'claim_request':
       if (!store.isAdmin) return;
       navigator.popUntil((r) => r.isFirst);
       navigator.push(MaterialPageRoute(builder: (_) => const AdminPanelScreen()));

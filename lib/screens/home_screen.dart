@@ -29,6 +29,7 @@ import 'profile_parts.dart' show storyMedia;
 import 'place_detail_screen.dart';
 import '../root_shell.dart';
 import 'story_viewer_screen.dart';
+import '../widgets/join_code.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -998,6 +999,7 @@ class _PlacesOfKind extends StatelessWidget {
                             p.place.eventType != null ? placeEventTypeLabel(p.place.eventType) : placeKindLabel(p.kind),
                             if (p.place.shownTime != null) clockLabel(p.place.shownTime!),
                             if (p.place.isPrivate) '🔒 Private',
+                            if (p.place.official) '✓ Official',
                             p.distance < 0.1 ? 'right by you' : '${formatMiles(p.distance)} away',
                           ].join(' · '),
                           style: TextStyle(color: tokens.mute, fontSize: 12),
@@ -1387,6 +1389,12 @@ class _HomeHeader extends StatelessWidget {
                       ),
                     ],
                   ),
+          ),
+          IconButton(
+            tooltip: 'Have a code?',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => showJoinWithCode(context),
+            icon: Icon(Icons.confirmation_number_outlined, color: Theme.of(context).extension<FunkyTokens>()!.tokens.ink, size: 24),
           ),
           const NotificationBell(),
         ],

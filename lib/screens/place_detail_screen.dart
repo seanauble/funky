@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -22,6 +23,11 @@ import 'profile_parts.dart';
 import 'event_chat_screen.dart';
 import '../widgets/invite_friends_sheet.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'referral_screen.dart';
+import 'dm_thread_screen.dart';
+import 'event_manage_screen.dart';
+import 'event_pass_screen.dart';
+import '../widgets/chat_cards.dart' show formatAmount;
 
 /// The little text box explaining what the verified checkmark (or the
 /// not-yet-verified "?") next to a place's name means — its own tap
@@ -60,8 +66,13 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       final store = context.read<AppStore>();
       store.fetchPostsAt(widget.placeId);
       final p = store.rankedPlaceById(widget.placeId)?.place;
-      // Private: re-check the details (you may have just been invited).
-      if (p != null && p.isPrivate) store.refreshPrivateEvent(widget.placeId);
+      // Private: re-check the details (you may have just been invited),
+      // who's going (the way the host shows it), and any requests to go.
+      if (p != null && p.isPrivate) {
+        store.refreshPrivateEvent(widget.placeId);
+        store.fetchGoingPreview(widget.placeId);
+        if (store.canManageEvent(p)) store.fetchEventRequests(widget.placeId);
+      }
     });
   }
 
@@ -174,6 +185,61 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     }
   }
 
+  /// "Ask to go": tells the host (with an optional note) and opens your
+  /// chat with them, where they send how to pay and let you in.
+  Future<void> _ask(AppStore store, Place p) async {
+    if (!store.signedIn) {
+      await requireAccountThen(context, store, () {});
+      return;
+    }
+    final status = store.myRequestStatus(p.id);
+    if (status != null && status != 'declined' && p.by != 'me') {
+      await store.ensurePerson(p.by);
+      if (mounted) Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: p.by)));
+      return;
+    }
+    final field = TextEditingController();
+    final note = await showIosDialog<String>(
+      context: context,
+      builder: (ctx) => IosAlert(
+        title: Text('Ask to go to ${p.name}?'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(p.entryPrice != null
+                  ? "The host gets your request in their messages. They'll send how to pay (${formatAmount(p.entryPrice!.toStringAsFixed(2))}), then let you in."
+                  : "The host gets your request in their messages and can let you in."),
+              const SizedBox(height: 10),
+              TextField(
+                controller: field,
+                maxLength: 200,
+                decoration: const InputDecoration(hintText: "Say who you are (optional)", counterText: '', isDense: true),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(field.text), child: const Text('Ask')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (note == null || !mounted) return;
+    final (host, err) = await store.askToJoin(p.id, note: note.trim().isEmpty ? null : note.trim());
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    if (host != null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Asked! Watch your messages for the host.')));
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: host)));
+    }
+  }
+
   /// Enter the host's code (iOS alert with a text box).
   Future<void> _unlock(AppStore store, Place p) async {
     if (!store.signedIn) {
@@ -219,6 +285,130 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? "You're in! Let the host know if you're coming.")));
   }
 
+  /// "Own or manage this place?" — a short form; an admin checks it.
+  Future<void> _claim(AppStore store, Place p) async {
+    if (!store.signedIn) {
+      await requireAccountThen(context, store, () {});
+      return;
+    }
+    final role = TextEditingController(text: 'Owner');
+    final contact = TextEditingController();
+    final note = TextEditingController();
+    final send = await showIosDialog<bool>(
+      context: context,
+      builder: (ctx) => IosAlert(
+        title: Text('Claim ${p.name}'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text("Run this page: post official events (verified right away), add pictures and set a deal. We'll check it's really you first."),
+              const SizedBox(height: 10),
+              TextField(controller: role, maxLength: 40, decoration: const InputDecoration(labelText: 'Your role (Owner, Manager…)', counterText: '', isDense: true)),
+              TextField(
+                controller: contact,
+                maxLength: 120,
+                decoration: const InputDecoration(labelText: "Bar's phone, email or Instagram", counterText: '', isDense: true),
+              ),
+              TextField(controller: note, maxLength: 300, decoration: const InputDecoration(labelText: 'Anything else (optional)', counterText: '', isDense: true)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Send')),
+        ],
+      ),
+    );
+    final r = role.text, c = contact.text, n = note.text;
+    role.dispose();
+    contact.dispose();
+    note.dispose();
+    if (send != true || !mounted) return;
+    final msg = await store.submitPlaceClaim(p.id, role: r, contact: c, note: n);
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Owner: the deal shown on the place ("No cover before 10").
+  Future<void> _editDeal(AppStore store, Place p) async {
+    final field = TextEditingController(text: p.deal ?? '');
+    final value = await showIosDialog<String>(
+      context: context,
+      builder: (ctx) => IosAlert(
+        title: const Text("Tonight's deal"),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Shows on your page for everyone. Leave it empty to take it down.'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: field,
+                autofocus: true,
+                maxLength: 140,
+                maxLines: 2,
+                minLines: 1,
+                decoration: const InputDecoration(hintText: 'No cover before 10 · \$5 apps', counterText: '', isDense: true),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(field.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (value == null || !mounted) return;
+    final err = await store.setPlaceDeal(p.id, value);
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? (value.trim().isEmpty ? 'Deal taken down.' : 'Deal is up.'))));
+  }
+
+  /// Owner or admin: what this place gives for a FUNKY reward pass.
+  Future<void> _editReward(AppStore store, Place p) async {
+    final field = TextEditingController(text: p.reward ?? '');
+    final value = await showIosDialog<String>(
+      context: context,
+      builder: (ctx) => IosAlert(
+        title: const Text('FUNKY Rewards'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "People who bring 5 friends onto FUNKY get a pass. What do you give them when they show it? "
+                "You'll get a notification each time one's used here. Leave it empty to stop taking passes.",
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: field,
+                autofocus: true,
+                maxLength: 60,
+                decoration: const InputDecoration(hintText: 'Free cover · Skip the line', counterText: '', isDense: true),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(field.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    field.dispose();
+    if (value == null || !mounted) return;
+    final err = await store.setPlaceReward(p.id, value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(err ?? (value.trim().isEmpty ? "You're not taking FUNKY passes now." : "You're in — FUNKY passes work here now.")),
+      ));
+    }
+  }
+
   Future<void> _pickRsvp(AppStore store, Place p) async {
     final status = await showIosActionSheet<String>(
       context,
@@ -246,7 +436,7 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           final guests = store.eventGuests(p.id);
           const order = ['going', 'maybe', 'unlocked', 'cant'];
           const titles = {'going': 'Going', 'maybe': 'Maybe', 'unlocked': "Hasn't answered", 'cant': "Can't go"};
-          final isHost = p.by == 'me';
+          final isHost = store.canManageEvent(p);
           return SafeArea(
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: MediaQuery.of(sheetContext).size.height * 0.75),
@@ -302,9 +492,15 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                               g.uid == 'me' ? 'You' : '@${person?.handle ?? 'someone'}',
                               style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
                             ),
-                            trailing: g.uid == p.by
-                                ? Text('Host', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5))
+                            subtitle: g.checkedInAt != null && store.isEventStaff(p)
+                                ? Text('Checked in ${clockLabel(g.checkedInAt!)}', style: TextStyle(color: tokens.friend, fontSize: 12))
                                 : null,
+                            trailing: switch (store.roleAt(p, g.uid)) {
+                              'host' => Text('Host', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                              'cohost' => Text('Co-host', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                              'door' => Text('Door', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 12.5)),
+                              _ => null,
+                            },
                           );
                         }),
                     ],
@@ -548,6 +744,10 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           night: p.startsAt == null ? 'Tonight' : (tonight ? 'Tonight' : dayLabel(p.startsAt!)),
           signedIn: store.signedIn,
           onUnlock: () => _unlock(store, p),
+          onAsk: () => _ask(store, p),
+          price: p.entryPrice,
+          requestStatus: store.myRequestStatus(p.id),
+          preview: store.goingPreviewFor(p.id),
         )
       else
         infoRow(
@@ -558,24 +758,53 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
         ),
       if (startsAt != null)
         infoRow(Icons.schedule_rounded, clockLabel(startsAt), '${dayLabel(startsAt)} · ${partOfNightLabel(startsAt)}'),
-      if (priv && insider) ...[
-        _RsvpCard(
-          status: myRsvp,
-          going: guestsGoing,
-          maybe: guestsMaybe,
-          onPick: (s) async {
-            final err = await store.setEventRsvp(p.id, s);
-            if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-          },
-          onGuests: () => _showGuests(context, store, p),
+      if (priv && store.isEventStaff(p))
+        _RunEventCard(
+          role: store.eventRole(p) ?? 'host',
+          openRequests: store.openRequestCount(p.id),
+          checkedIn: store.eventGuests(p.id).where((g) => g.checkedInAt != null).length,
+          onList: store.eventGuests(p.id).where((g) => g.status != 'cant').length,
+          onOpen: (tab) => Navigator.of(context).push(MaterialPageRoute(builder: (_) => EventManageScreen(placeId: p.id, initialTab: tab))),
         ),
-        if (isHost && secret?.passcode != null)
+      if (priv && insider) ...[
+        Builder(builder: (context) {
+          final preview = store.goingPreviewFor(p.id);
+          final staff = store.isEventStaff(p);
+          final hidden = p.hidesGoingCount && !staff;
+          final faces = [
+            for (final f in preview?.faces ?? const <String>[])
+              if ((f == 'me' ? store.me : store.personById(f)) case final person?) person,
+          ];
+          return _RsvpCard(
+            status: myRsvp,
+            summary: hidden
+                ? (faces.isEmpty ? 'The host keeps the guest list to themselves' : 'and ${preview?.more == true ? 'more' : 'others'} going')
+                : '$guestsGoing going${guestsMaybe > 0 ? ' · $guestsMaybe maybe' : ''} · see the guest list',
+            faces: hidden ? faces : const [],
+            onPick: (s) async {
+              final err = await store.setEventRsvp(p.id, s);
+              if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+              unawaited(store.fetchGoingPreview(p.id));
+            },
+            onGuests: hidden ? null : () => _showGuests(context, store, p),
+          );
+        }),
+        if (myRsvp != null && !store.isEventStaff(p))
+          infoRow(
+            Icons.confirmation_number_outlined,
+            'Your pass',
+            'Show it at the door',
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(fullscreenDialog: true, builder: (_) => EventPassScreen(placeId: p.id))),
+          ),
+        if (store.canManageEvent(p) && secret?.passcode != null && !(secret?.personalCodes ?? false))
           _HostCodeCard(
             code: secret!.passcode!,
             onShare: () => shareFunkyPlace(context, p.name, when: p.startsAt == null ? null : dayLabel(p.startsAt!), code: secret.passcode),
           ),
+        if (p.entryPrice != null)
+          infoRow(Icons.payments_outlined, '${formatAmount(p.entryPrice!.toStringAsFixed(2))} to get in', 'Pay the host on Venmo or Cash App'),
       ],
-      if (store.signedIn && !over && (priv ? isHost || store.isAdmin : true))
+      if (store.signedIn && !over && (priv ? store.canManageEvent(p) : true))
         infoRow(
           Icons.person_add_alt_1_outlined,
           'Invite friends',
@@ -630,6 +859,95 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           }),
         ),
       Padding(padding: const EdgeInsets.only(top: 4, bottom: 14), child: RatingSummaryLine(placeId: place.id, fontSize: 13)),
+      // The owner's deal, for everyone.
+      if (p.deal != null && p.deal!.isNotEmpty)
+        Container(
+          margin: const EdgeInsets.only(top: 6, bottom: 8),
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(color: tokens.orange.withValues(alpha: 0.13), borderRadius: BorderRadius.circular(14)),
+          child: Row(
+            children: [
+              const Text('🎉', style: TextStyle(fontSize: 22)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("TONIGHT'S DEAL", style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w900, fontSize: 11, letterSpacing: 0.6)),
+                    const SizedBox(height: 2),
+                    Text(p.deal!, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      // Takes FUNKY reward passes.
+      if (isVenue && (p.reward ?? '').isNotEmpty)
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ReferralScreen())),
+          child: Container(
+            margin: const EdgeInsets.only(top: 2, bottom: 8),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            decoration: BoxDecoration(color: tokens.gold.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(14)),
+            child: Row(
+              children: [
+                const Text('🎁', style: TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('FUNKY REWARDS', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w900, fontSize: 11, letterSpacing: 0.6)),
+                      const SizedBox(height: 2),
+                      Text(p.reward!, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 15)),
+                      Text(
+                        (store.referral?.unusedRewards.isNotEmpty ?? false)
+                            ? 'You have a pass — use it here'
+                            : 'Invite 5 friends to FUNKY to get a pass',
+                        style: TextStyle(color: tokens.mute, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, color: tokens.mute),
+              ],
+            ),
+          ),
+        ),
+      // You run this place: your tools.
+      if (isVenue && store.isPlaceOwner(p.id))
+        _OwnerToolsCard(
+          placeName: p.name,
+          placeId: p.id,
+          reward: p.reward,
+          onEvent: () => showCreateSheet(context, eventAtPlaceId: p.id),
+          onPhoto: () => _addPicture(store),
+          onDeal: () => _editDeal(store, p),
+          onReward: () => _editReward(store, p),
+        )
+      else if (isVenue && store.signedIn && !store.isGuest)
+        Builder(builder: (context) {
+          final status = store.myClaimStatus(p.id);
+          if (status == 'pending') {
+            return infoRow(Icons.hourglass_top_rounded, 'Your claim is being checked', "We'll let you know once it's approved.");
+          }
+          if (store.placeHasOwner(p.id)) return const SizedBox.shrink();
+          return infoRow(
+            Icons.storefront_rounded,
+            'Own or manage this place?',
+            'Claim it to post official events, add pictures and set deals',
+            onTap: () => _claim(store, p),
+          );
+        }),
+      if (isVenue && store.isAdmin && !store.isPlaceOwner(p.id))
+        infoRow(
+          Icons.card_giftcard_rounded,
+          'FUNKY Rewards (Admin)',
+          (p.reward ?? '').isEmpty ? 'Not taking passes — tap to set what they give' : '${p.reward} · tap to change',
+          onTap: () => _editReward(store, p),
+        ),
       if (hosted.isNotEmpty) ...[
         const SectionHeader(title: 'Coming up here'),
         for (final e in hosted)
@@ -646,7 +964,15 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
+                        Row(
+                          children: [
+                            Flexible(child: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800))),
+                            if (e.official) ...[
+                              const SizedBox(width: 6),
+                              const _OfficialChip(small: true),
+                            ],
+                          ],
+                        ),
                         Text(
                           e.startsAt == null ? 'Tonight' : (store.isPlaceOnTonight(e) ? 'Tonight · ${clockLabel(e.startsAt!)}' : whenLabel(e.startsAt!)),
                           style: TextStyle(color: tokens.mute, fontSize: 12.5),
@@ -1056,6 +1382,27 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
               ),
             ],
           ),
+          if (p.official || (isVenue && store.placeHasOwner(p.id)))
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: p.official
+                  ? Row(
+                      children: [
+                        const _OfficialChip(),
+                        if (host != null) ...[
+                          const SizedBox(width: 6),
+                          Flexible(child: Text('Posted by ${host.name}', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 13))),
+                        ],
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        Icon(Icons.storefront_rounded, size: 16, color: tokens.brand),
+                        const SizedBox(width: 5),
+                        Text('Run by the owner on FUNKY', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w700, fontSize: 13)),
+                      ],
+                    ),
+            ),
           const SizedBox(height: 4),
           Text(
             locked
@@ -1345,11 +1692,38 @@ class _PrivateLockCard extends StatelessWidget {
   final String night;
   final bool signedIn;
   final VoidCallback onUnlock;
-  const _PrivateLockCard({required this.night, required this.signedIn, required this.onUnlock});
+  final VoidCallback onAsk;
+  final double? price;
+  // Your request to go: 'asked', 'pay_sent', 'paid', 'in', 'declined', or null.
+  final String? requestStatus;
+  final GoingPreview? preview;
+  const _PrivateLockCard({
+    required this.night,
+    required this.signedIn,
+    required this.onUnlock,
+    required this.onAsk,
+    this.price,
+    this.requestStatus,
+    this.preview,
+  });
 
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final faces = [
+      for (final f in preview?.faces ?? const <String>[])
+        if (store.personById(f) case final person?) person,
+    ];
+    final count = preview?.count;
+    final asked = requestStatus != null && requestStatus != 'declined';
+    final askLabel = switch (requestStatus) {
+      'asked' => 'Asked · open chat with the host',
+      'pay_sent' => 'The host sent how to pay · open chat',
+      'paid' => 'You paid · waiting to be let in',
+      'declined' => "The host can't fit you in",
+      _ => 'Ask to go',
+    };
     return Container(
       margin: const EdgeInsets.only(top: 6, bottom: 10),
       padding: const EdgeInsets.all(16),
@@ -1373,33 +1747,168 @@ class _PrivateLockCard extends StatelessWidget {
                   children: [
                     Text('Private event · $night', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15.5)),
                     const SizedBox(height: 2),
-                    Text('Address and time are for guests only.', style: TextStyle(color: tokens.mute, fontSize: 13)),
+                    Text(
+                      price != null ? '${formatAmount(price!.toStringAsFixed(2))} to get in · address and time for guests only' : 'Address and time are for guests only.',
+                      style: TextStyle(color: tokens.mute, fontSize: 13),
+                    ),
                   ],
                 ),
               ),
             ],
           ),
+          if (faces.isNotEmpty || count != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (faces.isNotEmpty)
+                  SizedBox(
+                    width: 18.0 * faces.length + 10,
+                    height: 26,
+                    child: Stack(
+                      children: [
+                        for (var i = 0; i < faces.length; i++)
+                          Positioned(
+                            left: 18.0 * i,
+                            child: Container(
+                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.raised, width: 2)),
+                              child: PersonAvatar(person: faces[i], size: 24, preview: false),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                if (faces.isNotEmpty) const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    count != null
+                        ? '$count going${faces.isNotEmpty ? ', including friends' : ''}'
+                        : (faces.length == 1 ? '@${faces.first.handle} is going' : 'Friends are going${preview?.more == true ? ' · and more' : ''}'),
+                    style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           Text(
             signedIn
-                ? 'Got invited? Enter the code from the host to see where and when, RSVP, and join the event chat.'
-                : 'Make an account, then enter the code from the host to see where and when, RSVP, and join the event chat.',
+                ? 'Have a code from the host? Enter it. No code? Ask to go — the host gets it in their messages.'
+                : 'Make an account, then enter the code from the host or ask to go.',
             style: TextStyle(color: tokens.ink, fontSize: 13.5, height: 1.35),
           ),
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: onUnlock,
-              icon: Icon(Icons.lock_open_rounded, color: tokens.onOrange, size: 19),
-              label: Text(signedIn ? 'Enter code' : 'Make an account', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: tokens.orange,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onUnlock,
+                  icon: Icon(Icons.lock_open_rounded, color: tokens.onOrange, size: 19),
+                  label: Text(signedIn ? 'Enter code' : 'Make an account', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: tokens.orange,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              if (signedIn) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: requestStatus == 'declined' ? null : onAsk,
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: asked ? tokens.friend : tokens.line),
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text(
+                      askLabel,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      style: TextStyle(color: asked ? tokens.friend : tokens.ink, fontWeight: FontWeight.w800, fontSize: asked ? 12 : 14),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// For the host, co-hosts and door staff: requests, codes, the door, the team.
+class _RunEventCard extends StatelessWidget {
+  final String role;
+  final int openRequests;
+  final int checkedIn;
+  final int onList;
+  final ValueChanged<int> onOpen;
+  const _RunEventCard({required this.role, required this.openRequests, required this.checkedIn, required this.onList, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final manage = role == 'host' || role == 'cohost';
+    Widget tool(IconData icon, String label, int tab, {int badge = 0}) => Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onOpen(manage ? tab : 0),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 11),
+              decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: tokens.line)),
+              child: Column(
+                children: [
+                  Badge(
+                    isLabelVisible: badge > 0,
+                    label: Text('$badge'),
+                    backgroundColor: tokens.danger,
+                    child: Icon(icon, color: tokens.brand, size: 22),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(label, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12.5)),
+                ],
               ),
             ),
+          ),
+        );
+    return Container(
+      margin: const EdgeInsets.only(top: 6, bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.badge_outlined, color: tokens.brand, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  role == 'host' ? 'Run your event' : role == 'cohost' ? "You're a co-host" : "You're on the door",
+                  style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15),
+                ),
+              ),
+              Text('$checkedIn/$onList in', style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 12.5)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              if (manage) ...[
+                tool(Icons.front_hand_outlined, 'Requests', 0, badge: openRequests),
+                const SizedBox(width: 8),
+                tool(Icons.key_rounded, 'Codes', 1),
+                const SizedBox(width: 8),
+              ],
+              tool(Icons.door_front_door_outlined, 'Door', 2),
+              if (manage) ...[
+                const SizedBox(width: 8),
+                tool(Icons.group_outlined, 'Team', 3),
+              ],
+            ],
           ),
         ],
       ),
@@ -1410,11 +1919,13 @@ class _PrivateLockCard extends StatelessWidget {
 /// Going · Maybe · Can't go, with how many said each, and the guest list.
 class _RsvpCard extends StatelessWidget {
   final String? status;
-  final int going;
-  final int maybe;
+  // "12 going · see the guest list", or the hint when the host hides the count.
+  final String summary;
+  // When the host hides the count: a few faces going.
+  final List<Person> faces;
   final ValueChanged<String> onPick;
-  final VoidCallback onGuests;
-  const _RsvpCard({required this.status, required this.going, required this.maybe, required this.onPick, required this.onGuests});
+  final VoidCallback? onGuests;
+  const _RsvpCard({required this.status, required this.summary, this.faces = const [], required this.onPick, required this.onGuests});
 
   @override
   Widget build(BuildContext context) {
@@ -1468,15 +1979,30 @@ class _RsvpCard extends StatelessWidget {
             onTap: onGuests,
             child: Row(
               children: [
-                Icon(Icons.people_outline_rounded, color: tokens.mute, size: 19),
+                if (faces.isEmpty)
+                  Icon(Icons.people_outline_rounded, color: tokens.mute, size: 19)
+                else
+                  SizedBox(
+                    width: 16.0 * faces.length + 8,
+                    height: 24,
+                    child: Stack(
+                      children: [
+                        for (var i = 0; i < faces.length; i++)
+                          Positioned(
+                            left: 16.0 * i,
+                            child: Container(
+                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.raised, width: 1.5)),
+                              child: PersonAvatar(person: faces[i], size: 22, preview: false),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
-                    '$going going${maybe > 0 ? ' · $maybe maybe' : ''} · see the guest list',
-                    style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13),
-                  ),
+                  child: Text(summary, style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13)),
                 ),
-                Icon(Icons.chevron_right_rounded, color: tokens.mute),
+                if (onGuests != null) Icon(Icons.chevron_right_rounded, color: tokens.mute),
               ],
             ),
           ),
@@ -1524,6 +2050,149 @@ class _HostCodeCard extends StatelessWidget {
             tooltip: 'Send invite',
             onPressed: onShare,
             icon: Icon(Icons.ios_share_rounded, color: tokens.ink, size: 21),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "✓ Official" — posted by the bar or club's owner.
+class _OfficialChip extends StatelessWidget {
+  final bool small;
+  const _OfficialChip({this.small = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: small ? 6 : 8, vertical: small ? 1 : 3),
+      decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(999)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.verified_rounded, size: small ? 12 : 14, color: tokens.brand),
+          const SizedBox(width: 3),
+          Text('Official', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: small ? 10.5 : 12.5)),
+        ],
+      ),
+    );
+  }
+}
+
+/// What the owner of a bar or club sees on its page.
+class _OwnerToolsCard extends StatefulWidget {
+  final String placeName;
+  final String placeId;
+  final String? reward;
+  final VoidCallback onEvent;
+  final VoidCallback onPhoto;
+  final VoidCallback onDeal;
+  final VoidCallback onReward;
+  const _OwnerToolsCard({
+    required this.placeName,
+    required this.placeId,
+    required this.reward,
+    required this.onEvent,
+    required this.onPhoto,
+    required this.onDeal,
+    required this.onReward,
+  });
+
+  @override
+  State<_OwnerToolsCard> createState() => _OwnerToolsCardState();
+}
+
+class _OwnerToolsCardState extends State<_OwnerToolsCard> {
+  int? _used;
+
+  @override
+  void initState() {
+    super.initState();
+    context.read<AppStore>().rewardsUsedAt(widget.placeId).then((n) {
+      if (mounted) setState(() => _used = n);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final reward = widget.reward ?? '';
+    Widget tool(IconData icon, String label, VoidCallback onTap) => Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: tokens.line)),
+              child: Column(
+                children: [
+                  Icon(icon, color: tokens.brand, size: 22),
+                  const SizedBox(height: 4),
+                  Text(label, textAlign: TextAlign.center, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 12.5)),
+                ],
+              ),
+            ),
+          ),
+        );
+    return Container(
+      margin: const EdgeInsets.only(top: 6, bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: tokens.raised, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.storefront_rounded, color: tokens.brand, size: 20),
+              const SizedBox(width: 8),
+              Expanded(child: Text('You run ${widget.placeName}', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 15))),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('Your events go up as Official and verified right away. Your pictures go live with no wait.', style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              tool(Icons.event_available_rounded, 'Post an event', widget.onEvent),
+              const SizedBox(width: 8),
+              tool(Icons.add_a_photo_outlined, 'Add pictures', widget.onPhoto),
+              const SizedBox(width: 8),
+              tool(Icons.local_offer_outlined, 'Set a deal', widget.onDeal),
+            ],
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onReward,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+              decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: tokens.line)),
+              child: Row(
+                children: [
+                  const Text('🎁', style: TextStyle(fontSize: 20)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          reward.isEmpty ? 'Take FUNKY reward passes' : 'FUNKY Rewards: $reward',
+                          style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 13.5),
+                        ),
+                        Text(
+                          reward.isEmpty
+                              ? 'People who bring 5 friends onto FUNKY come here to use their pass'
+                              : '${_used ?? 0} used here so far · tap to change',
+                          style: TextStyle(color: tokens.mute, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: tokens.mute),
+                ],
+              ),
+            ),
           ),
         ],
       ),

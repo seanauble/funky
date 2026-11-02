@@ -452,8 +452,47 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: person.id, replyToStory: story)));
     }
 
+    // A flyer posted at a private event you're not in yet: swipe up (or
+    // tap the pill) to ask the host to go.
+    Place? privateEvent;
+    if (story.place != null && story.place != 'main') {
+      for (final pl in store.places) {
+        if (pl.id == story.place && pl.isPrivate) privateEvent = pl;
+      }
+    }
+    final askEvent = privateEvent != null && story.uid != 'me' && !store.isEventInsider(privateEvent) ? privateEvent : null;
+
+    Future<void> askToGo(Place ev) async {
+      if (!store.signedIn) {
+        await requireAccountThen(context, store, () {});
+        return;
+      }
+      final status = store.myRequestStatus(ev.id);
+      if (status == 'declined') {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("The host can't fit you in this time.")));
+        return;
+      }
+      String? host;
+      if (status != null) {
+        host = ev.by;
+        await store.ensurePerson(host);
+      } else {
+        final (h, err) = await store.askToJoin(ev.id);
+        if (!context.mounted) return;
+        if (err != null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+          return;
+        }
+        host = h;
+      }
+      if (host == null || !context.mounted) return;
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: host!)));
+    }
+
     void handleSwipeUp() {
-      if (story.uid == 'me') {
+      if (askEvent != null) {
+        askToGo(askEvent);
+      } else if (story.uid == 'me') {
         showOwnStorySheet();
       } else if (story.anon) {
         // Messaging would give away who posted it.
@@ -776,7 +815,39 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             // no tap target of its own (the whole-screen GestureDetector
             // above already handles the real gesture), just a nudge. None on
             // someone's anonymous story (messaging them would give it away).
-            if (story.uid == 'me' || !story.anon)
+            if (askEvent != null)
+              Positioned(
+                bottom: pad.bottom + 24,
+                left: 0,
+                right: 70,
+                child: Center(
+                  child: GestureDetector(
+                    onTap: () => askToGo(askEvent),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(999)),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.lock_rounded, color: Colors.black, size: 16),
+                          const SizedBox(width: 6),
+                          Text(
+                            switch (store.myRequestStatus(askEvent.id)) {
+                              'asked' || 'pay_sent' || 'paid' => 'Asked · open chat',
+                              'declined' => 'The host is full',
+                              _ => askEvent.entryPrice != null
+                                  ? 'Ask to go · \$${askEvent.entryPrice! == askEvent.entryPrice!.roundToDouble() ? askEvent.entryPrice!.round() : askEvent.entryPrice!.toStringAsFixed(2)}'
+                                  : 'Ask to go',
+                            },
+                            style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w900, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else if (story.uid == 'me' || !story.anon)
             Positioned(
               bottom: pad.bottom + 28,
               left: 0,

@@ -155,6 +155,18 @@ class Place {
   // carries the night).
   final bool isPrivate;
   final bool timeHidden;
+  // Posted by the owner of the bar it's at — verified right away (phase 41).
+  final bool official;
+  // The owner's deal for a bar or club ("No cover before 10"), or null.
+  final String? deal;
+  // What this bar or club gives for a FUNKY reward pass ("Free cover"), or
+  // null when it isn't taking part (phase 42).
+  final String? reward;
+  // A party's price to get in, e.g. 10.0 (phase 43), or null.
+  final double? entryPrice;
+  // Who sees how many are going: 'public' (everyone) or 'hint' (only the
+  // hosts; everyone else sees a few faces).
+  final String goingVisibility;
 
   const Place({
     required this.id,
@@ -174,7 +186,41 @@ class Place {
     this.hostPlaceId,
     this.isPrivate = false,
     this.timeHidden = false,
+    this.official = false,
+    this.deal,
+    this.reward,
+    this.entryPrice,
+    this.goingVisibility = 'public',
   });
+
+  bool get hidesGoingCount => goingVisibility == 'hint';
+
+  /// The same place with the owner's deal or reward changed (pass null in
+  /// the function to clear it).
+  Place withOwnerInfo({String? Function()? deal, String? Function()? reward}) => Place(
+        id: id,
+        name: name,
+        kind: kind,
+        lat: lat,
+        lng: lng,
+        address: address,
+        by: by,
+        t: t,
+        session: session,
+        coverPhotoPath: coverPhotoPath,
+        coverUrl: coverUrl,
+        photoUrl: photoUrl,
+        startsAt: startsAt,
+        eventType: eventType,
+        hostPlaceId: hostPlaceId,
+        isPrivate: isPrivate,
+        timeHidden: timeHidden,
+        official: official,
+        deal: deal == null ? this.deal : deal(),
+        reward: reward == null ? this.reward : reward(),
+        entryPrice: entryPrice,
+        goingVisibility: goingVisibility,
+      );
 
   /// The night (2 PM to 2 PM) it happens on, e.g. "2026-11-07", or null.
   String? get night => startsAt == null ? null : sessionKey(startsAt!);
@@ -201,6 +247,11 @@ class Place {
         hostPlaceId: hostPlaceId,
         isPrivate: isPrivate,
         timeHidden: timeHidden ?? this.timeHidden,
+        official: official,
+        deal: deal,
+        reward: reward,
+        entryPrice: entryPrice,
+        goingVisibility: goingVisibility,
       );
 
   /// The same place somewhere else on the map (an admin moved its pin).
@@ -222,6 +273,11 @@ class Place {
         hostPlaceId: hostPlaceId,
         isPrivate: isPrivate,
         timeHidden: timeHidden,
+        official: official,
+        deal: deal,
+        reward: reward,
+        entryPrice: entryPrice,
+        goingVisibility: goingVisibility,
       );
 
   Map<String, dynamic> toJson() => {
@@ -242,6 +298,11 @@ class Place {
         'hostPlaceId': hostPlaceId,
         'isPrivate': isPrivate,
         'timeHidden': timeHidden,
+        'official': official,
+        'deal': deal,
+        'reward': reward,
+        'entryPrice': entryPrice,
+        'goingVisibility': goingVisibility,
       };
 
   factory Place.fromJson(Map<String, dynamic> json) => Place(
@@ -262,6 +323,11 @@ class Place {
         hostPlaceId: json['hostPlaceId'] as String?,
         isPrivate: json['isPrivate'] == true,
         timeHidden: json['timeHidden'] == true,
+        official: json['official'] == true,
+        deal: json['deal'] as String?,
+        reward: json['reward'] as String?,
+        entryPrice: (json['entryPrice'] as num?)?.toDouble(),
+        goingVisibility: json['goingVisibility'] == 'hint' ? 'hint' : 'public',
       );
 }
 
@@ -274,7 +340,12 @@ class PrivateEventDetails {
   final double? lng;
   final DateTime? startsAt;
   final String? passcode;
-  const PrivateEventDetails({required this.placeId, this.address, this.lat, this.lng, this.startsAt, this.passcode});
+  // 'shared' (one code for everyone) or 'personal' (a code for each
+  // person, each used once) — phase 43.
+  final String codeMode;
+  const PrivateEventDetails({required this.placeId, this.address, this.lat, this.lng, this.startsAt, this.passcode, this.codeMode = 'shared'});
+
+  bool get personalCodes => codeMode == 'personal';
 }
 
 /// Someone on a private event's guest list and their RSVP:
@@ -283,7 +354,12 @@ class EventGuest {
   final String uid; // 'me' for you
   final String status;
   final int t;
-  const EventGuest({required this.uid, required this.status, required this.t});
+  // When the door checked them in (phase 43), and who let them in.
+  final DateTime? checkedInAt;
+  final String? letInBy;
+  const EventGuest({required this.uid, required this.status, required this.t, this.checkedInAt, this.letInBy});
+
+  EventGuest withCheckIn(DateTime? at) => EventGuest(uid: uid, status: at != null ? 'going' : status, t: t, checkedInAt: at, letInBy: letInBy);
 }
 
 /// One message in a party or event's chat.
@@ -293,7 +369,10 @@ class EventMessage {
   final String uid; // 'me' for you
   final String text;
   final int t;
-  const EventMessage({required this.id, required this.placeId, required this.uid, required this.text, required this.t});
+  final ChatCard? card;
+  const EventMessage({required this.id, required this.placeId, required this.uid, required this.text, required this.t, this.card});
+
+  EventMessage withCard(ChatCard? c) => EventMessage(id: id, placeId: placeId, uid: uid, text: text, t: t, card: c);
 }
 
 /// What an event at a bar or club is.
@@ -414,6 +493,8 @@ class ChatMessage {
   // sent it (an admin's can reach much further than 50 miles). Someone sees
   // it if it's inside their radius OR they're inside its reach.
   final int? reachMiles;
+  // A payment card, or the "asked to go" / "you're in" cards (phase 43).
+  final ChatCard? card;
 
   bool get isStoryReply => storyId != null || storyMediaPath != null || storyText != null;
   bool get isReply => replyToId != null || replyText != null;
@@ -443,6 +524,7 @@ class ChatMessage {
     this.pollId,
     this.gifUrl,
     this.reachMiles,
+    this.card,
   });
 
   bool get hasMedia => mediaType != null && (mediaPath != null || mediaUrl != null);
@@ -452,6 +534,7 @@ class ChatMessage {
     Map<String, List<String>>? reactions,
     String? status,
     String? mediaUrl,
+    ChatCard? card,
   }) =>
       ChatMessage(
         id: id ?? this.id,
@@ -478,6 +561,7 @@ class ChatMessage {
         pollId: pollId,
         gifUrl: gifUrl,
         reachMiles: reachMiles,
+        card: card ?? this.card,
       );
 
   Map<String, dynamic> toJson() => {
@@ -504,6 +588,7 @@ class ChatMessage {
         'pollId': pollId,
         'gifUrl': gifUrl,
         'reachMiles': reachMiles,
+        if (card != null) 'card': card!.toJson(),
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -532,6 +617,7 @@ class ChatMessage {
         pollId: json['pollId'] as String?,
         gifUrl: json['gifUrl'] as String?,
         reachMiles: (json['reachMiles'] as num?)?.toInt(),
+        card: json['card'] is Map ? ChatCard.fromJson((json['card'] as Map).cast<String, dynamic>()) : null,
       );
 }
 
@@ -1085,4 +1171,234 @@ class PlacesBeen {
   final int nights;
   final List<PlaceBeen>? places; // null when you can only see the count
   const PlacesBeen({required this.count, required this.nights, this.places});
+}
+
+/// Someone asking to run (or running) a bar or club's page.
+class PlaceClaim {
+  final String id;
+  final String placeId;
+  final String uid; // 'me' for you
+  final String status; // 'pending', 'approved', 'rejected'
+  final String? role;
+  final String? contact;
+  final String? note;
+  final DateTime createdAt;
+  const PlaceClaim({
+    required this.id,
+    required this.placeId,
+    required this.uid,
+    required this.status,
+    this.role,
+    this.contact,
+    this.note,
+    required this.createdAt,
+  });
+}
+
+/// Someone who joined with your invite code (phase 42).
+class ReferralFriend {
+  final String uid; // their profile id
+  final DateTime joinedAt;
+  final DateTime? countedAt; // null until they're active
+  const ReferralFriend({required this.uid, required this.joinedAt, this.countedAt});
+  bool get counts => countedAt != null;
+}
+
+/// A free-night-out pass from bringing in friends (phase 42).
+class RewardPass {
+  final String id;
+  final DateTime earnedAt;
+  final DateTime? usedAt;
+  final String? usedPlaceId;
+  final String? usedReward;
+  const RewardPass({required this.id, required this.earnedAt, this.usedAt, this.usedPlaceId, this.usedReward});
+  bool get used => usedAt != null;
+}
+
+/// Your invite code, who you brought in, and your passes (phase 42).
+class ReferralStatus {
+  final String? code;
+  final int perReward;
+  final String? invitedBy; // who brought you in ('me'-style id), or null
+  final bool invitedByCounts;
+  final bool canEnterCode;
+  final List<ReferralFriend> invited;
+  final List<RewardPass> rewards;
+  const ReferralStatus({
+    this.code,
+    this.perReward = 5,
+    this.invitedBy,
+    this.invitedByCounts = false,
+    this.canEnterCode = false,
+    this.invited = const [],
+    this.rewards = const [],
+  });
+
+  int get counted => invited.where((f) => f.counts).length;
+  int get waiting => invited.length - counted;
+
+  /// Friends toward the next pass (0 to perReward - 1).
+  int get towardNext => counted % perReward;
+  List<RewardPass> get unusedRewards => rewards.where((r) => !r.used).toList();
+}
+
+/// Someone who tapped "I paid" on a payment card.
+class PayMark {
+  final String uid; // 'me' for you
+  final String via; // 'venmo', 'cashapp', 'paypal', 'zelle', 'applecash', 'cash', 'other'
+  final DateTime at;
+  const PayMark({required this.uid, required this.via, required this.at});
+}
+
+/// A card in a chat (phase 43):
+///  * 'pay'   — "Pay me $10" with buttons for the sender's payment apps
+///  * 'ask'   — someone asked to go to your private event
+///  * 'entry' — you were let into a private event
+class ChatCard {
+  final String type;
+  final String? amount; // "10" or "10.50"
+  final String? note;
+  final Map<String, String> apps; // 'venmo' -> 'mike-delta'
+  final String? placeId;
+  final String? name; // the event's name (ask / entry)
+  final List<PayMark> paid;
+  const ChatCard({
+    required this.type,
+    this.amount,
+    this.note,
+    this.apps = const {},
+    this.placeId,
+    this.name,
+    this.paid = const [],
+  });
+
+  bool get isPay => type == 'pay';
+  bool get isAsk => type == 'ask';
+  bool get isEntry => type == 'entry';
+
+  PayMark? paidBy(String uid) {
+    for (final m in paid) {
+      if (m.uid == uid) return m;
+    }
+    return null;
+  }
+
+  /// [asMe] turns your real account id into 'me'.
+  factory ChatCard.fromJson(Map<String, dynamic> j, {String Function(String)? asMe}) {
+    final apps = <String, String>{};
+    final rawApps = j['apps'];
+    if (rawApps is Map) {
+      for (final e in rawApps.entries) {
+        if (e.value is String && (e.value as String).isNotEmpty) apps[e.key.toString()] = e.value as String;
+      }
+    }
+    final paid = <PayMark>[];
+    final rawPaid = j['paid'];
+    if (rawPaid is List) {
+      for (final x in rawPaid) {
+        if (x is! Map) continue;
+        final uid = x['uid'] as String?;
+        if (uid == null) continue;
+        paid.add(PayMark(
+          uid: asMe == null ? uid : asMe(uid),
+          via: (x['via'] as String?) ?? 'other',
+          at: DateTime.tryParse((x['at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+      }
+    }
+    final amt = j['amount'];
+    return ChatCard(
+      type: (j['type'] as String?) ?? 'pay',
+      amount: amt?.toString(),
+      note: j['note'] as String?,
+      apps: apps,
+      placeId: j['place_id'] as String?,
+      name: j['name'] as String?,
+      paid: paid,
+    );
+  }
+
+  /// For saving on the phone (keeps 'me').
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        if (amount != null) 'amount': amount,
+        if (note != null) 'note': note,
+        'apps': apps,
+        if (placeId != null) 'place_id': placeId,
+        if (name != null) 'name': name,
+        'paid': [for (final m in paid) {'uid': m.uid, 'via': m.via, 'at': m.at.toUtc().toIso8601String()}],
+      };
+
+  /// What goes to the server for a new payment card.
+  Map<String, dynamic> toServer() => {
+        'type': 'pay',
+        if (amount != null) 'amount': amount,
+        if (note != null) 'note': note,
+        'apps': apps,
+        if (placeId != null) 'place_id': placeId,
+      };
+}
+
+/// Your usernames on payment apps (phase 43). Empty strings are left out.
+class PaymentHandles {
+  final String? venmo;
+  final String? cashapp;
+  final String? paypal;
+  final String? zelle;
+  final String? applecash;
+  const PaymentHandles({this.venmo, this.cashapp, this.paypal, this.zelle, this.applecash});
+
+  Map<String, String> get apps => {
+        if ((venmo ?? '').isNotEmpty) 'venmo': venmo!,
+        if ((cashapp ?? '').isNotEmpty) 'cashapp': cashapp!,
+        if ((paypal ?? '').isNotEmpty) 'paypal': paypal!,
+        if ((zelle ?? '').isNotEmpty) 'zelle': zelle!,
+        if ((applecash ?? '').isNotEmpty) 'applecash': applecash!,
+      };
+
+  bool get isEmpty => apps.isEmpty;
+}
+
+/// A one-time code for a private event (phase 43).
+class EventCode {
+  final String id;
+  final String placeId;
+  final String code;
+  final String? label;
+  final String? createdBy; // 'me' for you
+  final DateTime createdAt;
+  final String? usedBy;
+  final DateTime? usedAt;
+  const EventCode({
+    required this.id,
+    required this.placeId,
+    required this.code,
+    this.label,
+    this.createdBy,
+    required this.createdAt,
+    this.usedBy,
+    this.usedAt,
+  });
+  bool get used => usedBy != null;
+}
+
+/// Someone who asked to go to a private event (phase 43).
+/// status: 'asked', 'pay_sent', 'paid', 'in', 'declined'.
+class EventRequest {
+  final String placeId;
+  final String uid;
+  final String status;
+  final String? note;
+  final String? handledBy;
+  final DateTime updatedAt;
+  const EventRequest({required this.placeId, required this.uid, required this.status, this.note, this.handledBy, required this.updatedAt});
+}
+
+/// Who's going, the way the host wants it shown (phase 43).
+class GoingPreview {
+  final int? count; // null when the host keeps the number to themselves
+  final List<String> faces;
+  final bool more;
+  final bool hidden;
+  const GoingPreview({this.count, this.faces = const [], this.more = false, this.hidden = false});
 }

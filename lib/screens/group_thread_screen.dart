@@ -11,6 +11,7 @@ import '../data/group_models.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/call_log_line.dart';
+import '../widgets/chat_cards.dart';
 import '../widgets/gif_picker.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
@@ -289,6 +290,14 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
     });
   }
 
+  /// "Request money" — splitting a tab, dues, tickets.
+  Future<void> _sendPayCard(AppStore store) async {
+    final card = await showPayCardSheet(context);
+    if (card == null || !mounted) return;
+    final error = await store.sendGroupMessage(widget.groupId, '', card: card, skipCooldown: true);
+    if (error != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+  }
+
   Future<void> _sendGif(AppStore store) async {
     final url = await showGifPicker(context, store);
     if (url == null || !mounted) return;
@@ -538,6 +547,12 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                       visualDensity: VisualDensity.compact,
                       onPressed: _sendingMedia ? null : () => _upload(store),
                       icon: Icon(Icons.photo_library_outlined, color: tokens.brand),
+                    ),
+                    IconButton(
+                      tooltip: 'Request money',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _sendPayCard(store),
+                      icon: Icon(Icons.attach_money_rounded, color: tokens.brand),
                     ),
                     if (store.giphyKey != null)
                       IconButton(

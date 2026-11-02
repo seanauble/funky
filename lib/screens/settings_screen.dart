@@ -7,6 +7,8 @@ import '../theme/theme_provider.dart';
 import '../widgets/ui_widgets.dart';
 import 'about_screen.dart';
 import 'account_screen.dart';
+import 'referral_screen.dart';
+import 'payment_apps_screen.dart';
 import 'admin_panel_screen.dart';
 import 'blocked_accounts_screen.dart';
 import 'contacts_friends_screen.dart';
@@ -45,11 +47,23 @@ class SettingsScreen extends StatelessWidget {
             padding: EdgeInsets.zero,
             child: Builder(
               builder: (rowContext) => _SettingsRow(
-                label: 'Invite friends to FUNKY',
-                onTap: () => shareFunkyInvite(rowContext, handle: store.signedIn ? store.me.handle : null),
+                label: store.signedIn ? 'Invite friends · get a free night out 🎁' : 'Invite friends to FUNKY',
+                onTap: () => store.signedIn
+                    ? Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ReferralScreen()))
+                    : shareFunkyInvite(rowContext, handle: null),
               ),
             ),
           ),
+          if (store.signedIn) ...[
+            const SizedBox(height: 10),
+            FunkyCard(
+              padding: EdgeInsets.zero,
+              child: _SettingsRow(
+                label: 'Payment apps (Venmo, Cash App…)',
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PaymentAppsScreen())),
+              ),
+            ),
+          ],
           if (store.signedIn) ...[
             const SizedBox(height: 10),
             FunkyCard(

@@ -179,7 +179,7 @@ class _InviteCard extends StatelessWidget {
     final store = context.read<AppStore>();
     return InkWell(
       borderRadius: BorderRadius.circular(16),
-      onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null),
+      onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null, code: store.referral?.code),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: tokens.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: tokens.line)),

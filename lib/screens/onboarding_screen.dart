@@ -205,7 +205,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             primary('Create an account', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen()))),
           const SizedBox(height: 6),
           Builder(
-            builder: (c) => secondary('Invite friends', () => shareFunkyInvite(c, handle: store.signedIn ? store.me.handle : null)),
+            builder: (c) => secondary('Invite friends', () => shareFunkyInvite(c, handle: store.signedIn ? store.me.handle : null, code: store.referral?.code)),
           ),
           secondary('Start exploring', _next),
         ],

@@ -57,7 +57,9 @@ int _pageIndexForKind(CreateKind kind) {
 /// there, same as everything else).
 class CreateFlowScreen extends StatefulWidget {
   final CreateKind initial;
-  const CreateFlowScreen({super.key, this.initial = CreateKind.story});
+  // Start the place form as an event at this bar or club.
+  final String? eventAtPlaceId;
+  const CreateFlowScreen({super.key, this.initial = CreateKind.story, this.eventAtPlaceId});
 
   @override
   State<CreateFlowScreen> createState() => _CreateFlowScreenState();
@@ -116,7 +118,7 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
                 const PostFormPage(),
                 const _TextStoryPage(),
                 const _PollFormPage(),
-                const _PlaceFormPage(),
+                _PlaceFormPage(eventAtPlaceId: widget.eventAtPlaceId),
               ],
             ),
           ),
@@ -1838,7 +1840,8 @@ enum _PlacePhotoSource { camera, library }
 
 /// Page 3 — add a place.
 class _PlaceFormPage extends StatefulWidget {
-  const _PlaceFormPage();
+  final String? eventAtPlaceId;
+  const _PlaceFormPage({this.eventAtPlaceId});
 
   @override
   State<_PlaceFormPage> createState() => _PlaceFormPageState();
@@ -1861,6 +1864,11 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   Place? _host;
   // Private: the address and time are only for people with the code.
   bool _private = false;
+  // Phase 43: a code for each person (used once), the price, and whether
+  // only the hosts see how many are going.
+  bool _personalCodes = false;
+  bool _hideCount = false;
+  final _priceController = TextEditingController();
   final _codeController = TextEditingController(text: _newEventCode());
 
   static String _newEventCode() {
@@ -1938,11 +1946,28 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   bool _addressSearched = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Opened from a bar's "Post an event here": an event, at that bar.
+    final at = widget.eventAtPlaceId;
+    if (at != null) {
+      for (final p in context.read<AppStore>().places) {
+        if (p.id == at) {
+          _kind = PlaceKind.event;
+          _host = p;
+          break;
+        }
+      }
+    }
+  }
+
+  @override
   void dispose() {
     _addressDebounce?.cancel();
     _nameController.dispose();
     _addressController.dispose();
     _codeController.dispose();
+    _priceController.dispose();
     super.dispose();
   }
 
@@ -2042,7 +2067,10 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final canAddToday = store.canAddPlaceToday;
+    // The owner of the bar posting an event there: verified right away,
+    // and not held to the one-a-day limit.
+    final ownerEvent = _kind == PlaceKind.event && _host != null && store.isPlaceOwner(_host!.id);
+    final canAddToday = store.canAddPlaceToday || ownerEvent;
     final trimmedName = _nameController.text.trim();
     // Same name-normalizing check addPlace itself backstops — surfaced
     // live as you type so you find out before you even try to submit,
@@ -2058,10 +2086,13 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
             ignoreId: _kind == PlaceKind.event ? _host?.id : null,
           );
     final isPrivate = _private && _canHaveDate;
-    final codeOk = !isPrivate || RegExp(r'^\S{3,20}$').hasMatch(_codeController.text.trim());
+    final codeOk = !isPrivate || _personalCodes || RegExp(r'^\S{3,20}$').hasMatch(_codeController.text.trim());
+    final priceText = _priceController.text.trim().replaceAll(r'$', '');
+    final price = priceText.isEmpty ? null : double.tryParse(priceText);
+    final priceOk = priceText.isEmpty || (price != null && price >= 0 && price <= 10000);
     // Parties, events, tailgates and frat parties need a start time.
     final needsTime = _canHaveDate && _startsAt == null;
-    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && !needsTime && codeOk;
+    final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && !needsTime && codeOk && priceOk;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
@@ -2077,6 +2108,26 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                 child: Text(
                   "You've already added a place today — one per day. Check back after the 2 PM reset.",
                   style: TextStyle(color: tokens.mute, fontSize: 13),
+                ),
+              ),
+            ),
+          if (ownerEvent)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)),
+                child: Row(
+                  children: [
+                    Icon(Icons.verified_rounded, color: tokens.brand, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "You run ${_host!.name}, so this goes up as Official and verified right away.",
+                        style: TextStyle(color: tokens.ink, fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2195,38 +2246,111 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                   ),
                   if (isPrivate) ...[
                     const SizedBox(height: 10),
+                    Text('How people get in', style: TextStyle(color: tokens.mute, fontSize: 12.5, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 6),
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
-                            controller: _codeController,
-                            maxLength: 20,
-                            textCapitalization: TextCapitalization.characters,
-                            autocorrect: false,
-                            onChanged: (_) => setState(() {}),
-                            style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, letterSpacing: 2),
-                            decoration: InputDecoration(
-                              labelText: 'Code to get in',
-                              labelStyle: TextStyle(color: tokens.mute),
-                              counterText: '',
-                              isDense: true,
-                              filled: true,
-                              fillColor: tokens.surface,
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                            ),
+                          child: FunkyChip(
+                            label: 'One code for everyone',
+                            active: !_personalCodes,
+                            onPressed: () => setState(() => _personalCodes = false),
                           ),
                         ),
-                        IconButton(
-                          tooltip: 'New code',
-                          onPressed: () => setState(() => _codeController.text = _newEventCode()),
-                          icon: Icon(Icons.refresh_rounded, color: tokens.ink),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FunkyChip(
+                            label: 'A code for each person',
+                            active: _personalCodes,
+                            onPressed: () => setState(() => _personalCodes = true),
+                          ),
                         ),
                       ],
                     ),
+                    const SizedBox(height: 10),
+                    if (!_personalCodes) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _codeController,
+                              maxLength: 20,
+                              textCapitalization: TextCapitalization.characters,
+                              autocorrect: false,
+                              onChanged: (_) => setState(() {}),
+                              style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, letterSpacing: 2),
+                              decoration: InputDecoration(
+                                labelText: 'Code to get in',
+                                labelStyle: TextStyle(color: tokens.mute),
+                                counterText: '',
+                                isDense: true,
+                                filled: true,
+                                fillColor: tokens.surface,
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'New code',
+                            onPressed: () => setState(() => _codeController.text = _newEventCode()),
+                            icon: Icon(Icons.refresh_rounded, color: tokens.ink),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        codeOk ? 'Send this to the people you invite. You can see it on the event page any time.' : 'The code needs 3 to 20 letters or numbers, no spaces.',
+                        style: TextStyle(color: codeOk ? tokens.mute : tokens.danger, fontSize: 12),
+                      ),
+                    ] else
+                      Text(
+                        "After you post it, make codes from the event page — each one works once, so passing it on doesn't get anyone else in. "
+                        "You can also let people in right from their messages when they ask.",
+                        style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
+                      ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _priceController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => setState(() {}),
+                      style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700),
+                      decoration: InputDecoration(
+                        labelText: 'Price to get in (optional)',
+                        labelStyle: TextStyle(color: tokens.mute),
+                        prefixText: r'$ ',
+                        isDense: true,
+                        filled: true,
+                        fillColor: tokens.surface,
+                        errorText: priceOk ? null : 'Just the number, like 10',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
+                    ),
                     const SizedBox(height: 4),
                     Text(
-                      codeOk ? 'Send this to the people you invite. You can see it on the event page any time.' : 'The code needs 3 to 20 letters or numbers, no spaces.',
-                      style: TextStyle(color: codeOk ? tokens.mute : tokens.danger, fontSize: 12),
+                      "People pay you on Venmo or Cash App — FUNKY never touches the money. Add your apps in Settings → Payment apps.",
+                      style: TextStyle(color: tokens.mute, fontSize: 12, height: 1.3),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Only hosts see how many are going', style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w700, fontSize: 13.5)),
+                              Text(
+                                _hideCount ? 'Everyone else sees a few faces going, no number.' : 'Everyone with the code sees the count and the guest list.',
+                                style: TextStyle(color: tokens.mute, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Switch.adaptive(
+                          value: _hideCount,
+                          activeTrackColor: tokens.brand,
+                          onChanged: (v) => setState(() => _hideCount = v),
+                        ),
+                      ],
                     ),
                   ],
                 ],
@@ -2424,7 +2548,10 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                           eventType: _kind == PlaceKind.event ? _eventType : null,
                           hostPlaceId: host?.id,
                           isPrivate: isPrivate,
-                          passcode: isPrivate ? _codeController.text.trim() : null,
+                          passcode: isPrivate ? (_personalCodes ? _newEventCode() + _newEventCode() : _codeController.text.trim()) : null,
+                          personalCodes: isPrivate && _personalCodes,
+                          entryPrice: isPrivate ? price : null,
+                          hideGoingCount: isPrivate && _hideCount,
                         );
                         if (!context.mounted) return;
                         if (place == null) {
@@ -2449,7 +2576,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
-              child: Text('Add place', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+              child: Text(ownerEvent ? 'Post official event' : 'Add place', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
             ),
           ),
           if (needsTime && trimmedName.isNotEmpty) ...[

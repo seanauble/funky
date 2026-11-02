@@ -239,6 +239,7 @@ class AdminPanelScreen extends StatelessWidget {
                 children: [
                   count('Places to verify', pendingPlaces),
                   count('Pictures', store.pendingPhotoSuggestions.length),
+                  count('Claims', store.pendingPlaceClaims.length),
                   count('Profile reports', store.openProfileReports.length),
                   count('Story reports', store.openStoryReports.length),
                 ],
@@ -290,6 +291,82 @@ class AdminPanelScreen extends StatelessWidget {
               ],
             );
           }),
+          SectionHeader(title: 'Bar & club claims (${store.pendingPlaceClaims.length})'),
+          if (store.pendingPlaceClaims.isEmpty)
+            const EmptyNote(text: 'No one is waiting to claim a place.')
+          else
+            ...store.pendingPlaceClaims.map((c) {
+              final placeName = store.places.where((p) => p.id == c.placeId).map((p) => p.name).firstOrNull ?? 'a place';
+              final who = store.personById(c.uid);
+              Widget line(IconData icon, String text) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(icon, size: 15, color: tokens.mute),
+                        const SizedBox(width: 6),
+                        Expanded(child: SelectableText(text, style: TextStyle(color: tokens.ink, fontSize: 13.5))),
+                      ],
+                    ),
+                  );
+              return FunkyCard(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(placeName, style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 16)),
+                    Text(
+                      'from @${who?.handle ?? 'someone'}',
+                      style: TextStyle(color: tokens.mute, fontSize: 12.5),
+                    ),
+                    if ((c.role ?? '').isNotEmpty) line(Icons.badge_outlined, c.role!),
+                    if ((c.contact ?? '').isNotEmpty) line(Icons.call_outlined, c.contact!),
+                    if ((c.note ?? '').isNotEmpty) line(Icons.notes, c.note!),
+                    const SizedBox(height: 6),
+                    Text(
+                      "Check it's really them first — call the bar, or DM the bar's own Instagram.",
+                      style: TextStyle(color: tokens.mute, fontSize: 11.5),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              final err = await store.reviewPlaceClaim(c.id, true);
+                              if (err != null && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: tokens.brand,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: Text('Approve', style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w800)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final err = await store.reviewPlaceClaim(c.id, false);
+                              if (err != null && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              }
+                            },
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: tokens.line),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: Text('Reject', style: TextStyle(color: tokens.danger, fontWeight: FontWeight.w800)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
           SectionHeader(title: 'Place pictures to review (${store.pendingPhotoSuggestions.length})'),
           if (store.pendingPhotoSuggestions.isEmpty)
             const EmptyNote(text: 'No pictures waiting for approval.')

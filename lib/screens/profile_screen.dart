@@ -17,6 +17,7 @@ import 'camera_capture_screen.dart';
 import 'create_sheet.dart';
 import 'friend_requests_screen.dart';
 import 'points_info_screen.dart';
+import 'referral_screen.dart';
 import 'posts_screen.dart';
 import 'profile_parts.dart';
 import '../services/share_links.dart';
@@ -246,6 +247,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             (formatCount(me.friends.length), 'Friends', () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendRequestsScreen()))),
           ]),
           PlacesBeenFlex(personId: 'me', handle: me.handle),
+          if (store.signedIn) const _InviteCard(),
           const SizedBox(height: 6),
           // Admin controls live on their own screen, not on the profile.
           if (store.isAdmin)
@@ -716,3 +718,56 @@ class _SignedOutProfile extends StatelessWidget {
 }
 
 
+
+/// "Bring 5 friends, get a free night out" — opens the invite screen.
+class _InviteCard extends StatelessWidget {
+  const _InviteCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final store = context.watch<AppStore>();
+    final r = store.referral;
+    final per = r?.perReward ?? 5;
+    final ready = r?.unusedRewards.length ?? 0;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ReferralScreen())),
+          child: Ink(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              gradient: LinearGradient(colors: [tokens.brand, tokens.orange]),
+            ),
+            child: Row(
+              children: [
+                const Text('🎁', style: TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        ready > 0 ? 'Your free night out is ready' : 'Invite $per friends, get a free night out',
+                        style: TextStyle(color: tokens.onOrange, fontWeight: FontWeight.w900, fontSize: 14.5),
+                      ),
+                      Text(
+                        ready > 0 ? 'Tap to use your pass at the bar' : '${r?.towardNext ?? 0} of $per friends · +100 points each',
+                        style: TextStyle(color: tokens.onOrange.withValues(alpha: 0.9), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, color: tokens.onOrange),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

@@ -680,7 +680,7 @@ class _MessagesListState extends State<_MessagesList> {
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null),
+        onTap: () => shareFunkyInvite(context, handle: store.signedIn ? store.me.handle : null, code: store.referral?.code),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
           decoration: BoxDecoration(
@@ -814,7 +814,23 @@ class _ConvoRow extends StatelessWidget {
         final who = store.personById(msg.uid)?.handle;
         if (who != null) prefix = '@$who: ';
       }
-      if (msg.gifUrl != null && msg.text.isEmpty) {
+      final card = msg.card;
+      if (card != null) {
+        final amt = card.amount == null ? '' : ' \$${card.amount}';
+        final label = switch (card.type) {
+          'ask' => 'Asked to go to ${card.name ?? 'an event'}',
+          'entry' => msg.uid == 'me' ? 'Let them into ${card.name ?? 'the event'}' : "You're in: ${card.name ?? 'the event'}",
+          _ => msg.uid == 'me' ? 'Requested$amt' : 'Requested$amt from you',
+        };
+        subtitle = Row(
+          children: [
+            if (prefix.isNotEmpty && card.isPay) Text(prefix, style: previewStyle),
+            Icon(card.isPay ? Icons.attach_money_rounded : (card.isAsk ? Icons.front_hand_outlined : Icons.celebration_outlined), size: 15, color: previewColor),
+            const SizedBox(width: 6),
+            Expanded(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: previewStyle)),
+          ],
+        );
+      } else if (msg.gifUrl != null && msg.text.isEmpty) {
         subtitle = Row(
           children: [
             if (prefix.isNotEmpty) Text(prefix, style: previewStyle),

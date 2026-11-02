@@ -3128,13 +3128,19 @@ class AppStore extends ChangeNotifier {
       String? eventType,
       String? hostPlaceId,
       bool isPrivate = false,
-      String? passcode}) async {
+      String? passcode,
+      bool personalCodes = false,
+      double? entryPrice,
+      bool hideGoingCount = false}) async {
     lastPlaceError = null;
     if (selfBanned) {
       lastPlaceError = _bannedMessage;
       return null;
     }
-    if (!canAddPlaceToday) return null;
+    // An owner posting an event at their own bar isn't held to the one-a-day
+    // limit (the server still caps it at a few a day).
+    final ownerEvent = hostPlaceId != null && isPlaceOwner(hostPlaceId);
+    if (!canAddPlaceToday && !ownerEvent) return null;
     // Double-tap / rapid-fire guard — even an Admin can't create several in
     // the same instant.
     if (_tooSoon('addPlace', 3000)) return null;
@@ -3175,6 +3181,7 @@ class AppStore extends ChangeNotifier {
     // Places are shared, so this goes straight to the server and waits for
     // its real id (the same id everyone else will see) before showing up.
     Place place;
+    var serverVerified = false;
     try {
       Future<List<Map<String, dynamic>>> insertPlace(bool withCover) {
         return _withProfileRepair<List<Map<String, dynamic>>>(() => Supabase.instance.client.from('places').insert({
@@ -3193,6 +3200,9 @@ class AppStore extends ChangeNotifier {
               if (publicStart != null) 'starts_at': publicStart.toUtc().toIso8601String(),
               if (eventType != null) 'event_type': eventType,
               if (hostPlaceId != null) 'host_place_id': hostPlaceId,
+              // Phase 43: the price, and who sees how many are going.
+              if (entryPrice != null && entryPrice > 0) 'entry_price': entryPrice,
+              if (hideGoingCount) 'going_visibility': 'hint',
             }).select());
       }
 
@@ -3212,6 +3222,8 @@ class AppStore extends ChangeNotifier {
       }
       final built = _placeFromRow(rows.first);
       if (built == null) throw const FormatException('bad place row');
+      // An owner's event comes back already verified (phase 41).
+      serverVerified = rows.first['admin_verified'] == true;
       place = Place(
         id: built.id,
         name: built.name,
@@ -3229,6 +3241,11 @@ class AppStore extends ChangeNotifier {
         hostPlaceId: built.hostPlaceId,
         isPrivate: built.isPrivate,
         timeHidden: built.timeHidden,
+        official: built.official,
+        deal: built.deal,
+        reward: built.reward,
+        entryPrice: built.entryPrice,
+        goingVisibility: built.goingVisibility,
       );
     } catch (e) {
       final m = e.toString();
@@ -3255,6 +3272,7 @@ class AppStore extends ChangeNotifier {
           'lng': here.lng,
           if (startsAt != null) 'starts_at': startsAt.toUtc().toIso8601String(),
           'passcode': code,
+          if (personalCodes) 'code_mode': 'personal',
         });
         await client.from('event_guests').insert({'place_id': place.id, 'user_id': uid, 'status': 'going'});
       } catch (e) {
@@ -3266,7 +3284,15 @@ class AppStore extends ChangeNotifier {
         lastPlaceError = _featureError(e, feature: 'Private events', phase: 'phase 36', fallback: "Couldn't make it private");
         return null;
       }
-      final d = PrivateEventDetails(placeId: place.id, address: cleanAddress, lat: here.lat, lng: here.lng, startsAt: startsAt, passcode: code);
+      final d = PrivateEventDetails(
+        placeId: place.id,
+        address: cleanAddress,
+        lat: here.lat,
+        lng: here.lng,
+        startsAt: startsAt,
+        passcode: code,
+        codeMode: personalCodes ? 'personal' : 'shared',
+      );
       _privateDetails[place.id] = d;
       _myEventStatus[place.id] = 'going';
       place = _withPrivate(place, d);
@@ -3281,7 +3307,7 @@ class AppStore extends ChangeNotifier {
       ...placeConfirmations,
       place.id: ['me'],
     };
-    if (isAdmin) adminVerifiedPlaceIds = {...adminVerifiedPlaceIds, place.id};
+    if (isAdmin || serverVerified) adminVerifiedPlaceIds = {...adminVerifiedPlaceIds, place.id};
     _fireAndForgetInsert('place_confirmations', {'place_id': place.id, 'user_id': uid});
     _award(10); // "add a missing venue"
     _recordNightActivity();
@@ -3588,7 +3614,7 @@ class AppStore extends ChangeNotifier {
   /// small snapshot of it (caption + the picture's storage path) so the
   /// thread can show what you were replying to.
   Future<String?> sendDirectMessage(String toPersonId, String text,
-      {String? mediaPath, String? mediaType, bool skipCooldown = false, Story? replyTo, String? gifUrl}) async {
+      {String? mediaPath, String? mediaType, bool skipCooldown = false, Story? replyTo, String? gifUrl, ChatCard? card}) async {
     if (selfBanned) return _bannedMessage;
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _lastMessageAt;
@@ -3599,7 +3625,7 @@ class AppStore extends ChangeNotifier {
     final mp = mediaPath;
     final mt = mediaType;
     final hasMedia = mp != null && mt != null;
-    if (capped.trim().isEmpty && !hasMedia && gifUrl == null) return null;
+    if (capped.trim().isEmpty && !hasMedia && gifUrl == null && card == null) return null;
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
@@ -3614,6 +3640,7 @@ class AppStore extends ChangeNotifier {
         return "Couldn't read that file.";
       }
     }
+    if (card != null && !signedIn) return 'Make an account to send payment cards.';
     final remote = signedIn && supabaseUserId != null && _remotePersonIds.contains(toPersonId);
     final local = ChatMessage(
       id: 'dm_${DateTime.now().microsecondsSinceEpoch}',
@@ -3630,6 +3657,7 @@ class AppStore extends ChangeNotifier {
       storyMediaPath: replyTo?.mediaPath,
       storyIsVideo: replyTo != null && (replyTo.videoUrl != null || replyTo.videoPath != null),
       gifUrl: gifUrl,
+      card: card,
     );
     if (replyTo != null) _storyReplySnapshots[local.id] = replyTo;
     messages = _capMessages([...messages, local]);
@@ -3677,6 +3705,7 @@ class AppStore extends ChangeNotifier {
         if (storagePath != null) 'media_path': storagePath,
         if (storagePath != null) 'media_type': local.mediaType,
         if (local.gifUrl != null) 'gif_url': local.gifUrl,
+        if (local.card != null) 'card': local.card!.toServer(),
       };
       final storyCols = <String, dynamic>{
         if (local.storyId != null && _looksLikeUuid(local.storyId!)) 'story_id': local.storyId,
@@ -3700,9 +3729,11 @@ class AppStore extends ChangeNotifier {
       _remoteMessageIds.add(serverId);
       final snap = _storyReplySnapshots.remove(local.id);
       if (snap != null) _storyReplySnapshots[serverId] = snap;
+      final serverCard = _cardFrom(rows.first['card']);
+      if (local.card != null && serverCard == null) throw const FormatException('card');
       messages = messages
           .where((m) => m.id != serverId)
-          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
+          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered', card: serverCard) : m)
           .toList();
     } catch (e) {
       _sendErrors[local.id] = _friendlySendError(e);
@@ -4605,6 +4636,10 @@ class AppStore extends ChangeNotifier {
       unawaited(_fetchStoryReports());
       unawaited(_fetchPlaceVisits());
       unawaited(_fetchPlaceInvites());
+      unawaited(_fetchPlaceClaims());
+      unawaited(fetchReferralStatus());
+      unawaited(_fetchPayHandles());
+      unawaited(_fetchMyRequests());
       unawaited(_fetchBlocks());
       unawaited(_pushAgreement());
       unawaited(_fetchGroups());
@@ -4678,6 +4713,12 @@ class AppStore extends ChangeNotifier {
         schema: 'public',
         table: 'group_messages',
         callback: (payload) => _onRemoteGroupMessageInsert(payload.newRecord),
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'group_messages',
+        callback: (payload) => _applyRemoteCard(payload.newRecord),
       )
       ..subscribe();
 
@@ -5133,6 +5174,15 @@ class AppStore extends ChangeNotifier {
 
   void _clearRemoteData() {
     notifications = [];
+    payHandles = const PaymentHandles();
+    _eventTeams.clear();
+    _eventCodes.clear();
+    _eventRequests.clear();
+    _myRequests.clear();
+    _goingPreviews.clear();
+    referral = null;
+    _askedWhoInvited = true;
+    _claims = [];
     placeRatings = {};
     pendingPhotoSuggestions = [];
     myPendingPhotoPlaces = {};
@@ -5529,6 +5579,7 @@ class AppStore extends ChangeNotifier {
       final rows = await client.from('places').select();
       final confRows = await client.from('place_confirmations').select();
       await _fetchPrivateDetails();
+      await _fetchEventTeams();
       _applyRemotePlaces(rows, confRows);
     } catch (_) {
       // Offline — keep whatever's showing.
@@ -5758,6 +5809,7 @@ class AppStore extends ChangeNotifier {
       anon: false,
       mediaType: row['media_path'] != null ? (row['media_type'] as String? ?? 'image') : null,
       gifUrl: row['gif_url'] as String?,
+      card: _cardFrom(row['card']),
     );
   }
 
@@ -5803,9 +5855,13 @@ class AppStore extends ChangeNotifier {
       var changed = false;
       messages = messages.map((m) {
         final f = byId[m.id];
-        if (f == null || f.mediaUrl == null || m.mediaUrl != null) return m;
+        if (f == null) return m;
+        final fc = f.card;
+        final cardChanged = fc != null && (m.card?.paid.length ?? -1) != fc.paid.length;
+        final needUrl = f.mediaUrl != null && m.mediaUrl == null;
+        if (!needUrl && !cardChanged) return m;
         changed = true;
-        return m.copyWith(mediaUrl: f.mediaUrl);
+        return m.copyWith(mediaUrl: needUrl ? f.mediaUrl : null, card: cardChanged ? fc : null);
       }).toList();
       final existing = messages.map((m) => m.id).toSet();
       final fresh = fetched.where((m) => !existing.contains(m.id)).toList().reversed.toList();
@@ -5838,7 +5894,7 @@ class AppStore extends ChangeNotifier {
 
   /// Sends a text and/or photo/video to a group. Returns null on success,
   /// otherwise a message to show — same contract as sendDirectMessage.
-  Future<String?> sendGroupMessage(String groupId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false, String? gifUrl}) async {
+  Future<String?> sendGroupMessage(String groupId, String text, {String? mediaPath, String? mediaType, bool skipCooldown = false, String? gifUrl, ChatCard? card}) async {
     if (selfBanned) return _bannedMessage;
     if (supabaseUserId == null) return 'Sign in to message a group.';
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -5850,7 +5906,7 @@ class AppStore extends ChangeNotifier {
     final mp = mediaPath;
     final mt = mediaType;
     final hasMedia = mp != null && mt != null;
-    if (capped.trim().isEmpty && !hasMedia && gifUrl == null) return null;
+    if (capped.trim().isEmpty && !hasMedia && gifUrl == null && card == null) return null;
     if (hasMedia) {
       if (!skipCooldown && _tooSoon('dmMedia', 5000)) return 'Slow down — one snap every few seconds.';
       try {
@@ -5876,6 +5932,7 @@ class AppStore extends ChangeNotifier {
       mediaType: hasMedia ? mt : null,
       mediaPath: hasMedia ? mp : null,
       gifUrl: gifUrl,
+      card: card,
     );
     messages = _capMessages([...messages, local]);
     _lastMessageAt = now;
@@ -5918,12 +5975,14 @@ class AppStore extends ChangeNotifier {
         if (storagePath != null) 'media_path': storagePath,
         if (storagePath != null) 'media_type': local.mediaType,
         if (local.gifUrl != null) 'gif_url': local.gifUrl,
+        if (local.card != null) 'card': local.card!.toServer(),
       }).select();
       final serverId = rows.first['id'] as String;
       _remoteMessageIds.add(serverId);
+      final serverCard = _cardFrom(rows.first['card']);
       messages = messages
           .where((m) => m.id != serverId)
-          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered') : m)
+          .map((m) => m.id == local.id ? m.copyWith(id: serverId, status: 'delivered', card: serverCard) : m)
           .toList();
     } catch (e) {
       _sendErrors[local.id] = _friendlySendError(e);
@@ -6322,6 +6381,11 @@ class AppStore extends ChangeNotifier {
       hostPlaceId: row['host_place_id'] as String?,
       isPrivate: isPrivate,
       timeHidden: isPrivate && publicStart != null,
+      official: row['official'] == true,
+      deal: (row['deal'] as String?)?.trim().isEmpty ?? true ? null : (row['deal'] as String).trim(),
+      reward: (row['reward'] as String?)?.trim().isEmpty ?? true ? null : (row['reward'] as String).trim(),
+      entryPrice: (row['entry_price'] as num?)?.toDouble(),
+      goingVisibility: row['going_visibility'] == 'hint' ? 'hint' : 'public',
     );
     final d = isPrivate ? _privateDetails[id] : null;
     return d == null ? built : _withPrivate(built, d);
@@ -6359,7 +6423,12 @@ class AppStore extends ChangeNotifier {
   /// Can see a private event's address, time, guests and chat: its host,
   /// anyone who entered the code, or an admin. Always true for a public one.
   bool isEventInsider(Place p) =>
-      !p.isPrivate || p.by == 'me' || isAdmin || _privateDetails.containsKey(p.id) || _myEventStatus.containsKey(p.id);
+      !p.isPrivate ||
+      p.by == 'me' ||
+      isAdmin ||
+      _privateDetails.containsKey(p.id) ||
+      _myEventStatus.containsKey(p.id) ||
+      (_eventTeams[p.id]?.containsKey('me') ?? false);
 
   /// Your RSVP to a private event: 'going', 'maybe', 'cant', 'unlocked'
   /// (entered the code, no answer yet), or null.
@@ -6376,6 +6445,7 @@ class AppStore extends ChangeNotifier {
         lng: (r['lng'] as num?)?.toDouble(),
         startsAt: DateTime.tryParse((r['starts_at'] as String?) ?? '')?.toLocal(),
         passcode: (r['passcode'] as String?) ?? code,
+        codeMode: r['code_mode'] == 'personal' ? 'personal' : 'shared',
       );
 
   /// The private events you're in (host or guest): their real details and
@@ -6415,7 +6485,14 @@ class AppStore extends ChangeNotifier {
         final uid = r['user_id'] as String?;
         if (uid == null) continue;
         final at = DateTime.tryParse((r['updated_at'] as String?) ?? (r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-        list.add(EventGuest(uid: _asMe(uid), status: (r['status'] as String?) ?? 'unlocked', t: at.millisecondsSinceEpoch));
+        final letIn = r['let_in_by'] as String?;
+        list.add(EventGuest(
+          uid: _asMe(uid),
+          status: (r['status'] as String?) ?? 'unlocked',
+          t: at.millisecondsSinceEpoch,
+          checkedInAt: DateTime.tryParse((r['checked_in_at'] as String?) ?? '')?.toLocal(),
+          letInBy: letIn == null ? null : _asMe(letIn),
+        ));
         if (uid != supabaseUserId) ids.add(uid);
       }
       if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
@@ -6502,6 +6579,668 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  // --- Bar & club owners (phase 41) ---------------------------------------
+
+  List<PlaceClaim> _claims = [];
+
+  /// Approved owners of a place (uids, 'me' for you).
+  List<String> placeOwners(String placeId) =>
+      [for (final c in _claims) if (c.placeId == placeId && c.status == 'approved') c.uid];
+
+  bool placeHasOwner(String placeId) => _claims.any((c) => c.placeId == placeId && c.status == 'approved');
+
+  bool isPlaceOwner(String placeId) => _claims.any((c) => c.placeId == placeId && c.uid == 'me' && c.status == 'approved');
+
+  /// Your claim on a place: 'pending', 'approved', 'rejected', or null.
+  String? myClaimStatus(String placeId) {
+    for (final c in _claims) {
+      if (c.placeId == placeId && c.uid == 'me') return c.status;
+    }
+    return null;
+  }
+
+  /// Places you run.
+  List<Place> get myOwnedPlaces => [for (final p in places) if (isPlaceOwner(p.id)) p];
+
+  /// Claims waiting for an admin (empty for everyone else).
+  List<PlaceClaim> get pendingPlaceClaims => isAdmin ? _claims.where((c) => c.status == 'pending').toList() : const [];
+
+  Future<void> _fetchPlaceClaims() async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('place_claims').select().order('created_at', ascending: false).limit(500);
+      final out = <PlaceClaim>[];
+      final ids = <String>{};
+      for (final r in rows) {
+        final id = r['id'] as String?;
+        final placeId = r['place_id'] as String?;
+        final uid = r['user_id'] as String?;
+        if (id == null || placeId == null || uid == null) continue;
+        out.add(PlaceClaim(
+          id: id,
+          placeId: placeId,
+          uid: _asMe(uid),
+          status: (r['status'] as String?) ?? 'pending',
+          role: r['role'] as String?,
+          contact: r['contact'] as String?,
+          note: r['note'] as String?,
+          createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      _claims = out;
+      notifyListeners();
+    } catch (_) {
+      // Phase 41 not run yet.
+    }
+  }
+
+  /// Ask to run a bar or club's page. Returns a message to show.
+  Future<String> submitPlaceClaim(String placeId, {required String role, required String contact, String? note}) async {
+    if (!signedIn || supabaseUserId == null) return 'Make an account to claim a place.';
+    try {
+      final res = await Supabase.instance.client.rpc('submit_place_claim', params: {
+        'p_place': placeId,
+        'p_role': role,
+        'p_contact': contact,
+        'p_note': note,
+      });
+      final s = res is String ? res : '';
+      await _fetchPlaceClaims();
+      if (s.startsWith('!')) return s.substring(1);
+      if (s == 'approved') return 'You already run this place.';
+      return "Sent! A FUNKY admin will check it's really you and get back to you.";
+    } catch (e) {
+      return _featureError(e, feature: 'Claiming places', phase: 'phase 41', fallback: "Couldn't send that");
+    }
+  }
+
+  /// Admin: approve or turn down a claim. Returns an error or null.
+  Future<String?> reviewPlaceClaim(String claimId, bool approve) async {
+    if (!isAdmin) return 'Admins only.';
+    try {
+      await Supabase.instance.client.rpc('review_place_claim', params: {'p_claim': claimId, 'p_approve': approve});
+      await _fetchPlaceClaims();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Claims', phase: 'phase 41', fallback: "Couldn't do that");
+    }
+  }
+
+  /// Owner or admin: set (or clear, with empty text) a place's deal.
+  /// Returns an error or null.
+  Future<String?> setPlaceDeal(String placeId, String deal) async {
+    try {
+      final res = await Supabase.instance.client.rpc('set_place_deal', params: {'p_place': placeId, 'p_deal': deal});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      final clean = deal.trim().isEmpty ? null : deal.trim();
+      final i = places.indexWhere((p) => p.id == placeId);
+      if (i != -1) {
+        final p = places[i];
+        places = [...places]..[i] = p.withOwnerInfo(deal: () => clean);
+        notifyListeners();
+      }
+      unawaited(_fetchRemotePlaces());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Deals', phase: 'phase 41', fallback: "Couldn't save the deal");
+    }
+  }
+
+  // --- Refer friends (phase 42) ----------------------------------------------
+
+  ReferralStatus? referral;
+  bool _askedWhoInvited = true;
+
+  /// Bars and clubs taking FUNKY reward passes.
+  List<Place> get rewardPlaces => [for (final p in places) if ((p.reward ?? '').isNotEmpty) p];
+
+  /// A brand-new account that hasn't said who invited them yet (asked once).
+  bool get shouldAskWhoInvited => !_askedWhoInvited && (referral?.canEnterCode ?? false);
+
+  Future<void> markAskedWhoInvited() async {
+    _askedWhoInvited = true;
+    notifyListeners();
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('askedWhoInvited_$uid', true);
+    } catch (_) {}
+  }
+
+  DateTime? _parseTime(Object? v) => v is String ? DateTime.tryParse(v)?.toLocal() : null;
+
+  /// Your code, friends and passes. Also lets the server count any friends
+  /// who are active now.
+  Future<void> fetchReferralStatus() async {
+    final uid = supabaseUserId;
+    if (uid == null || !signedIn) return;
+    try {
+      final res = await Supabase.instance.client.rpc('referral_status');
+      if (res is! Map) return;
+      final invited = <ReferralFriend>[];
+      final ids = <String>{};
+      for (final e in (res['invited'] as List?) ?? const []) {
+        if (e is! Map) continue;
+        final id = e['uid'] as String?;
+        if (id == null) continue;
+        ids.add(id);
+        invited.add(ReferralFriend(uid: id, joinedAt: _parseTime(e['at']) ?? DateTime.now(), countedAt: _parseTime(e['counted_at'])));
+      }
+      final rewards = <RewardPass>[];
+      for (final e in (res['rewards'] as List?) ?? const []) {
+        if (e is! Map) continue;
+        final id = e['id'] as String?;
+        if (id == null) continue;
+        rewards.add(RewardPass(
+          id: id,
+          earnedAt: _parseTime(e['at']) ?? DateTime.now(),
+          usedAt: _parseTime(e['used_at']),
+          usedPlaceId: e['place_id'] as String?,
+          usedReward: e['reward'] as String?,
+        ));
+      }
+      final by = res['invited_by'] as String?;
+      if (by != null) ids.add(by);
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      referral = ReferralStatus(
+        code: res['code'] as String?,
+        perReward: (res['per_reward'] as num?)?.toInt() ?? 5,
+        invitedBy: by,
+        invitedByCounts: res['invited_by_counts'] == true,
+        canEnterCode: res['can_enter_code'] == true,
+        invited: invited,
+        rewards: rewards,
+      );
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _askedWhoInvited = prefs.getBool('askedWhoInvited_$uid') ?? false;
+      } catch (_) {
+        _askedWhoInvited = true;
+      }
+      notifyListeners();
+    } catch (_) {
+      // Phase 42 not run yet.
+    }
+  }
+
+  /// Say who invited you (their code or @username). Returns an error or null.
+  Future<String?> useReferralCode(String code) async {
+    if (!signedIn) return 'Make an account first, then add who invited you.';
+    try {
+      final res = await Supabase.instance.client.rpc('use_referral_code', params: {'p_code': code.trim()});
+      final s = res is String ? res : '';
+      if (s.startsWith('!')) return s.substring(1);
+      await markAskedWhoInvited();
+      await fetchReferralStatus();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Invite codes', phase: 'phase 42', fallback: "Couldn't add that code");
+    }
+  }
+
+  /// Use a pass at a bar or club. Returns (what you got, null) or (null, error).
+  Future<(String?, String?)> redeemRewardPass(String passId, String placeId) async {
+    try {
+      final res = await Supabase.instance.client.rpc('redeem_referral_reward', params: {'p_reward': passId, 'p_place': placeId});
+      final s = res is String ? res : '';
+      if (s.startsWith('!')) return (null, s.substring(1));
+      await fetchReferralStatus();
+      return (s, null);
+    } catch (e) {
+      return (null, _featureError(e, feature: 'Rewards', phase: 'phase 42', fallback: "Couldn't use the pass"));
+    }
+  }
+
+  /// Owner or admin: what this place gives for a pass (empty to stop).
+  /// Returns an error or null.
+  Future<String?> setPlaceReward(String placeId, String reward) async {
+    try {
+      final res = await Supabase.instance.client.rpc('set_place_reward', params: {'p_place': placeId, 'p_reward': reward});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      final clean = reward.trim().isEmpty ? null : reward.trim();
+      final i = places.indexWhere((p) => p.id == placeId);
+      if (i != -1) {
+        places = [...places]..[i] = places[i].withOwnerInfo(reward: () => clean);
+        notifyListeners();
+      }
+      unawaited(_fetchRemotePlaces());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'FUNKY Rewards', phase: 'phase 42', fallback: "Couldn't save that");
+    }
+  }
+
+  /// Owners: how many passes have been used at their place.
+  Future<int?> rewardsUsedAt(String placeId) async {
+    try {
+      final rows = await Supabase.instance.client.from('referral_rewards').select('id').eq('redeemed_place_id', placeId).limit(1000);
+      return rows.length;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // --- Payment cards & running private events (phase 43) ---------------------
+
+  PaymentHandles payHandles = const PaymentHandles();
+
+  Future<void> _fetchPayHandles() async {
+    final uid = supabaseUserId;
+    if (uid == null || !signedIn) return;
+    try {
+      final rows = await Supabase.instance.client.from('payment_handles').select().eq('user_id', uid).limit(1);
+      if (rows.isEmpty) return;
+      final r = rows.first;
+      payHandles = PaymentHandles(
+        venmo: r['venmo'] as String?,
+        cashapp: r['cashapp'] as String?,
+        paypal: r['paypal'] as String?,
+        zelle: r['zelle'] as String?,
+        applecash: r['applecash'] as String?,
+      );
+      notifyListeners();
+    } catch (_) {
+      // Phase 43 not run yet.
+    }
+  }
+
+  /// Save your payment apps. Returns an error or null.
+  Future<String?> savePayHandles(PaymentHandles h) async {
+    final uid = supabaseUserId;
+    if (uid == null || !signedIn) return 'Make an account first.';
+    String? clean(String? v) => (v ?? '').trim().isEmpty ? null : v!.trim();
+    try {
+      await Supabase.instance.client.from('payment_handles').upsert({
+        'user_id': uid,
+        'venmo': clean(h.venmo),
+        'cashapp': clean(h.cashapp),
+        'paypal': clean(h.paypal),
+        'zelle': clean(h.zelle),
+        'applecash': clean(h.applecash),
+      });
+      await _fetchPayHandles();
+      if (h.apps.isNotEmpty && payHandles.isEmpty) return "Those usernames don't look right — check them.";
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Payment apps', phase: 'phase 43', fallback: "Couldn't save those");
+    }
+  }
+
+  /// "I paid" on a payment card. [kind] is 'dm', 'group' or 'event'.
+  /// Returns an error or null.
+  Future<String?> markPaymentSent(String kind, String messageId, String via, {String? placeId}) async {
+    if (!signedIn) return 'Make an account first.';
+    try {
+      final res = await Supabase.instance.client.rpc('mark_payment_sent', params: {'p_kind': kind, 'p_message': messageId, 'p_via': via});
+      if (res is! Map) return "Couldn't send that — try again.";
+      final err = res['error'];
+      if (err is String) return err;
+      final card = ChatCard.fromJson(res.cast<String, dynamic>(), asMe: _asMe);
+      if (kind == 'event' && placeId != null) {
+        final list = _eventMessages[placeId];
+        if (list != null) {
+          _eventMessages[placeId] = [for (final m in list) m.id == messageId ? m.withCard(card) : m];
+        }
+      } else {
+        messages = [for (final m in messages) m.id == messageId ? m.copyWith(card: card) : m];
+        _persist();
+      }
+      if (card.placeId != null) unawaited(_fetchMyRequests());
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Payment cards', phase: 'phase 43', fallback: "Couldn't send that");
+    }
+  }
+
+  // Who helps run each event: placeId -> uid ('me' for you) -> 'cohost' / 'door'.
+  final Map<String, Map<String, String>> _eventTeams = {};
+
+  Future<void> _fetchEventTeams() async {
+    if (supabaseUserId == null || !_privateEventsOk) return;
+    try {
+      final rows = await Supabase.instance.client.from('event_hosts').select('place_id,user_id,role').limit(3000);
+      final out = <String, Map<String, String>>{};
+      final ids = <String>{};
+      for (final r in rows) {
+        final pid = r['place_id'] as String?;
+        final uid = r['user_id'] as String?;
+        final role = r['role'] as String?;
+        if (pid == null || uid == null || role == null) continue;
+        (out[pid] ??= {})[_asMe(uid)] = role;
+        if (uid != supabaseUserId) ids.add(uid);
+      }
+      _eventTeams
+        ..clear()
+        ..addAll(out);
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.take(200).toList());
+    } catch (_) {
+      // Phase 43 not run yet.
+    }
+  }
+
+  /// Your part in running [p]: 'host', 'cohost', 'door', or null.
+  String? eventRole(Place p) {
+    if (p.by == 'me' || isAdmin) return 'host';
+    return _eventTeams[p.id]?['me'];
+  }
+
+  bool canManageEvent(Place p) => const {'host', 'cohost'}.contains(eventRole(p));
+  bool isEventStaff(Place p) => eventRole(p) != null;
+
+  /// Someone's part in running [p] ('host', 'cohost', 'door') or null.
+  String? roleAt(Place p, String uid) {
+    if (uid == p.by) return 'host';
+    return _eventTeams[p.id]?[uid];
+  }
+
+  /// The co-hosts and door staff (not the host): uid -> role.
+  Map<String, String> eventTeam(String placeId) => _eventTeams[placeId] ?? const {};
+
+  /// Host: make someone a co-host / door staff, or take it away (null).
+  Future<String?> setEventRole(String placeId, String uid, String? role) async {
+    try {
+      final res = await Supabase.instance.client.rpc('set_event_role', params: {'p_place': placeId, 'p_user': uid, 'p_role': role});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      await _fetchEventTeams();
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Event teams', phase: 'phase 43', fallback: "Couldn't change that");
+    }
+  }
+
+  // One-time codes, for hosts and co-hosts.
+  final Map<String, List<EventCode>> _eventCodes = {};
+
+  List<EventCode> eventCodes(String placeId) => _eventCodes[placeId] ?? const [];
+
+  Future<void> fetchEventCodes(String placeId) async {
+    if (supabaseUserId == null) return;
+    try {
+      final rows = await Supabase.instance.client.from('event_codes').select().eq('place_id', placeId).order('created_at', ascending: false).limit(1000);
+      final out = <EventCode>[];
+      final ids = <String>{};
+      for (final r in rows) {
+        final id = r['id'] as String?;
+        final code = r['code'] as String?;
+        if (id == null || code == null) continue;
+        final by = r['created_by'] as String?;
+        final used = r['used_by'] as String?;
+        out.add(EventCode(
+          id: id,
+          placeId: placeId,
+          code: code,
+          label: r['label'] as String?,
+          createdBy: by == null ? null : _asMe(by),
+          createdAt: DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+          usedBy: used == null ? null : _asMe(used),
+          usedAt: DateTime.tryParse((r['used_at'] as String?) ?? '')?.toLocal(),
+        ));
+        for (final u in [by, used]) {
+          if (u != null && u != supabaseUserId) ids.add(u);
+        }
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      _eventCodes[placeId] = out;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Make [count] codes (each works once). Returns (the new codes, error).
+  Future<(List<EventCode>, String?)> makeEventCodes(String placeId, int count, {String? label}) async {
+    try {
+      final res = await Supabase.instance.client.rpc('make_event_codes', params: {'p_place': placeId, 'p_count': count, 'p_label': label});
+      if (res is Map) return (const <EventCode>[], (res['error'] as String?) ?? "Couldn't make codes");
+      final made = <EventCode>[];
+      for (final x in (res as List? ?? const [])) {
+        if (x is! Map) continue;
+        made.add(EventCode(
+          id: x['id'] as String,
+          placeId: placeId,
+          code: x['code'] as String,
+          label: x['label'] as String?,
+          createdBy: 'me',
+          createdAt: DateTime.now(),
+        ));
+      }
+      _eventCodes[placeId] = [...made, ...eventCodes(placeId)];
+      notifyListeners();
+      return (made, null);
+    } catch (e) {
+      return (const <EventCode>[], _featureError(e, feature: 'Event codes', phase: 'phase 43', fallback: "Couldn't make codes"));
+    }
+  }
+
+  Future<String?> deleteEventCode(EventCode c) async {
+    try {
+      final res = await Supabase.instance.client.rpc('delete_event_code', params: {'p_code': c.id});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      _eventCodes[c.placeId] = eventCodes(c.placeId).where((x) => x.id != c.id).toList();
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Event codes', phase: 'phase 43', fallback: "Couldn't delete it");
+    }
+  }
+
+  /// "Have a code?" — finds the event and lets you in.
+  /// Returns (placeId, null) or (null, error).
+  Future<(String?, String?)> joinWithCode(String code) async {
+    if (selfBanned) return (null, _bannedMessage);
+    if (!signedIn) return (null, 'Make an account to use a code.');
+    final clean = code.trim();
+    if (clean.isEmpty) return (null, 'Type the code first.');
+    if (_tooSoon('joinCode', 1200)) return (null, null);
+    try {
+      final res = await Supabase.instance.client.rpc('join_with_code', params: {'p_code': clean});
+      if (res is! Map) return (null, "Couldn't check that code — try again.");
+      final err = res['error'];
+      if (err is String) return (null, err);
+      final placeId = res['place_id'] as String?;
+      if (placeId == null) return (null, "Couldn't find that event.");
+      _myEventStatus[placeId] = 'going';
+      await _fetchRemotePlaces();
+      await refreshPrivateEvent(placeId);
+      return (placeId, null);
+    } catch (e) {
+      return (null, _featureError(e, feature: 'Event codes', phase: 'phase 43', fallback: "Couldn't use that code"));
+    }
+  }
+
+  // Requests to go: the ones for events you run, and your own.
+  final Map<String, List<EventRequest>> _eventRequests = {};
+  final Map<String, String> _myRequests = {};
+
+  bool eventRequestsLoaded(String placeId) => _eventRequests.containsKey(placeId);
+  final Set<String> _requestsLoading = {};
+
+  /// Loads the requests once (e.g. when an "asked to go" card shows up).
+  void ensureEventRequests(String placeId) {
+    if (_eventRequests.containsKey(placeId) || _requestsLoading.contains(placeId)) return;
+    _requestsLoading.add(placeId);
+    unawaited(fetchEventRequests(placeId).whenComplete(() {
+      _requestsLoading.remove(placeId);
+      _eventRequests.putIfAbsent(placeId, () => const []);
+    }));
+  }
+
+  List<EventRequest> eventRequests(String placeId) => (_eventRequests[placeId] ?? const <EventRequest>[]).where((r) => !isHidden(r.uid)).toList();
+
+  /// Requests still waiting on the host (asked, Venmo sent, says paid).
+  int openRequestCount(String placeId) => eventRequests(placeId).where((r) => const {'asked', 'pay_sent', 'paid'}.contains(r.status)).length;
+
+  /// Your request to go: 'asked', 'pay_sent', 'paid', 'in', 'declined', or null.
+  String? myRequestStatus(String placeId) => _myRequests[placeId];
+
+  Future<void> _fetchMyRequests() async {
+    final uid = supabaseUserId;
+    if (uid == null || !signedIn) return;
+    try {
+      final rows = await Supabase.instance.client.from('event_requests').select('place_id,status').eq('user_id', uid);
+      _myRequests
+        ..clear()
+        ..addAll({
+          for (final r in rows)
+            if (r['place_id'] is String) r['place_id'] as String: (r['status'] as String?) ?? 'asked',
+        });
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> fetchEventRequests(String placeId) async {
+    final uid = supabaseUserId;
+    if (uid == null) return;
+    final p = _placeById(placeId);
+    if (p != null && !canManageEvent(p)) return;
+    try {
+      final rows = await Supabase.instance.client
+          .from('event_requests')
+          .select()
+          .eq('place_id', placeId)
+          .neq('user_id', uid)
+          .order('updated_at', ascending: false)
+          .limit(500);
+      final out = <EventRequest>[];
+      final ids = <String>{};
+      for (final r in rows) {
+        final u = r['user_id'] as String?;
+        if (u == null) continue;
+        final by = r['handled_by'] as String?;
+        out.add(EventRequest(
+          placeId: placeId,
+          uid: u,
+          status: (r['status'] as String?) ?? 'asked',
+          note: r['note'] as String?,
+          handledBy: by == null ? null : _asMe(by),
+          updatedAt: DateTime.tryParse((r['updated_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        ));
+        ids.add(u);
+        if (by != null && by != uid) ids.add(by);
+      }
+      if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
+      _eventRequests[placeId] = out;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Ask to go to a private event. Returns (the host's id, null) — open a
+  /// chat with them — or (null, error).
+  Future<(String?, String?)> askToJoin(String placeId, {String? note}) async {
+    if (selfBanned) return (null, _bannedMessage);
+    if (!signedIn) return (null, 'Make an account to ask.');
+    if (_tooSoon('ask:$placeId', 1500)) return (null, null);
+    try {
+      final res = await Supabase.instance.client.rpc('ask_to_join', params: {'p_place': placeId, 'p_note': note});
+      if (res is! Map) return (null, "Couldn't ask — try again.");
+      final err = res['error'];
+      if (err is String) return (null, err);
+      final host = res['host'] as String?;
+      _myRequests[placeId] = (res['status'] as String?) ?? 'asked';
+      if (host != null) await _ensurePeopleFor([host]);
+      unawaited(_fetchRemoteMessages());
+      notifyListeners();
+      return (host, null);
+    } catch (e) {
+      return (null, _featureError(e, feature: 'Asking to go', phase: 'phase 43', fallback: "Couldn't ask"));
+    }
+  }
+
+  Future<String?> _eventCall(String fn, String placeId, String uid, String fallback) async {
+    try {
+      final res = await Supabase.instance.client.rpc(fn, params: {'p_place': placeId, 'p_user': uid});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      await fetchEventRequests(placeId);
+      unawaited(fetchEventGuests(placeId));
+      unawaited(_fetchRemoteMessages());
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Private events', phase: 'phase 43', fallback: fallback);
+    }
+  }
+
+  /// Send someone who asked your payment card (your apps, the event's price).
+  Future<String?> sendEventPayCard(String placeId, String uid) => _eventCall('send_event_pay_card', placeId, uid, "Couldn't send it");
+
+  /// Let someone in: on the list now, with a "you're in" card in their messages.
+  Future<String?> letIntoEvent(String placeId, String uid) => _eventCall('let_into_event', placeId, uid, "Couldn't let them in");
+
+  Future<String?> declineEventRequest(String placeId, String uid) => _eventCall('decline_event_request', placeId, uid, "Couldn't do that");
+
+  /// Door: check someone in (or undo). Returns (when, already checked in, error).
+  Future<(DateTime?, bool, String?)> checkInGuest(String placeId, String uid, {bool undo = false}) async {
+    final real = uid == 'me' ? supabaseUserId : uid;
+    if (real == null) return (null, false, 'Sign in first.');
+    try {
+      final res = await Supabase.instance.client.rpc('check_in_guest', params: {'p_place': placeId, 'p_user': real, 'p_undo': undo});
+      if (res is! Map) return (null, false, "Couldn't check them in.");
+      final err = res['error'];
+      if (err is String) return (null, false, err);
+      final at = DateTime.tryParse((res['at'] as String?) ?? '')?.toLocal();
+      final already = res['already'] == true;
+      final list = _eventGuests[placeId];
+      if (list != null) {
+        _eventGuests[placeId] = [for (final g in list) g.uid == uid ? g.withCheckIn(at) : g];
+        notifyListeners();
+      }
+      return (at, already, null);
+    } catch (e) {
+      return (null, false, _featureError(e, feature: 'Check-in', phase: 'phase 43', fallback: "Couldn't check them in"));
+    }
+  }
+
+  /// Host / co-host: change an event. Keys: name, starts_at, address, lat,
+  /// lng, price, going_visibility, code_mode, passcode. Returns an error or null.
+  Future<String?> updateEvent(Place p, Map<String, dynamic> changes) async {
+    final body = Map<String, dynamic>.from(changes);
+    final start = body['starts_at'];
+    if (start is DateTime) {
+      body['starts_at'] = start.toUtc().toIso8601String();
+      if (p.isPrivate) {
+        // Same rule as making one: everyone else only sees the night.
+        final n = sessionKey(start);
+        final day = DateTime.tryParse(n);
+        body['public_starts_at'] = n == sessionKey() || day == null ? '' : DateTime(day.year, day.month, day.day, 21).toUtc().toIso8601String();
+      }
+    }
+    try {
+      final res = await Supabase.instance.client.rpc('update_event', params: {'p_place': p.id, 'p': body});
+      if (res is String && res.startsWith('!')) return res.substring(1);
+      await _fetchRemotePlaces();
+      if (p.isPrivate) await refreshPrivateEvent(p.id);
+      unawaited(fetchGoingPreview(p.id));
+      return null;
+    } catch (e) {
+      return _featureError(e, feature: 'Editing events', phase: 'phase 43', fallback: "Couldn't save that");
+    }
+  }
+
+  final Map<String, GoingPreview> _goingPreviews = {};
+
+  GoingPreview? goingPreviewFor(String placeId) => _goingPreviews[placeId];
+
+  Future<void> fetchGoingPreview(String placeId) async {
+    if (supabaseUserId == null) return;
+    try {
+      final res = await Supabase.instance.client.rpc('event_going_preview', params: {'p_place': placeId});
+      if (res is! Map) return;
+      final faces = [for (final f in (res['faces'] as List? ?? const [])) if (f is String) _asMe(f)];
+      final others = faces.where((f) => f != 'me').toList();
+      if (others.isNotEmpty) await _ensurePeopleFor(others);
+      _goingPreviews[placeId] = GoingPreview(
+        count: (res['count'] as num?)?.toInt(),
+        faces: faces,
+        more: res['more'] == true,
+        hidden: res['hidden'] == true,
+      );
+      notifyListeners();
+    } catch (_) {}
+  }
+
   // --- Event chat (phase 36) ---------------------------------------------
 
   final Map<String, List<EventMessage>> _eventMessages = {};
@@ -6528,12 +7267,23 @@ class AppStore extends ChangeNotifier {
         final uid = r['sender_id'] as String?;
         if (id == null || uid == null) continue;
         final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-        list.add(EventMessage(id: id, placeId: placeId, uid: _asMe(uid), text: (r['text'] as String?) ?? '', t: at.millisecondsSinceEpoch));
+        list.add(EventMessage(
+          id: id,
+          placeId: placeId,
+          uid: _asMe(uid),
+          text: (r['text'] as String?) ?? '',
+          t: at.millisecondsSinceEpoch,
+          card: _cardFrom(r['card']),
+        ));
         if (uid != supabaseUserId) ids.add(uid);
       }
       if (ids.isNotEmpty) await _ensurePeopleFor(ids.toList());
       final before = _eventMessages[placeId];
-      final changed = before == null || before.length != list.length || (list.isNotEmpty && before.last.id != list.last.id);
+      int paidCount(List<EventMessage> l) => l.fold(0, (n, m) => n + (m.card?.paid.length ?? 0));
+      final changed = before == null ||
+          before.length != list.length ||
+          (list.isNotEmpty && before.last.id != list.last.id) ||
+          paidCount(before) != paidCount(list);
       _eventMessages[placeId] = list;
       if (changed) notifyListeners();
       return null;
@@ -6543,20 +7293,25 @@ class AppStore extends ChangeNotifier {
   }
 
   /// Returns an error to show, or null.
-  Future<String?> sendEventMessage(String placeId, String text) async {
+  Future<String?> sendEventMessage(String placeId, String text, {ChatCard? card}) async {
     if (selfBanned) return _bannedMessage;
     final uid = supabaseUserId;
     if (!signedIn || uid == null) return 'Make an account to chat here.';
     var clean = text.trim();
-    if (clean.isEmpty) return null;
+    if (clean.isEmpty && card == null) return null;
     if (clean.length > 500) clean = clean.substring(0, 500);
     if (_tooSoon('event_msg', 700)) return 'Slow down a sec.';
     try {
       final rows = await _withProfileRepair<List<Map<String, dynamic>>>(
-          () => Supabase.instance.client.from('event_messages').insert({'place_id': placeId, 'sender_id': uid, 'text': clean}).select());
+          () => Supabase.instance.client.from('event_messages').insert({
+                'place_id': placeId,
+                'sender_id': uid,
+                'text': clean,
+                if (card != null) 'card': card.toServer(),
+              }).select());
       final r = rows.first;
       final at = DateTime.tryParse((r['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now();
-      final m = EventMessage(id: r['id'] as String, placeId: placeId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch);
+      final m = EventMessage(id: r['id'] as String, placeId: placeId, uid: 'me', text: clean, t: at.millisecondsSinceEpoch, card: _cardFrom(r['card']));
       _eventMessages[placeId] = [...(_eventMessages[placeId] ?? const <EventMessage>[]).where((x) => x.id != m.id), m];
       notifyListeners();
       return null;
@@ -7496,7 +8251,23 @@ class AppStore extends ChangeNotifier {
       storyMediaPath: row['story_media_path'] as String?,
       storyIsVideo: row['story_is_video'] as bool? ?? false,
       gifUrl: row['gif_url'] as String?,
+      card: _cardFrom(row['card']),
     );
+  }
+
+  ChatCard? _cardFrom(Object? raw) => raw is Map ? ChatCard.fromJson(raw.cast<String, dynamic>(), asMe: _asMe) : null;
+
+  /// Someone paid on a card: the server sends the whole row again.
+  void _applyRemoteCard(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final card = _cardFrom(row['card']);
+    if (id == null || card == null) return;
+    final i = messages.indexWhere((m) => m.id == id);
+    if (i == -1) return;
+    if ((messages[i].card?.paid.length ?? -1) == card.paid.length) return;
+    messages = [...messages]..[i] = messages[i].copyWith(card: card);
+    notifyListeners();
+    _persist();
   }
 
   // ── Story replies in DMs ────────────────────────────────────────────────
@@ -7610,9 +8381,11 @@ class AppStore extends ChangeNotifier {
         if (f == null) return m;
         final nextStatus = m.uid == 'me' && f.status == 'seen' ? 'seen' : m.status;
         final needUrl = urls[m.id] != null && m.mediaUrl == null;
-        if (nextStatus == m.status && !needUrl) return m;
+        final fc = f.card;
+        final cardChanged = fc != null && (m.card?.paid.length ?? -1) != fc.paid.length;
+        if (nextStatus == m.status && !needUrl && !cardChanged) return m;
         changed = true;
-        return m.copyWith(status: nextStatus, mediaUrl: needUrl ? urls[m.id] : null);
+        return m.copyWith(status: nextStatus, mediaUrl: needUrl ? urls[m.id] : null, card: cardChanged ? fc : null);
       }).toList();
       final existingIds = messages.map((m) => m.id).toSet();
       final newOnes = fetched.where((m) => !existingIds.contains(m.id)).toList();
@@ -7650,6 +8423,7 @@ class AppStore extends ChangeNotifier {
 
   /// The other side opened the thread — flip my message to "Seen".
   void _onRemoteMessageUpdate(Map<String, dynamic> row) {
+    _applyRemoteCard(row);
     final id = row['id'] as String?;
     if (id == null || row['read_at'] == null) return;
     final i = messages.indexWhere((m) => m.id == id);
@@ -7770,6 +8544,10 @@ class AppStore extends ChangeNotifier {
       _fetchStoryReports(),
       _fetchPlaceVisits(),
       _fetchPlaceInvites(),
+      _fetchPlaceClaims(),
+      fetchReferralStatus(),
+      _fetchPayHandles(),
+      _fetchMyRequests(),
       _fetchBlocks(),
       _fetchPosts(),
       _awardAndLoadTopPosts(),
@@ -7823,6 +8601,21 @@ class AppStore extends ChangeNotifier {
     final i = notifications.indexWhere((x) => x.id == n.id);
     if (i == -1) {
       // A new invite: show it on the place (and let you into a private one).
+      if (n.kind == 'claim' || n.kind == 'claim_request') unawaited(_fetchPlaceClaims());
+      if (n.kind == 'referral') unawaited(fetchReferralStatus());
+      if (n.kind == 'event_role' || n.kind == 'event_request') {
+        unawaited(_fetchEventTeams().then((_) => notifyListeners()));
+        unawaited(_fetchMyRequests());
+        final placeId = n.data['place_id'];
+        if (placeId is String) {
+          unawaited(refreshPrivateEvent(placeId));
+          unawaited(fetchEventRequests(placeId));
+        }
+      }
+      if (n.kind == 'pay') {
+        final placeId = n.data['place_id'];
+        if (placeId is String && _eventMessages.containsKey(placeId)) unawaited(fetchEventMessages(placeId));
+      }
       if (n.kind == 'invite') {
         unawaited(_fetchPlaceInvites());
         final placeId = n.data['place_id'];

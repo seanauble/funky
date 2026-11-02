@@ -34,7 +34,17 @@ Future<void> shareFunkyProfile(BuildContext context, String handle, {bool mine =
 }
 
 /// "Bring your friends to Funky" — an invite with the link to get the app.
-Future<void> shareFunkyInvite(BuildContext context, {String? handle}) {
+/// With [code], the friend enters it when they join and it counts toward
+/// your free night out.
+Future<void> shareFunkyInvite(BuildContext context, {String? handle, String? code}) {
+  if (code != null) {
+    return _shareText(
+      context,
+      "Come out with me on FUNKY 🕺 See where everyone's going tonight.\n"
+      "Join with my code $code (Profile → Invite friends) and we both get points.\n"
+      "Get the app: $funkyDownloadUrl",
+    );
+  }
   final who = handle == null ? '' : ' Add me: @$handle.';
   return _shareText(context, "Come out with me on FUNKY 🕺 See where everyone's going tonight.$who\nGet the app: $funkyDownloadUrl");
 }
@@ -50,6 +60,16 @@ Future<void> shareFunkyPlace(BuildContext context, String name, {String? when, S
     );
   }
   return _shareText(context, "Pull up to $name$at 🕺 See who's going on FUNKY.\nGet the app: $funkyDownloadUrl");
+}
+
+/// A one-time code for a private event (phase 43).
+Future<void> shareFunkyEventCode(BuildContext context, String name, String code, {String? who}) {
+  return _shareText(
+    context,
+    "${who == null ? "You're" : "$who, you're"} on the list for $name 🎉\n"
+    "Open FUNKY, tap \"Have a code?\" and enter $code. It works once, just for you.\n"
+    "Get the app: $funkyDownloadUrl",
+  );
 }
 
 /// Opens Apple Maps with directions to a spot.

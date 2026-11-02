@@ -16,6 +16,8 @@ import 'friend_requests_screen.dart';
 import 'group_thread_screen.dart';
 import 'place_detail_screen.dart';
 import 'posts_screen.dart';
+import 'referral_screen.dart';
+import 'event_manage_screen.dart';
 
 /// Opened from the bell: friend requests up top, then everything that
 /// happened — Today and Earlier — as cards with who did it, what happened
@@ -73,6 +75,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       case 'photo':
       case 'friends_going':
       case 'invite':
+      case 'claim':
+      case 'reward_used':
+      case 'event_role':
         final placeId = n.data['place_id'] as String?;
         if (placeId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PlaceDetailScreen(placeId: placeId)));
@@ -91,7 +96,29 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         final postId = n.data['post_id'] as String?;
         if (postId == null) return;
         navigator.push(MaterialPageRoute(builder: (_) => PostDetailScreen(postId: postId)));
+      case 'referral':
+        navigator.push(MaterialPageRoute(builder: (_) => const ReferralScreen()));
+      case 'event_request':
+        final placeId = n.data['place_id'] as String?;
+        if (placeId == null) return;
+        final ev = store.places.where((x) => x.id == placeId).firstOrNull;
+        navigator.push(MaterialPageRoute(
+          builder: (_) => ev != null && store.canManageEvent(ev) ? EventManageScreen(placeId: placeId) : PlaceDetailScreen(placeId: placeId),
+        ));
+      case 'pay':
+        final from = n.data['from'] as String?;
+        final groupId = n.data['group_id'] as String?;
+        final placeId = n.data['place_id'] as String?;
+        if (from != null) {
+          await store.ensurePerson(from);
+          navigator.push(MaterialPageRoute(builder: (_) => DmThreadScreen(personId: from)));
+        } else if (groupId != null) {
+          navigator.push(MaterialPageRoute(builder: (_) => GroupThreadScreen(groupId: groupId)));
+        } else if (placeId != null) {
+          navigator.push(MaterialPageRoute(builder: (_) => EventChatScreen(placeId: placeId)));
+        }
       case 'story_report':
+      case 'claim_request':
         if (!store.isAdmin) return;
         navigator.push(MaterialPageRoute(builder: (_) => const AdminPanelScreen()));
     }
@@ -475,6 +502,18 @@ class _NotificationCard extends StatelessWidget {
         return Icons.emoji_events_outlined;
       case 'moderation':
         return Icons.shield_outlined;
+      case 'claim':
+      case 'claim_request':
+        return Icons.verified_outlined;
+      case 'referral':
+      case 'reward_used':
+        return Icons.card_giftcard_rounded;
+      case 'pay':
+        return Icons.attach_money_rounded;
+      case 'event_request':
+        return Icons.front_hand_outlined;
+      case 'event_role':
+        return Icons.badge_outlined;
       default:
         return Icons.notifications_none_rounded;
     }

@@ -8,8 +8,14 @@ import 'create_flow_screen.dart';
 /// different starting kind. This used to open a bottom sheet with a
 /// Story/Poll/Place picker; it's a full screen now so the Story option can
 /// open straight into the live camera instead of a form.
-Future<void> showCreateSheet(BuildContext context, {CreateKind initial = CreateKind.story}) {
+///
+/// [eventAtPlaceId] opens straight into "add an event" at that bar or club
+/// (an owner posting from their place's page).
+Future<void> showCreateSheet(BuildContext context, {CreateKind initial = CreateKind.story, String? eventAtPlaceId}) {
   return Navigator.of(context).push(
-    MaterialPageRoute(fullscreenDialog: true, builder: (_) => CreateFlowScreen(initial: initial)),
+    MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => CreateFlowScreen(initial: eventAtPlaceId != null ? CreateKind.place : initial, eventAtPlaceId: eventAtPlaceId),
+    ),
   );
 }

@@ -126,7 +126,7 @@ class _ContactsFriendsScreenState extends State<ContactsFriendsScreen> {
                 ),
                 Builder(
                   builder: (c) => TextButton(
-                    onPressed: () => shareFunkyInvite(c, handle: store.me.handle),
+                    onPressed: () => shareFunkyInvite(c, handle: store.me.handle, code: store.referral?.code),
                     child: Text('Invite', style: TextStyle(color: tokens.orange, fontWeight: FontWeight.w800)),
                   ),
                 ),

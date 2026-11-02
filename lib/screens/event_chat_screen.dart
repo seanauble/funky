@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../data/app_store.dart';
 import '../data/models.dart';
 import '../widgets/avatar_preview.dart';
+import '../widgets/chat_cards.dart';
 import '../widgets/ios_ui.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
@@ -115,11 +116,11 @@ class _EventChatScreenState extends State<EventChatScreen> {
           // Back-to-back messages from the same person within 5 minutes
           // stack under one name.
           final grouped = prev != null && prev.uid == m.uid && m.t - prev.t < 5 * 60 * 1000;
-          final canDelete = m.uid == 'me' || isHost || store.isAdmin;
+          final canDelete = m.uid == 'me' || isHost || store.isAdmin || (place != null && store.canManageEvent(place));
           return _EventBubble(
             message: m,
             grouped: grouped,
-            fromHost: m.uid == hostUid,
+            role: place == null ? (m.uid == hostUid ? 'host' : null) : store.roleAt(place, m.uid),
             onLongPress: () => _actions(store, m, canDelete),
           );
         },
@@ -156,6 +157,19 @@ class _EventChatScreenState extends State<EventChatScreen> {
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
               child: Row(
                   children: [
+                    // Hosts and co-hosts can drop a payment card for entry.
+                    if (place != null && store.signedIn && store.canManageEvent(place))
+                      IconButton(
+                        tooltip: 'Request money',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          final card = await showPayCardSheet(context, note: place!.name, placeId: place.id, amount: place.entryPrice);
+                          if (card == null || !context.mounted) return;
+                          final err = await store.sendEventMessage(widget.placeId, '', card: card);
+                          if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                        },
+                        icon: Icon(Icons.attach_money_rounded, color: tokens.brand),
+                      ),
                     Expanded(
                       child: TextField(
                         controller: _controller,
@@ -228,9 +242,10 @@ class _Note extends StatelessWidget {
 class _EventBubble extends StatelessWidget {
   final EventMessage message;
   final bool grouped;
-  final bool fromHost;
+  // 'host', 'cohost', 'door' or null.
+  final String? role;
   final VoidCallback onLongPress;
-  const _EventBubble({required this.message, required this.grouped, required this.fromHost, required this.onLongPress});
+  const _EventBubble({required this.message, required this.grouped, required this.role, required this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
@@ -275,12 +290,15 @@ class _EventBubble extends StatelessWidget {
                               style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: 13.5),
                             ),
                           ),
-                          if (fromHost) ...[
+                          if (role != null) ...[
                             const SizedBox(width: 6),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                               decoration: BoxDecoration(color: tokens.brand.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(999)),
-                              child: Text('Host', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 10.5)),
+                              child: Text(
+                                role == 'host' ? 'Host' : role == 'cohost' ? 'Co-host' : 'Door',
+                                style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800, fontSize: 10.5),
+                              ),
                             ),
                           ],
                           const SizedBox(width: 6),
@@ -288,7 +306,20 @@ class _EventBubble extends StatelessWidget {
                         ],
                       ),
                     ),
-                  filteredMessageText(message.text, TextStyle(color: tokens.ink, fontSize: 15, height: 1.3), myHandle: store.myChatHandle, mentions: true),
+                  if (message.card != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, bottom: 4),
+                      child: ChatCardView(
+                        card: message.card!,
+                        mine: message.uid == 'me',
+                        fromUid: message.uid,
+                        kind: 'event',
+                        messageId: message.id,
+                        eventId: message.placeId,
+                      ),
+                    ),
+                  if (message.text.isNotEmpty)
+                    filteredMessageText(message.text, TextStyle(color: tokens.ink, fontSize: 15, height: 1.3), myHandle: store.myChatHandle, mentions: true),
                 ],
               ),
             ),

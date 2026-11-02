@@ -9,6 +9,7 @@ import 'screens/create_sheet.dart';
 import 'screens/home_screen.dart';
 import 'screens/places_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/referral_screen.dart';
 import 'widgets/top_bar_actions.dart';
 import 'widgets/ui_widgets.dart';
 import 'widgets/rainbow_wordmark.dart';
@@ -35,17 +36,39 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> {
   int _index = 0;
+  late final AppStore _store;
+  bool _askingWhoInvited = false;
 
   @override
   void initState() {
     super.initState();
     rootShellTabRequest.addListener(_handleTabRequest);
+    _store = context.read<AppStore>();
+    _store.addListener(_maybeAskWhoInvited);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAskWhoInvited());
   }
 
   @override
   void dispose() {
     rootShellTabRequest.removeListener(_handleTabRequest);
+    _store.removeListener(_maybeAskWhoInvited);
     super.dispose();
+  }
+
+  /// A brand-new account gets asked once who invited them.
+  void _maybeAskWhoInvited() {
+    if (_askingWhoInvited || !mounted || !_store.shouldAskWhoInvited) return;
+    _askingWhoInvited = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Let the first screen settle (and any onboarding finish) first.
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted || !_store.shouldAskWhoInvited || ModalRoute.of(context)?.isCurrent != true) {
+        _askingWhoInvited = false;
+        return;
+      }
+      await showWhoInvitedSheet(context);
+      _askingWhoInvited = false;
+    });
   }
 
   void _handleTabRequest() {

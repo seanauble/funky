@@ -15,6 +15,7 @@ import 'account_screen.dart';
 import 'create_sheet.dart';
 import 'place_detail_screen.dart';
 import 'posts_screen.dart';
+import '../widgets/join_code.dart';
 
 /// Home's Upcoming side: parties, events, tailgates and frat parties dated
 /// for a night after tonight, grouped by night, soonest first. On its night
@@ -54,10 +55,17 @@ class UpcomingSection extends StatelessWidget {
                 style: TextStyle(color: tokens.mute, fontSize: 13.5, height: 1.35),
               ),
               const SizedBox(height: 12),
-              FunkyChip(
-                label: 'Add a party or event',
-                active: true,
-                onPressed: () => requireGuestOkThen(context, store, () => showCreateSheet(context, initial: CreateKind.place)),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FunkyChip(
+                    label: 'Add a party or event',
+                    active: true,
+                    onPressed: () => requireGuestOkThen(context, store, () => showCreateSheet(context, initial: CreateKind.place)),
+                  ),
+                  FunkyChip(label: '🎟️ Have a code?', onPressed: () => showJoinWithCode(context)),
+                ],
               ),
             ],
           ),
@@ -65,7 +73,16 @@ class UpcomingSection extends StatelessWidget {
       );
     }
 
-    final children = <Widget>[];
+    final children = <Widget>[
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          onPressed: () => showJoinWithCode(context),
+          icon: Icon(Icons.confirmation_number_outlined, color: tokens.brand, size: 18),
+          label: Text('Have a code?', style: TextStyle(color: tokens.brand, fontWeight: FontWeight.w800)),
+        ),
+      ),
+    ];
     String? lastNight;
     for (final item in items) {
       if (item.$1 != lastNight) {
@@ -164,6 +181,17 @@ class UpcomingPlaceCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text('$what · $where', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: tokens.mute, fontSize: 12.5)),
+                  if (p.official)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        children: [
+                          Icon(Icons.verified_rounded, size: 13, color: tokens.gold),
+                          const SizedBox(width: 3),
+                          Text('Official · from the venue', style: TextStyle(color: tokens.gold, fontWeight: FontWeight.w800, fontSize: 12)),
+                        ],
+                      ),
+                    ),
                   if (store.invitedBy(p.id).isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
@@ -201,7 +229,9 @@ class UpcomingPlaceCard extends StatelessWidget {
                           locked
                               ? 'Invite only · enter the code to RSVP'
                               : priv
-                                  ? (guestsGoing == 0 ? 'Guest list' : '$guestsGoing going')
+                                  ? (p.hidesGoingCount && !store.isEventStaff(p)
+                                      ? (going ? "You're going" : 'Guest list')
+                                      : (guestsGoing == 0 ? 'Guest list' : '$guestsGoing going'))
                                   : place.going == 0
                                       ? 'Be the first going'
                                       : (friends.isNotEmpty ? '${place.going} going · ${friends.length} friend${friends.length == 1 ? '' : 's'}' : '${place.going} going'),

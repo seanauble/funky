@@ -13,6 +13,7 @@ import '../data/models.dart';
 import '../theme/colors.dart';
 import '../widgets/avatar_preview.dart';
 import '../widgets/call_log_line.dart';
+import '../widgets/chat_cards.dart';
 import '../widgets/gif_picker.dart';
 import '../widgets/ui_widgets.dart';
 import 'account_screen.dart';
@@ -131,6 +132,14 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
     _draftController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// "Request money": a payment card with your Venmo / Cash App / ….
+  Future<void> _sendPayCard(AppStore store) async {
+    final card = await showPayCardSheet(context);
+    if (card == null || !mounted) return;
+    final error = await store.sendDirectMessage(widget.personId, '', card: card, skipCooldown: true);
+    if (error != null && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
 
   Future<void> _sendGif(AppStore store) async {
@@ -364,6 +373,13 @@ class _DmThreadScreenState extends State<DmThreadScreen> {
                       onPressed: _sendingMedia ? null : () => _upload(store),
                       icon: Icon(Icons.photo_library_outlined, color: tokens.brand),
                     ),
+                    if (store.signedIn)
+                      IconButton(
+                        tooltip: 'Request money',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _sendPayCard(store),
+                        icon: Icon(Icons.attach_money_rounded, color: tokens.brand),
+                      ),
                     if (store.giphyKey != null)
                       IconButton(
                         tooltip: 'Send a GIF',
@@ -436,7 +452,7 @@ class DmBubble extends StatelessWidget {
     final isMedia = message.mediaType != null;
     final gif = message.gifUrl;
     final textColor = mine ? tokens.onOrange : tokens.ink;
-    final bubble = Container(
+    final plainBubble = Container(
       padding: isMedia || gif != null ? const EdgeInsets.all(4) : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.66),
       decoration: BoxDecoration(
@@ -482,6 +498,28 @@ class DmBubble extends StatelessWidget {
             )
           : filteredMessageText(message.text, TextStyle(color: textColor)),
     );
+    // A payment card, "asked to go" or "you're in" (phase 43), with any
+    // words under it in a normal bubble.
+    final card = message.card;
+    final Widget bubble = card == null
+        ? plainBubble
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              ChatCardView(
+                card: card,
+                mine: mine,
+                fromUid: message.uid,
+                kind: message.room.startsWith('grp_') ? 'group' : 'dm',
+                messageId: message.id,
+              ),
+              if (message.text.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                plainBubble,
+              ],
+            ],
+          );
     final storyPreview = message.isStoryReply
         ? Padding(
             padding: const EdgeInsets.only(bottom: 4),
