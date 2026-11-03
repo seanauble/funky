@@ -483,6 +483,8 @@ class _GroupThreadScreenState extends State<GroupThreadScreen> {
                   : ListView.builder(
                       controller: _scrollController,
                       reverse: true,
+                      // Scrolling back through the chat puts the keyboard away.
+                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                       padding: const EdgeInsets.all(16),
                       itemCount: timeline.length,
                       itemBuilder: (context, row) {

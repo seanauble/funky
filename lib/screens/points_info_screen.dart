@@ -177,7 +177,7 @@ class PointsInfoScreen extends StatelessWidget {
                   tokens: tokens,
                 ),
                 _NameStyleRow(
-                  label: 'RAIN · rainbow',
+                  label: 'RAIN · every letter its own falling color',
                   requiredPoints: rainNamePoints,
                   unlocked: canUseRainName(store.me.points),
                   value: store.me.nameEffect == 'rain',

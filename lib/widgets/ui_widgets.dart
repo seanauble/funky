@@ -314,9 +314,10 @@ class StyledName extends StatelessWidget {
   }
 }
 
-/// A name that moves, like the old Call of Duty clan tags: 'rain' is a
-/// rainbow sliding across the letters, 'cycle' flashes the whole name
-/// through the colors.
+/// A name that moves, like the old Call of Duty clan tags: 'rain' gives
+/// every letter its own color, with the next color falling into it from the
+/// top, fast — each letter on its own step so no two neighbors match;
+/// 'cycle' flashes the whole name through the colors.
 class AnimatedNameText extends StatefulWidget {
   final String text;
   final TextStyle style;
@@ -331,7 +332,11 @@ class AnimatedNameText extends StatefulWidget {
 class _AnimatedNameTextState extends State<AnimatedNameText> with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(vsync: this, duration: _period)..repeat();
 
-  Duration get _period => widget.effect == 'rain' ? const Duration(milliseconds: 2200) : const Duration(milliseconds: 3000);
+  // Rain: one new color falls into each letter every _fallMs.
+  static const _fallMs = 260;
+  Duration get _period => widget.effect == 'rain'
+      ? Duration(milliseconds: _fallMs * (_rainbow.length - 1))
+      : const Duration(milliseconds: 3000);
 
   static const _rainbow = [
     Color(0xFFFF3B30),
@@ -372,17 +377,35 @@ class _AnimatedNameTextState extends State<AnimatedNameText> with SingleTickerPr
           final color = HSLColor.fromAHSL(1, t * 360, 0.9, dark ? 0.62 : 0.48).toColor();
           return Text(widget.text, style: widget.style.copyWith(color: color), overflow: widget.overflow, maxLines: 1);
         }
-        return ShaderMask(
-          blendMode: BlendMode.srcIn,
-          shaderCallback: (bounds) {
-            final w = bounds.width <= 0 ? 1.0 : bounds.width;
-            final shift = t * w;
-            return LinearGradient(
-              colors: _rainbow,
-              tileMode: TileMode.repeated,
-            ).createShader(Rect.fromLTWH(-shift, 0, w, bounds.height));
-          },
-          child: Text(widget.text, style: widget.style.copyWith(color: Colors.white), overflow: widget.overflow, maxLines: 1),
+        // Rain: each letter is its own color; the next one falls in from the
+        // top. Letters are spread 3 colors apart (out of 8) so neighbors are
+        // never the same, and every letter is mid-fall at a different spot.
+        final colors = _rainbow.sublist(0, _rainbow.length - 1);
+        final n = colors.length;
+        final fontSize = widget.style.fontSize ?? 14;
+        final lineHeight = fontSize * (widget.style.height ?? 1.2);
+        final letters = widget.text.characters.toList();
+        final spans = <InlineSpan>[];
+        for (var i = 0; i < letters.length; i++) {
+          final q = t * n + i * 3 + (i * 0.37) % 1;
+          final step = q.floor();
+          final f = q - step;
+          final cur = colors[step % n];
+          final next = colors[(step + 1) % n];
+          final paint = Paint()
+            ..shader = LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [next, next, cur, cur],
+              stops: [0, (f - 0.12).clamp(0.0, 1.0), f, 1],
+            ).createShader(Rect.fromLTWH(0, 0, 1, lineHeight));
+          spans.add(TextSpan(text: letters[i], style: TextStyle(foreground: paint)));
+        }
+        return Text.rich(
+          TextSpan(children: spans),
+          style: widget.style.copyWith(color: Colors.white),
+          overflow: widget.overflow,
+          maxLines: 1,
         );
       },
     );

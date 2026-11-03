@@ -61,13 +61,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final allPeople = {...store.people, 'me': store.me};
     final stayingInCount = allPeople.values.where((p) => p.move == 'in').length;
     final moveCounts = [...moveOptions.map((p) => p.going), stayingInCount];
-    // Faces along the bottom of the poll: friends who voted first.
+    // Faces along the bottom of the poll: friends first, most popular first.
     final moveIds = {...moveOptions.map((p) => p.id), 'in'};
-    final moveVoters = allPeople.values.where((p) => p.move != null && moveIds.contains(p.move) && !store.isHidden(p.id)).toList()
-      ..sort((a, b) {
-        int rank(Person p) => p.id == 'me' ? 0 : (store.isFriendsWith(p.id) ? 1 : 2);
-        return rank(a).compareTo(rank(b));
-      });
+    final moveVoters = store.faceOrder([
+      for (final e in allPeople.entries)
+        if (e.value.move != null && moveIds.contains(e.value.move)) e.key,
+    ]);
     int? moveSelectedIndex;
     if (store.me.move != null) {
       moveSelectedIndex = store.me.move == 'in' ? moveOptions.length : moveOptions.indexWhere((p) => p.id == store.me.move);
@@ -239,6 +238,18 @@ class _HomeScreenState extends State<HomeScreen> {
               onSelect: (i) => store.setMove(i == moveOptions.length ? 'in' : moveOptions[i].id),
               voters: moveVoters,
               timeLeft: session.untilReset(),
+              photos: [
+                for (final p in moveOptions)
+                  PlaceMediaThumbnail(
+                    story: null,
+                    coverPhotoPath: p.place.coverPhotoPath,
+                    coverUrl: p.place.coverUrl,
+                    photoUrl: p.place.photoUrl,
+                    fallbackLabel: MovePollCard.initials(p.name),
+                    fontSize: 15,
+                  ),
+                null,
+              ],
             ),
           ),
           SectionHeader(
@@ -883,27 +894,13 @@ class _AvatarRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
-    final shown = people.take(5).toList();
-    final names = people.take(3).map((p) => '@${p.handle}').join(', ');
+    final store = context.watch<AppStore>();
+    final ordered = store.faceOrder(people.map((p) => p.id), max: people.length);
+    final names = ordered.take(3).map((p) => p.id == 'me' ? 'you' : '@${p.handle}').join(', ');
     final extra = people.length - 3;
     return Row(
       children: [
-        SizedBox(
-          width: 22.0 * shown.length + 8,
-          height: 30,
-          child: Stack(
-            children: [
-              for (var i = 0; i < shown.length; i++)
-                Positioned(
-                  left: 22.0 * i,
-                  child: Container(
-                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.surface, width: 2)),
-                    child: PersonAvatar(person: shown[i], size: 26),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        AvatarStack(people: ordered, total: people.length, size: 26),
         const SizedBox(width: 6),
         Expanded(
           child: Text(

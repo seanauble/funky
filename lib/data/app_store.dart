@@ -1360,18 +1360,52 @@ class AppStore extends ChangeNotifier {
     return ids.map(personById).whereType<Person>().toList();
   }
 
-  /// Everyone going to [placeId] whose profile is loaded, friends first.
-  List<Person> peopleGoingToPlace(String placeId) {
-    final ids = <String>{
-      ...?placeRsvps[placeId],
-      for (final e in people.entries)
-        if (e.value.move == placeId) e.key,
-      if (me.move == placeId) 'me',
-    };
+  /// Everyone going to [placeId] whose profile is loaded: your friends
+  /// first, then everyone else, most popular first in each (you last).
+  List<Person> peopleGoingToPlace(String placeId) => faceOrder(goingIds(placeId), max: 1 << 20);
+
+  /// Everyone going to [placeId] — tonight or said ahead of time — by id.
+  Set<String> goingIds(String placeId) => <String>{
+        ...?placeRsvps[placeId],
+        for (final e in people.entries)
+          if (e.value.move == placeId) e.key,
+        if (me.move == placeId) 'me',
+      };
+
+  /// Everyone who voted in [poll], by id.
+  Set<String> pollVoterIds(Poll poll) => <String>{
+        for (final e in {...people, 'me': me}.entries)
+          if (e.value.votes[poll.id] != null) e.key,
+      };
+
+  final Set<String> _faceRequested = {};
+
+  /// The faces to show for a group of people (going, voted…): your friends
+  /// first, then everyone else — the most popular (most Funky points) first
+  /// in each — and you last. Anyone not loaded yet is fetched so the faces
+  /// fill in.
+  List<Person> faceOrder(Iterable<String> ids, {int max = 3}) {
     final friends = me.friends.toSet();
-    final list = ids.map((id) => id == 'me' ? me : personById(id)).whereType<Person>().toList();
-    list.sort((a, b) => (friends.contains(b.id) ? 1 : 0).compareTo(friends.contains(a.id) ? 1 : 0));
-    return list;
+    final list = <Person>[];
+    final missing = <String>[];
+    for (final id in ids.toSet()) {
+      if (id != 'me' && isHidden(id)) continue;
+      final p = id == 'me' ? me : personById(id);
+      if (p != null) {
+        list.add(p);
+      } else if (_isRealPersonId(id) && _faceRequested.add(id)) {
+        missing.add(id);
+      }
+    }
+    if (missing.isNotEmpty) unawaited(_ensurePeopleFor(missing).then((_) => notifyListeners()));
+    int group(Person p) => p.id == 'me' ? 2 : (friends.contains(p.id) ? 0 : 1);
+    list.sort((a, b) {
+      final g = group(a).compareTo(group(b));
+      if (g != 0) return g;
+      final pts = b.points.compareTo(a.points);
+      return pts != 0 ? pts : a.handle.toLowerCase().compareTo(b.handle.toLowerCase());
+    });
+    return list.length > max ? list.sublist(0, max) : list;
   }
 
   Future<void> _fetchPlaceRsvps() async {

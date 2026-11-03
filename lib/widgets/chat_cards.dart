@@ -32,6 +32,51 @@ Color payAppColor(String app) => switch (app) {
       _ => const Color(0xFF1C1C1E),
     };
 
+/// The official logo for each app, once it's been added to assets/pay/
+/// (see assets/pay/README.txt for where to get them). Until a file is
+/// there, nothing shows and the button is just its color and name.
+const payLogoAssets = {
+  'venmo': 'assets/pay/venmo.png',
+  'cashapp': 'assets/pay/cashapp.png',
+  'paypal': 'assets/pay/paypal.png',
+  'zelle': 'assets/pay/zelle.png',
+  'applecash': 'assets/pay/applecash.png',
+};
+
+/// An app's logo on a small white tile (or nothing if it isn't added yet).
+class PayAppLogo extends StatelessWidget {
+  final String app;
+  final double size;
+  // Space after the logo — only there when the logo is.
+  final double gap;
+  const PayAppLogo({super.key, required this.app, this.size = 22, this.gap = 8});
+
+  @override
+  Widget build(BuildContext context) {
+    final path = payLogoAssets[app];
+    if (path == null) return const SizedBox.shrink();
+    return Image.asset(
+      path,
+      width: size,
+      height: size,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.medium,
+      // A missing file just means "no logo yet".
+      errorBuilder: (_, _, _) => const SizedBox.shrink(),
+      frameBuilder: (context, child, frame, sync) => Padding(
+        padding: EdgeInsets.only(right: gap),
+        child: Container(
+          width: size + 4,
+          height: size + 4,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular((size + 4) * 0.26)),
+          child: ClipRRect(borderRadius: BorderRadius.circular(size * 0.22), child: child),
+        ),
+      ),
+    );
+  }
+}
+
 /// What someone types for each app ("@mike-delta", "$mike", ...).
 String payHandleHint(String app) => switch (app) {
       'venmo' => '@username',
@@ -218,11 +263,19 @@ class ChatCardView extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
                   ),
-                  child: Text(
-                    a == 'zelle' ? 'Zelle · ${card.apps[a]}' : 'Pay on ${payAppLabel(a)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      PayAppLogo(app: a, size: 20),
+                      Flexible(
+                        child: Text(
+                          a == 'zelle' ? 'Zelle · ${card.apps[a]}' : 'Pay on ${payAppLabel(a)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -274,7 +327,13 @@ class ChatCardView extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(color: payAppColor(a).withValues(alpha: 0.14), borderRadius: BorderRadius.circular(999)),
-                  child: Text(payAppLabel(a), style: TextStyle(color: tokens.ink, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      PayAppLogo(app: a, size: 13, gap: 5),
+                      Text(payAppLabel(a), style: TextStyle(color: tokens.ink, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
                 ),
             ],
           ),
@@ -674,11 +733,20 @@ class _PayCardSheetState extends State<_PayCardSheet> {
                     child: Row(
                       children: [
                         Container(
-                          width: 86,
-                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          width: 100,
+                          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
                           alignment: Alignment.center,
                           decoration: BoxDecoration(color: payAppColor(app), borderRadius: BorderRadius.circular(8)),
-                          child: Text(payAppLabel(app), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              PayAppLogo(app: app, size: 14, gap: 5),
+                              Flexible(
+                                child: Text(payAppLabel(app),
+                                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -702,6 +770,7 @@ class _PayCardSheetState extends State<_PayCardSheet> {
                       contentPadding: EdgeInsets.zero,
                       activeColor: tokens.brand,
                       onChanged: (v) => setState(() => v == true ? _on.add(app) : _on.remove(app)),
+                      secondary: PayAppLogo(app: app, size: 26, gap: 0),
                       title: Text(payAppLabel(app), style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800)),
                       subtitle: Text(payHandleShown(app, saved[app]!), style: TextStyle(color: tokens.mute, fontSize: 12.5)),
                     ),

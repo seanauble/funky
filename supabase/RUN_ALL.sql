@@ -7310,14 +7310,17 @@ begin
   staff := public.is_event_staff(p_place);
   insider := public.is_event_insider(p_place);
   select count(*) into total from public.event_guests where place_id = p_place and status = 'going';
+  -- Friends first, then the most popular (most points).
   select array_agg(user_id) into faces from (
     select g.user_id
       from public.event_guests g
+      join public.profiles pr on pr.id = g.user_id
      where g.place_id = p_place and g.status = 'going' and g.user_id <> coalesce(me, '00000000-0000-0000-0000-000000000000'::uuid)
        and (insider or public.are_friends(me, g.user_id))
+       and not coalesce(pr.banned, false)
        and not exists (select 1 from public.blocks b
                         where (b.blocker_id = me and b.blocked_id = g.user_id) or (b.blocker_id = g.user_id and b.blocked_id = me))
-     order by public.are_friends(me, g.user_id) desc, g.updated_at desc
+     order by public.are_friends(me, g.user_id) desc, coalesce(pr.points, 0) + coalesce(pr.bonus_points, 0) desc, g.updated_at desc
      limit 5
   ) x;
   return jsonb_build_object(

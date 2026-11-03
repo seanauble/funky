@@ -93,11 +93,20 @@ class _PaymentAppsScreenState extends State<PaymentAppsScreen> {
               child: Row(
                 children: [
                   Container(
-                    width: 96,
-                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    width: 112,
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(color: payAppColor(app), borderRadius: BorderRadius.circular(10)),
-                    child: Text(payAppLabel(app), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13)),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        PayAppLogo(app: app, size: 18, gap: 6),
+                        Flexible(
+                          child: Text(payAppLabel(app),
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13)),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(

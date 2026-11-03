@@ -108,6 +108,7 @@ class _EventChatScreenState extends State<EventChatScreen> {
     } else {
       body = ListView.builder(
         reverse: true,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
         itemCount: messages.length,
         itemBuilder: (context, i) {

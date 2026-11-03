@@ -133,3 +133,77 @@ class PersonAvatar extends StatelessWidget {
     );
   }
 }
+
+/// Who's going / who voted: exactly 3 overlapping faces once there are 3
+/// or more people (fewer only when fewer exist), then a "+N" bubble for
+/// everyone else. Pass [people] already in order (AppStore.faceOrder:
+/// friends first, most popular first). With no [total] but [more] set,
+/// the bubble is just "+" (when the host keeps the number hidden).
+class AvatarStack extends StatelessWidget {
+  final List<Person> people;
+  final int? total;
+  final bool more;
+  final double size;
+  // The ring around each face — the color behind the stack.
+  final Color? ring;
+  const AvatarStack({super.key, required this.people, this.total, this.more = false, this.size = 26, this.ring});
+
+  static const maxFaces = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
+    final shown = people.take(maxFaces).toList();
+    final all = total ?? people.length;
+    final extra = all - shown.length;
+    final bubble = extra > 0 || (total == null && more);
+    final count = shown.length + (bubble ? 1 : 0);
+    if (count == 0) return const SizedBox.shrink();
+    final border = size >= 34 ? 2.0 : 1.5;
+    final outer = size + border * 2;
+    final step = size * 0.72;
+    final ringColor = ring ?? tokens.surface;
+    final label = extra > 0 ? (extra > 99 ? '99+' : '+$extra') : '+';
+    return SizedBox(
+      width: step * (count - 1) + outer,
+      height: outer,
+      child: Stack(
+        children: [
+          for (var i = 0; i < shown.length; i++)
+            Positioned(
+              left: step * i,
+              child: Container(
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: ringColor, width: border)),
+                child: PersonAvatar(person: shown[i], size: size, preview: false),
+              ),
+            ),
+          if (bubble)
+            Positioned(
+              left: step * shown.length,
+              child: Container(
+                width: outer,
+                height: outer,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: tokens.raised,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: ringColor, width: border),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      style: TextStyle(color: tokens.ink, fontWeight: FontWeight.w800, fontSize: size * 0.4),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

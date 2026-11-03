@@ -238,9 +238,21 @@ class PollCard extends StatelessWidget {
                 const SizedBox(height: 12),
                 options,
                 const SizedBox(height: 10),
-                Text(
-                  '${total == 1 ? '1 vote' : '$total votes'} · Ends in ${untilReset()}',
-                  style: TextStyle(color: tokens.mute, fontSize: 13),
+                Row(
+                  children: [
+                    if (total > 0) ...[
+                      AvatarStack(people: store.faceOrder(store.pollVoterIds(poll)), total: total, size: 22),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(
+                      child: Text(
+                        '${total == 1 ? '1 vote' : '$total votes'} · Ends in ${untilReset()}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: tokens.mute, fontSize: 13),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),

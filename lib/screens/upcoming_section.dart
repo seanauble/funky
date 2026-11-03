@@ -129,6 +129,8 @@ class UpcomingPlaceCard extends StatelessWidget {
     final locked = priv && !store.isEventInsider(p);
     final going = priv ? store.myEventStatus(p.id) == 'going' : store.hasRsvped(p.id);
     final friends = priv ? const <Person>[] : store.friendsGoingToPlace(p.id);
+    // Faces: friends first, then the most popular people going.
+    final faces = priv ? const <Person>[] : store.faceOrder(store.goingIds(p.id));
     final guestsGoing = priv ? store.eventGuestCount(p.id, 'going') : 0;
     final badge = placeOrgBadge(p);
     String? hostName;
@@ -205,24 +207,9 @@ class UpcomingPlaceCard extends StatelessWidget {
                   const SizedBox(height: 6),
                   Row(
                     children: [
-                      if (friends.isNotEmpty) ...[
-                        SizedBox(
-                          width: 16.0 * friends.take(3).length + 8,
-                          height: 22,
-                          child: Stack(
-                            children: [
-                              for (var i = 0; i < friends.take(3).length; i++)
-                                Positioned(
-                                  left: 16.0 * i,
-                                  child: Container(
-                                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.surface, width: 1.5)),
-                                    child: PersonAvatar(person: friends[i], size: 20, preview: false),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 4),
+                      if (faces.isNotEmpty) ...[
+                        AvatarStack(people: faces, total: place.going, size: 20),
+                        const SizedBox(width: 6),
                       ],
                       Expanded(
                         child: Text(

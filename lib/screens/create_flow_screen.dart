@@ -112,13 +112,16 @@ class _CreateFlowScreenState extends State<CreateFlowScreen> {
             child: PageView(
               controller: _pageController,
               physics: _cameraBusy ? const NeverScrollableScrollPhysics() : null,
-              onPageChanged: (i) => setState(() => _page = i),
+              onPageChanged: (i) {
+                FocusManager.instance.primaryFocus?.unfocus();
+                setState(() => _page = i);
+              },
               children: [
                 _CameraStoryPage(onBusyChanged: (v) => setState(() => _cameraBusy = v)),
-                const PostFormPage(),
-                const _TextStoryPage(),
-                const _PollFormPage(),
-                _PlaceFormPage(eventAtPlaceId: widget.eventAtPlaceId),
+                const _DismissKeyboard(child: PostFormPage()),
+                const _DismissKeyboard(child: _TextStoryPage()),
+                const _DismissKeyboard(child: _PollFormPage()),
+                _DismissKeyboard(child: _PlaceFormPage(eventAtPlaceId: widget.eventAtPlaceId)),
               ],
             ),
           ),
@@ -1625,6 +1628,7 @@ class _TextStoryPageState extends State<_TextStoryPage> {
     final canPost = _textController.text.trim().isNotEmpty;
 
     return SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1735,6 +1739,7 @@ class _PollFormPageState extends State<_PollFormPage> {
     final canPost = canAddToday && _questionController.text.trim().isNotEmpty && filledOptions >= 2;
 
     return SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2013,6 +2018,10 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
   }
 
   Future<void> _addCoverPhoto() async {
+    // Let go of the name/address box first — otherwise coming back from
+    // the camera or photo library hands focus right back to it and the
+    // keyboard pops up over the form.
+    FocusManager.instance.primaryFocus?.unfocus();
     final source = await showIosActionSheet<_PlacePhotoSource>(
       context,
       actions: const [
@@ -2026,6 +2035,9 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     } else {
       await _addCoverPhotoFromLibrary();
     }
+    if (!mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) => FocusManager.instance.primaryFocus?.unfocus());
   }
 
   Future<void> _addCoverPhotoFromCamera() async {
@@ -2095,6 +2107,7 @@ class _PlaceFormPageState extends State<_PlaceFormPage> {
     final canPost = canAddToday && trimmedName.isNotEmpty && duplicate == null && !needsTime && codeOk && priceOk;
 
     return SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2656,6 +2669,21 @@ class _HostPickerSheetState extends State<_HostPickerSheet> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Tap anywhere that isn't a button or a text box to put the keyboard away.
+class _DismissKeyboard extends StatelessWidget {
+  final Widget child;
+  const _DismissKeyboard({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+      child: child,
     );
   }
 }

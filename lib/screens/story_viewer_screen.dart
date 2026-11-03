@@ -811,6 +811,30 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                 icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.redAccent : Colors.white, size: 30),
               ),
             ),
+            // Your own story: how many have seen it, bottom left (tap for who).
+            if (story.uid == 'me')
+              Positioned(
+                bottom: pad.bottom + 30,
+                left: 18,
+                child: GestureDetector(
+                  onTap: showOwnStorySheet,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(color: Colors.black38, borderRadius: BorderRadius.circular(999)),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.remove_red_eye_outlined, color: Colors.white, size: 18),
+                        const SizedBox(width: 5),
+                        Text(
+                          '${{...story.views.where((id) => id != 'me'), ...story.likes.where((id) => id != 'me')}.length}',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             // A quiet hint that the swipe-up gesture exists at all — it has
             // no tap target of its own (the whole-screen GestureDetector
             // above already handles the real gesture), just a nudge. None on
@@ -850,7 +874,8 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
             else if (story.uid == 'me' || !story.anon)
             Positioned(
               bottom: pad.bottom + 28,
-              left: 0,
+              // Centered between the view count (yours) and the heart.
+              left: story.uid == 'me' ? 70 : 0,
               right: 70,
               child: IgnorePointer(
                 child: Column(

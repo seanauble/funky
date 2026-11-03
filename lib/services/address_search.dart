@@ -130,58 +130,73 @@ class AddressSearch {
       final res = await req.close().timeout(const Duration(seconds: 8));
       if (res.statusCode != 200) return const [];
       final body = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 8));
-      final decoded = jsonDecode(body);
-      if (decoded is! Map) return const [];
-      final features = decoded['features'];
-      if (features is! List) return const [];
-      final out = <AddressResult>[];
-      final seen = <String>{};
-      for (final f in features) {
-        if (f is! Map) continue;
-        final geometry = f['geometry'];
-        final props = f['properties'];
-        if (geometry is! Map || props is! Map) continue;
-        final coords = geometry['coordinates'];
-        if (coords is! List || coords.length < 2) continue;
-        final lng = (coords[0] as num?)?.toDouble();
-        final lat = (coords[1] as num?)?.toDouble();
-        if (lat == null || lng == null) continue;
-
-        final name = _clean(props['name']);
-        final house = _clean(props['housenumber']);
-        final street = _clean(props['street']);
-        final streetLine = street == null ? null : (house == null ? street : '$house $street');
-        final city = _clean(props['city']) ?? _clean(props['locality']) ?? _clean(props['district']) ?? _clean(props['county']);
-        final state = _clean(props['state']);
-        final zip = _clean(props['postcode']);
-        final statePart = [state, zip].whereType<String>().join(' ');
-
-        // A named venue (bar, club, restaurant…) as opposed to a bare street
-        // address or a whole city/state.
-        final kind = _clean(props['type']);
-        final osmKey = _clean(props['osm_key']);
-        const areaKinds = {'city', 'state', 'country', 'county', 'district', 'locality', 'street', 'postcode'};
-        const nonVenueKeys = {'place', 'boundary', 'highway'};
-        final String? venueName =
-            (name != null && name != streetLine && !areaKinds.contains(kind) && !nonVenueKeys.contains(osmKey)) ? name : null;
-        final isVenue = venueName != null;
-        final addressParts = <String>[
-          if (streetLine != null) streetLine else if (name != null && !isVenue) name,
-          if (city != null && city != name) city,
-          if (statePart.isNotEmpty) statePart,
-        ];
-        if (addressParts.isEmpty) continue;
-        final address = addressParts.join(', ');
-        final title = venueName ?? address;
-        final key = '${title.toLowerCase()}|${address.toLowerCase()}';
-        if (!seen.add(key)) continue;
-        out.add(AddressResult(title: title, address: address, lat: lat, lng: lng, isVenue: isVenue));
-      }
-      return out;
+      return parse(jsonDecode(body), q);
     } catch (_) {
       return const [];
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// Turns Photon's answer into suggestions for what was typed ([query]).
+  static List<AddressResult> parse(Object? decoded, String query) {
+    // The house number at the start of what was typed ("123 Main St" → "123").
+    // The map data often has the street but not each house on it, so the
+    // number you typed is kept instead of being dropped.
+    final typedHouse = RegExp(r'^\s*(\d+[A-Za-z]?(?:-\d+[A-Za-z]?)?)\s+\S').firstMatch(query)?.group(1);
+    if (decoded is! Map) return const [];
+    final features = decoded['features'];
+    if (features is! List) return const [];
+    final out = <AddressResult>[];
+    final seen = <String>{};
+    for (final f in features) {
+      if (f is! Map) continue;
+      final geometry = f['geometry'];
+      final props = f['properties'];
+      if (geometry is! Map || props is! Map) continue;
+      final coords = geometry['coordinates'];
+      if (coords is! List || coords.length < 2) continue;
+      final lng = (coords[0] as num?)?.toDouble();
+      final lat = (coords[1] as num?)?.toDouble();
+      if (lat == null || lng == null) continue;
+
+      final name = _clean(props['name']);
+      final house = _clean(props['housenumber']);
+      final kind = _clean(props['type']);
+      final osmKey = _clean(props['osm_key']);
+      // A plain street comes back as just its name (no "street" field).
+      final isStreet = kind == 'street' || osmKey == 'highway';
+      final street = _clean(props['street']) ?? (isStreet ? name : null);
+      final mapStreetLine = street == null ? null : (house == null ? street : '$house $street');
+      final city = _clean(props['city']) ?? _clean(props['locality']) ?? _clean(props['district']) ?? _clean(props['county']);
+      final state = _clean(props['state']);
+      final zip = _clean(props['postcode']);
+      final statePart = [state, zip].whereType<String>().join(' ');
+
+      // A named venue (bar, club, restaurant…) as opposed to a bare street
+      // address or a whole city/state.
+      const areaKinds = {'city', 'state', 'country', 'county', 'district', 'locality', 'street', 'postcode'};
+      const nonVenueKeys = {'place', 'boundary', 'highway'};
+      final String? venueName = (name != null && name != mapStreetLine && name != street && !areaKinds.contains(kind) && !nonVenueKeys.contains(osmKey))
+          ? name
+          : null;
+      final isVenue = venueName != null;
+      // The map only knows the street here, not the house: keep the
+      // number you typed (a venue keeps its own address).
+      final houseNo = house ?? (!isVenue && street != null ? typedHouse : null);
+      final streetLine = street == null ? null : (houseNo == null ? street : '$houseNo $street');
+      final addressParts = <String>[
+        if (streetLine != null) streetLine else if (name != null && !isVenue) name,
+        if (city != null && city != name) city,
+        if (statePart.isNotEmpty) statePart,
+      ];
+      if (addressParts.isEmpty) continue;
+      final address = addressParts.join(', ');
+      final title = venueName ?? address;
+      final key = '${title.toLowerCase()}|${address.toLowerCase()}';
+      if (!seen.add(key)) continue;
+      out.add(AddressResult(title: title, address: address, lat: lat, lng: lng, isVenue: isVenue));
+    }
+    return out;
   }
 }

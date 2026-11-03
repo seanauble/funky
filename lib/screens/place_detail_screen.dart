@@ -620,12 +620,18 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
       }
     }
     final hosted = store.eventsHostedAt(p.id);
-    final goingPeople = priv
-        ? [
-            for (final g in store.eventGuests(p.id).where((g) => g.status == 'going'))
-              if ((g.uid == 'me' ? store.me : store.personById(g.uid)) case final person?) person,
-          ]
-        : store.peopleGoingToPlace(p.id);
+    // Faces up top: friends first, then the most popular people going. When
+    // the host keeps the count to themselves, just the few faces the server
+    // shares and a "+".
+    final countHidden = priv && p.hidesGoingCount && !store.isEventStaff(p);
+    final headPreview = store.goingPreviewFor(p.id);
+    final goingPeople = store.faceOrder(
+      priv
+          ? (countHidden
+              ? (headPreview?.faces ?? const <String>[])
+              : [for (final g in store.eventGuests(p.id)) if (g.status == 'going') g.uid])
+          : store.goingIds(p.id),
+    );
     final friendsGoing = store.friendsGoingToPlace(p.id).length;
     final isVenue = p.kind == PlaceKind.bar || p.kind == PlaceKind.club;
     final artUrl = isVenue ? (p.photoUrl ?? p.coverUrl) : (p.coverUrl ?? p.photoUrl);
@@ -771,16 +777,14 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
           final preview = store.goingPreviewFor(p.id);
           final staff = store.isEventStaff(p);
           final hidden = p.hidesGoingCount && !staff;
-          final faces = [
-            for (final f in preview?.faces ?? const <String>[])
-              if ((f == 'me' ? store.me : store.personById(f)) case final person?) person,
-          ];
+          final faces = store.faceOrder(preview?.faces ?? const <String>[]);
           return _RsvpCard(
             status: myRsvp,
             summary: hidden
                 ? (faces.isEmpty ? 'The host keeps the guest list to themselves' : 'and ${preview?.more == true ? 'more' : 'others'} going')
                 : '$guestsGoing going${guestsMaybe > 0 ? ' · $guestsMaybe maybe' : ''} · see the guest list',
             faces: hidden ? faces : const [],
+            more: preview?.more ?? false,
             onPick: (s) async {
               final err = await store.setEventRsvp(p.id, s);
               if (err != null && context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
@@ -1420,20 +1424,14 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
             child: Row(
               children: [
                 if (goingPeople.isNotEmpty)
-                  SizedBox(
-                    width: 30.0 * goingPeople.take(3).length + 14,
-                    height: 44,
-                    child: Stack(
-                      children: [
-                        for (var i = 0; i < goingPeople.take(3).length; i++)
-                          Positioned(
-                            left: 30.0 * i,
-                            child: Container(
-                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.bg, width: 2)),
-                              child: PersonAvatar(person: goingPeople[i], size: 40, preview: false),
-                            ),
-                          ),
-                      ],
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: AvatarStack(
+                      people: goingPeople,
+                      total: countHidden ? null : (priv ? guestsGoing : place.going),
+                      more: headPreview?.more ?? false,
+                      size: 40,
+                      ring: tokens.bg,
                     ),
                   )
                 else
@@ -1446,9 +1444,11 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ),
                 const SizedBox(width: 4),
                 Text(
-                  priv
-                      ? '$guestsGoing going${guestsMaybe > 0 ? ' · $guestsMaybe maybe' : ''}'
-                      : (place.going == 1 ? '1 going' : '${place.going} going'),
+                  countHidden
+                      ? (myRsvp == 'going' ? "You're going" : 'Going')
+                      : priv
+                          ? '$guestsGoing going${guestsMaybe > 0 ? ' · $guestsMaybe maybe' : ''}'
+                          : (place.going == 1 ? '1 going' : '${place.going} going'),
                   style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 16),
                 ),
                 Icon(Icons.chevron_right_rounded, color: tokens.mute),
@@ -1711,10 +1711,7 @@ class _PrivateLockCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = Theme.of(context).extension<FunkyTokens>()!.tokens;
     final store = context.watch<AppStore>();
-    final faces = [
-      for (final f in preview?.faces ?? const <String>[])
-        if (store.personById(f) case final person?) person,
-    ];
+    final faces = store.faceOrder(preview?.faces ?? const <String>[]);
     final count = preview?.count;
     final asked = requestStatus != null && requestStatus != 'declined';
     final askLabel = switch (requestStatus) {
@@ -1760,23 +1757,7 @@ class _PrivateLockCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                if (faces.isNotEmpty)
-                  SizedBox(
-                    width: 18.0 * faces.length + 10,
-                    height: 26,
-                    child: Stack(
-                      children: [
-                        for (var i = 0; i < faces.length; i++)
-                          Positioned(
-                            left: 18.0 * i,
-                            child: Container(
-                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.raised, width: 2)),
-                              child: PersonAvatar(person: faces[i], size: 24, preview: false),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                if (faces.isNotEmpty) AvatarStack(people: faces, total: count, more: preview?.more ?? false, size: 24, ring: tokens.raised),
                 if (faces.isNotEmpty) const SizedBox(width: 6),
                 Expanded(
                   child: Text(
@@ -1923,9 +1904,10 @@ class _RsvpCard extends StatelessWidget {
   final String summary;
   // When the host hides the count: a few faces going.
   final List<Person> faces;
+  final bool more;
   final ValueChanged<String> onPick;
   final VoidCallback? onGuests;
-  const _RsvpCard({required this.status, required this.summary, this.faces = const [], required this.onPick, required this.onGuests});
+  const _RsvpCard({required this.status, required this.summary, this.faces = const [], this.more = false, required this.onPick, required this.onGuests});
 
   @override
   Widget build(BuildContext context) {
@@ -1982,22 +1964,7 @@ class _RsvpCard extends StatelessWidget {
                 if (faces.isEmpty)
                   Icon(Icons.people_outline_rounded, color: tokens.mute, size: 19)
                 else
-                  SizedBox(
-                    width: 16.0 * faces.length + 8,
-                    height: 24,
-                    child: Stack(
-                      children: [
-                        for (var i = 0; i < faces.length; i++)
-                          Positioned(
-                            left: 16.0 * i,
-                            child: Container(
-                              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: tokens.raised, width: 1.5)),
-                              child: PersonAvatar(person: faces[i], size: 22, preview: false),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                  AvatarStack(people: faces, more: more, size: 22, ring: tokens.raised),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(summary, style: TextStyle(color: tokens.mute, fontWeight: FontWeight.w700, fontSize: 13)),
